@@ -8,34 +8,34 @@ Sistema interno de inventário e armazém (protótipo MVP).
 - SQLite via Prisma 7 + `@prisma/adapter-better-sqlite3`
 - UI em português, usuário demo
 
-## Como rodar
+## Como rodar (completo)
+
+Use a branch `cursor/estoque-mvp-prototype-d6e2` (o app **não** está em `main`).
 
 ```bash
+cd ~/repos/estoque
+git fetch origin
+git checkout cursor/estoque-mvp-prototype-d6e2
+git pull origin cursor/estoque-mvp-prototype-d6e2
+
+cp .env.example .env
 npm install
-npx prisma migrate dev
-npm run db:seed
+npm run setup
 npm run dev
 ```
 
 Abra [http://localhost:3000](http://localhost:3000).
 
-## Funcionalidades do protótipo
+Pedido de exemplo na tela Armazém: `NF-1024`.
 
-- Cadastro e listagem de produtos
-- Tabela de estoque com busca, ordenação, colunas e paginação
-- Recebimento em lote com rateio de custos adicionais (custo desembarcado)
-- Custo médio ponderado + histórico de custos
-- Movimentações imutáveis (ajustes geram novas transações)
-- Rascunhos de importação (não afetam estoque até o recebimento)
-- Importar / exportar planilha
-- Tela de armazém (separação por scan / teclado)
-- Stub de integração QuickBooks (reserva sem baixar físico)
+`npm run setup` aplica as migrations SQLite e popula os dados de demonstração.
 
 ## Scripts
 
 | Script | Descrição |
 |---|---|
+| `npm run setup` | Cria o banco SQLite, aplica schema e seed |
 | `npm run dev` | Servidor de desenvolvimento |
 | `npm run build` | Build de produção |
 | `npm run db:seed` | Popular dados de exemplo |
-| `npm run db:migrate` | Rodar migrations |
+| `npm run db:migrate` | Aplicar migrations (`prisma migrate deploy`) |
