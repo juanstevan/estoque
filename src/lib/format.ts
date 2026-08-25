@@ -33,6 +33,28 @@ export function formatDayMonth(value: string | Date) {
   );
 }
 
+/** Relative under 7 days, then `D MMM` / `D MMM YYYY`. See PATTERNS.md §5. */
+export function formatSmartDate(value: string | Date) {
+  const d = typeof value === "string" ? new Date(value) : value;
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const days = Math.floor(diffMs / 86_400_000);
+
+  if (diffMs >= 0 && days < 7) {
+    const hours = Math.floor(diffMs / 3_600_000);
+    if (hours < 1) return "Just now";
+    if (hours < 24) return `${hours}h ago`;
+    if (days === 1) return "Yesterday";
+    return `${days}d ago`;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(d);
+}
+
 export const YEAR_COLORS: Record<string, string> = {
   "2024": "#22c55e",
   "2025": "#3b82f6",

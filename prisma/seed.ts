@@ -136,7 +136,7 @@ async function main() {
       packageWidth: 60,
       packageHeight: 50,
       notes: "Some notes just so you can understand, this is some notes got it? I hope you did =)",
-      imageUrl: "/file.svg",
+      imageUrl: null,
     },
   });
   const hood = await prisma.product.create({

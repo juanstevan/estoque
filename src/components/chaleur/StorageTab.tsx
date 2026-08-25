@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Pencil, Plus, Upload } from "lucide-react";
+import { Download, Pencil, Plus, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -10,8 +10,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { DataGrid } from "@/components/chaleur/DataGrid";
-import { ProductDialog, type ProductRow } from "@/components/chaleur/ProductDialog";
+import {
+  ProductDialog,
+  type ProductRow,
+} from "@/components/chaleur/ProductDialog";
 import { formatMoney, formatQty } from "@/lib/format";
 
 export function StorageTab({
@@ -28,25 +36,7 @@ export function StorageTab({
   onReload: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [sku, setSku] = useState("");
   const [creating, setCreating] = useState(false);
-
-  async function createProduct() {
-    const res = await fetch("/api/products", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, sku }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setCreating(false);
-      setName("");
-      setSku("");
-      onReload();
-      setSelected(data.id);
-    }
-  }
 
   const visible = products.filter((p) => {
     const q = search.toLowerCase();
@@ -57,29 +47,62 @@ export function StorageTab({
   });
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <div className="flex items-center gap-2">
-        <Input
-          className="h-10 flex-1"
-          placeholder="Search products by name, ID, SKU…"
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-        />
-        <Button size="icon" onClick={() => setCreating(true)}>
-          <Plus />
-        </Button>
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-500" />
+          <Input
+            className="pl-9"
+            placeholder="Search products by name, ID or SKU"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+          />
+        </div>
+
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon"
+                onClick={() => setCreating(true)}
+                aria-label="Create product"
+              />
+            }
+          >
+            <Plus />
+          </TooltipTrigger>
+          <TooltipContent>Create product</TooltipContent>
+        </Tooltip>
+
         <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="outline" />}>
-            Export
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem onClick={() => (window.location.href = "/api/import-export")}>
-              <Download className="mr-2 size-4" /> Export
-            </DropdownMenuItem>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      size="icon"
+                      variant="secondary"
+                      aria-label="Import or export"
+                    />
+                  }
+                />
+              }
+            >
+              <Upload />
+            </TooltipTrigger>
+            <TooltipContent>Import or export</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end">
             <DropdownMenuItem
               onClick={() => document.getElementById("sheet-import")?.click()}
             >
-              <Upload className="mr-2 size-4" /> Import
+              <Upload /> Import spreadsheet
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => (window.location.href = "/api/import-export")}
+            >
+              <Download /> Export spreadsheet
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -90,19 +113,73 @@ export function StorageTab({
         rows={visible}
         getRowId={(p) => p.id}
         onRowClick={(p) => setSelected(p.id)}
+        selectedId={selected}
+        empty={
+          search ? `No matches for “${search}”` : "No products yet"
+        }
+        emptyHint={
+          search
+            ? "Try a shorter search, or check the ID and SKU."
+            : "Create your first product to start tracking stock."
+        }
+        emptyAction={
+          search ? undefined : (
+            <Button onClick={() => setCreating(true)}>Create product</Button>
+          )
+        }
         columns={[
-          { key: "code", label: "ID" },
-          { key: "name", label: "Name" },
-          { key: "physicalQty", label: "QNT", numeric: true, render: (p) => formatQty(p.physicalQty) },
-          { key: "avgCost", label: "Cost", numeric: true, render: (p) => formatMoney(p.avgCost) },
-          { key: "inventoryValue", label: "Total", numeric: true, render: (p) => formatMoney(p.inventoryValue) },
-          { key: "b2bPrice", label: "B2B Price", numeric: true, render: (p) => formatMoney(p.b2bPrice) },
-          { key: "b2cPrice", label: "B2C Price", numeric: true, render: (p) => formatMoney(p.b2cPrice) },
+          { key: "code", label: "ID", mono: true, width: "128px" },
+          {
+            key: "name",
+            label: "Name",
+            render: (p) => (
+              <span className="font-medium text-gray-900" title={p.name}>
+                {p.name}
+              </span>
+            ),
+          },
+          {
+            key: "physicalQty",
+            label: "Qnt",
+            numeric: true,
+            width: "104px",
+            render: (p) => `${formatQty(p.physicalQty)}un`,
+          },
+          {
+            key: "avgCost",
+            label: "Cost",
+            numeric: true,
+            width: "128px",
+            render: (p) => formatMoney(p.avgCost),
+          },
+          {
+            key: "inventoryValue",
+            label: "Total",
+            numeric: true,
+            width: "144px",
+            render: (p) => formatMoney(p.inventoryValue),
+          },
+          {
+            key: "b2bPrice",
+            label: "B2B price",
+            numeric: true,
+            width: "128px",
+            render: (p) => formatMoney(p.b2bPrice),
+          },
+          {
+            key: "b2cPrice",
+            label: "B2C price",
+            numeric: true,
+            width: "128px",
+            render: (p) => formatMoney(p.b2cPrice),
+          },
           {
             key: "edit",
             label: "",
-            render: (p) => (
-              <Pencil className="size-4 opacity-0 group-hover:opacity-100" />
+            plain: true,
+            width: "44px",
+            render: () => (
+              <Pencil className="size-3.5 text-gray-500 opacity-0 transition-opacity duration-[80ms] group-hover:opacity-100" />
             ),
           },
         ]}
@@ -115,19 +192,15 @@ export function StorageTab({
         onClose={() => setSelected(null)}
         onSaved={onReload}
       />
-      {creating && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-80 rounded-xl bg-card p-4 shadow-lg">
-            <div className="mb-3 font-medium">New product</div>
-            <Input className="mb-2" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-            <Input className="mb-3" placeholder="SKU" value={sku} onChange={(e) => setSku(e.target.value)} />
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
-              <Button onClick={() => void createProduct()}>Create</Button>
-            </div>
-          </div>
-        </div>
-      )}
+
+      <ProductDialog
+        open={creating}
+        productId={null}
+        mode="create"
+        reasons={reasons}
+        onClose={() => setCreating(false)}
+        onSaved={onReload}
+      />
     </div>
   );
 }

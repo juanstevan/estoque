@@ -1,0 +1,315 @@
+/* ==========================================================================
+   Design tokens — business application UI
+   Direction: minimal · clean · professional · light · solid · serious · sharp
+   Spec: DESIGN.md
+   ========================================================================== */
+
+:root {
+  /* ---------- Raw palette · neutral ---------- */
+  --gray-0:    #FFFFFF;
+  --gray-25:   #FCFCFD;
+  --gray-50:   #F7F8FA;
+  --gray-100:  #F0F2F5;
+  --gray-150:  #E8EBEF;
+  --gray-200:  #DFE3E8;
+  --gray-300:  #C9CFD8;
+  --gray-400:  #A2ABB8;
+  --gray-500:  #7A8494;
+  --gray-600:  #5B6472;
+  --gray-700:  #414A57;
+  --gray-800:  #2A313B;
+  --gray-900:  #171B21;
+  --gray-950:  #0D1015;
+
+  /* ---------- Raw palette · accent ---------- */
+  --accent-50:  #EEF3FF;
+  --accent-100: #DCE6FE;
+  --accent-200: #BFD0FC;
+  --accent-300: #94AEF8;
+  --accent-400: #6485F1;
+  --accent-500: #3B5FE0;
+  --accent-600: #2A48C4;
+  --accent-700: #2239A0;
+  --accent-800: #1E317F;
+
+  /* ---------- Raw palette · status ---------- */
+  --success-fill:   #E9F6EF;
+  --success-border: #BDE3CE;
+  --success-text:   #147247;
+
+  --warning-fill:   #FDF4E3;
+  --warning-border: #F0D9A8;
+  --warning-text:   #8A5A00;
+
+  --danger-fill:    #FDECEA;
+  --danger-border:  #F5C2BC;
+  --danger-text:    #B42318;
+  --danger-solid:   #B42318;
+  --danger-hover:   #98200F;
+  --danger-active:  #7E1A0C;
+
+  /* ---------- Semantic · surfaces ---------- */
+  --bg-canvas:    var(--gray-50);
+  --bg-surface:   var(--gray-0);
+  --bg-sunken:    var(--gray-100);
+  --bg-hover:     var(--gray-50);
+  --bg-active:    var(--gray-100);
+  --bg-selected:  var(--accent-50);
+  --bg-scrim:     rgb(13 16 21 / 0.32);
+
+  /* ---------- Semantic · text ---------- */
+  --text-primary:   var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary:  var(--gray-500);
+  --text-disabled:  var(--gray-400);
+  --text-on-fill:   var(--gray-0);
+  --text-link:      var(--accent-600);
+
+  /* ---------- Semantic · borders ---------- */
+  --border-subtle:  var(--gray-150);
+  --border-default: var(--gray-200);
+  --border-strong:  var(--gray-300);
+  --border-focus:   var(--accent-500);
+  --focus-ring:     0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent-500);
+
+  /* ---------- Typography ---------- */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+               system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono",
+               "Roboto Mono", monospace;
+
+  --text-2xs:   11px;  --leading-2xs:   16px;
+  --text-xs:    12px;  --leading-xs:    16px;
+  --text-sm:    13px;  --leading-sm:    20px;
+  --text-base:  14px;  --leading-base:  20px;
+  --text-md:    16px;  --leading-md:    24px;
+  --text-lg:    18px;  --leading-lg:    26px;
+  --text-xl:    22px;  --leading-xl:    30px;
+  --text-2xl:   28px;  --leading-2xl:   36px;
+
+  --tracking-caps:  0.04em;
+  --tracking-tight: -0.01em;
+  --tracking-xtight:-0.02em;
+
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+
+  /* ---------- Spacing (4px base) ---------- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---------- Radius ---------- */
+  --radius-xs:   3px;
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   10px;
+  --radius-full: 9999px;
+
+  /* ---------- Elevation ---------- */
+  --shadow-xs: 0 1px 2px rgb(13 16 21 / 0.05);
+  --shadow-sm: 0 2px 6px rgb(13 16 21 / 0.06), 0 1px 2px rgb(13 16 21 / 0.04);
+  --shadow-md: 0 8px 20px rgb(13 16 21 / 0.10), 0 2px 6px rgb(13 16 21 / 0.05);
+  --shadow-lg: 0 16px 40px rgb(13 16 21 / 0.14), 0 4px 10px rgb(13 16 21 / 0.06);
+
+  /* ---------- Motion ---------- */
+  --ease-out:      cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-emphasis: cubic-bezier(0.2, 0, 0, 1);
+  --motion-instant: 80ms;
+  --motion-fast:    120ms;
+  --motion-base:    180ms;
+  --motion-slow:    240ms;
+
+  /* ---------- Sizing ---------- */
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+
+  --row-compact:     36px;
+  --row-default:     40px;
+  --row-comfortable: 48px;
+
+  --rail-width:    52px;
+  --sidebar-width: 240px;
+  --panel-width:   360px;
+  --topbar-height: 52px;
+
+  --icon-inline: 14px;
+  --icon-default:16px;
+  --icon-large:  20px;
+
+  --z-dropdown: 100;
+  --z-sticky:   200;
+  --z-drawer:   300;
+  --z-dialog:   400;
+  --z-toast:    500;
+  --z-tooltip:  600;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: var(--weight-regular);
+}
+
+/* Numeric alignment wherever data lives */
+table, .tabular, [data-numeric] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Identifiers, SKUs, codes, amounts in mono contexts */
+.mono, code, kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* Single, consistent focus treatment */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent-100);
+  color: var(--text-primary);
+}
+
+/* Thin, neutral scrollbars — the shell never scrolls, only content regions */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--gray-300) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-full);
+}
+*::-webkit-scrollbar-thumb:hover { background-color: var(--gray-400); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--motion-instant) !important;
+    transition-property: opacity, color, background-color, border-color !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   Tailwind v4 — paste into your main stylesheet after @import "tailwindcss"
+   Gives you: bg-surface, text-secondary, border-default, rounded-md,
+              h-control-md, text-sm, shadow-sm, duration-base …
+   ========================================================================== */
+/*
+@theme {
+  --color-canvas:     #F7F8FA;
+  --color-surface:    #FFFFFF;
+  --color-sunken:     #F0F2F5;
+  --color-selected:   #EEF3FF;
+
+  --color-gray-25:  #FCFCFD;
+  --color-gray-50:  #F7F8FA;
+  --color-gray-100: #F0F2F5;
+  --color-gray-150: #E8EBEF;
+  --color-gray-200: #DFE3E8;
+  --color-gray-300: #C9CFD8;
+  --color-gray-400: #A2ABB8;
+  --color-gray-500: #7A8494;
+  --color-gray-600: #5B6472;
+  --color-gray-700: #414A57;
+  --color-gray-800: #2A313B;
+  --color-gray-900: #171B21;
+
+  --color-accent-50:  #EEF3FF;
+  --color-accent-100: #DCE6FE;
+  --color-accent-200: #BFD0FC;
+  --color-accent-300: #94AEF8;
+  --color-accent-500: #3B5FE0;
+  --color-accent-600: #2A48C4;
+  --color-accent-700: #2239A0;
+  --color-accent-800: #1E317F;
+
+  --color-success:  #147247;
+  --color-warning:  #8A5A00;
+  --color-danger:   #B42318;
+
+  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  --text-2xs:  11px;  --text-2xs--line-height:  16px;
+  --text-xs:   12px;  --text-xs--line-height:   16px;
+  --text-sm:   13px;  --text-sm--line-height:   20px;
+  --text-base: 14px;  --text-base--line-height: 20px;
+  --text-md:   16px;  --text-md--line-height:   24px;
+  --text-lg:   18px;  --text-lg--line-height:   26px;
+  --text-xl:   22px;  --text-xl--line-height:   30px;
+  --text-2xl:  28px;  --text-2xl--line-height:  36px;
+
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+
+  --shadow-xs: 0 1px 2px rgb(13 16 21 / 0.05);
+  --shadow-sm: 0 2px 6px rgb(13 16 21 / 0.06), 0 1px 2px rgb(13 16 21 / 0.04);
+  --shadow-md: 0 8px 20px rgb(13 16 21 / 0.10), 0 2px 6px rgb(13 16 21 / 0.05);
+  --shadow-lg: 0 16px 40px rgb(13 16 21 / 0.14), 0 4px 10px rgb(13 16 21 / 0.06);
+
+  --spacing-1:  4px;
+  --spacing-2:  8px;
+  --spacing-3:  12px;
+  --spacing-4:  16px;
+  --spacing-5:  20px;
+  --spacing-6:  24px;
+  --spacing-8:  32px;
+  --spacing-10: 40px;
+  --spacing-12: 48px;
+  --spacing-16: 64px;
+
+  --height-control-xs: 24px;
+  --height-control-sm: 28px;
+  --height-control-md: 32px;
+  --height-control-lg: 36px;
+  --height-row:        40px;
+
+  --width-sidebar: 240px;
+  --width-panel:   360px;
+  --width-rail:    52px;
+
+  --ease-out: cubic-bezier(0.2, 0, 0.2, 1);
+  --animate-duration-fast: 120ms;
+  --animate-duration-base: 180ms;
+  --animate-duration-slow: 240ms;
+}
+*/

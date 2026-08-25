@@ -1,10 +1,14 @@
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 
-const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
+const geistSans = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
+const geistMono = Geist_Mono({
+  subsets: ["latin"],
+  variable: "--font-geist-mono",
+});
 
 export const metadata: Metadata = {
   title: "Chaleur — Inventory",
@@ -13,8 +17,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={cn("h-full antialiased font-sans", geist.variable)}>
-      <body className="min-h-full bg-background text-foreground">
+    <html
+      lang="en"
+      className={cn(geistSans.variable, geistMono.variable)}
+    >
+      <body>
         <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
