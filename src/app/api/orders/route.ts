@@ -1,25 +1,19 @@
+import { ExitStatus } from "@prisma/client";
 import {
-  confirmPickup,
-  createOrUpdateOrderFromInvoice,
   getOrder,
-  getOrderByRef,
   listOrders,
-  pickOrderLine,
+  placeOnKanban,
+  setExitStatus,
+  updateOrder,
 } from "@/lib/inventory/orders";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const ref = searchParams.get("ref");
   const id = searchParams.get("id");
   if (id) {
     const order = await getOrder(id);
-    if (!order) return jsonError("Pedido não encontrado", 404);
-    return jsonOk(order);
-  }
-  if (ref) {
-    const order = await getOrderByRef(ref);
-    if (!order) return jsonError("Pedido não encontrado", 404);
+    if (!order) return jsonError("Invoice not found", 404);
     return jsonOk(order);
   }
   return jsonOk(await listOrders());
@@ -28,35 +22,32 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await readJson<{
-      action?: "create" | "pick" | "pickup";
-      externalRef?: string;
-      customerName?: string;
-      lines?: Array<{ productId: string; quantity: number }>;
-      orderId?: string;
-      productId?: string;
-      quantity?: number;
+      action?: "kanban" | "status" | "update";
+      id: string;
+      status?: ExitStatus;
+      customerName?: string | null;
+      assignedTo?: string | null;
+      address?: string | null;
+      deliverBy?: string | null;
+      notes?: string | null;
+      photos?: string | null;
     }>(req);
 
-    if (body.action === "pick") {
-      const order = await pickOrderLine({
-        orderId: body.orderId!,
-        productId: body.productId!,
-        quantity: body.quantity ?? 1,
-      });
-      return jsonOk(order);
+    if (body.action === "kanban") return jsonOk(await placeOnKanban(body.id));
+    if (body.action === "status" && body.status) {
+      return jsonOk(await setExitStatus(body.id, body.status));
     }
-    if (body.action === "pickup") {
-      const order = await confirmPickup(body.orderId!);
-      return jsonOk(order);
-    }
-
-    const order = await createOrUpdateOrderFromInvoice({
-      externalRef: body.externalRef!,
-      customerName: body.customerName,
-      lines: body.lines ?? [],
-    });
-    return jsonOk(order, { status: 201 });
+    return jsonOk(
+      await updateOrder(body.id, {
+        customerName: body.customerName,
+        assignedTo: body.assignedTo,
+        address: body.address,
+        deliverBy: body.deliverBy ? new Date(body.deliverBy) : null,
+        notes: body.notes,
+        photos: body.photos,
+      }),
+    );
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : "Erro no pedido", 400);
+    return jsonError(e instanceof Error ? e.message : "Exit error", 400);
   }
 }

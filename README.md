@@ -1,41 +1,32 @@
-# Estoque
+# Chaleur Inventory
 
-Sistema interno de inventário e armazém (protótipo MVP).
+Internal inventory and warehouse system for Chaleur Manufacturing Co.
 
 ## Stack
 
-- Next.js (App Router) + TypeScript + Tailwind
-- SQLite via Prisma 7 + `@prisma/adapter-better-sqlite3`
-- UI em português, usuário demo
+- Next.js (App Router) + TypeScript + Tailwind v4
+- shadcn/ui + Tremor
+- SQLite via Prisma 7
 
-## Como rodar (completo)
-
-Use a branch `cursor/estoque-mvp-prototype-d6e2` (o app **não** está em `main`).
+## Run
 
 ```bash
 cd ~/repos/estoque
-git fetch origin
-git checkout cursor/estoque-mvp-prototype-d6e2
-git pull origin cursor/estoque-mvp-prototype-d6e2
-
 cp .env.example .env
 npm install
-npm run setup
+npx prisma migrate deploy
+npm run db:seed
 npm run dev
 ```
 
-Abra [http://localhost:3000](http://localhost:3000).
+Open http://localhost:3000
 
-Pedido de exemplo na tela Armazém: `NF-1024`.
+**Login:** `admin` / `chaleur`
 
-`npm run setup` aplica as migrations SQLite e popula os dados de demonstração.
+## Tabs
 
-## Scripts
+- **Storage** — product table, product card (Info/Log), quantity add/remove, reserved invoices
+- **Imports** — Kanban (Pending / In Transit / Delayed), domestic vs international cards, archive table
+- **Exit** — delivery Kanban, Notion-style invoice drawer, invoice table (drag onto Pending)
 
-| Script | Descrição |
-|---|---|
-| `npm run setup` | Cria o banco SQLite, aplica schema e seed |
-| `npm run dev` | Servidor de desenvolvimento |
-| `npm run build` | Build de produção |
-| `npm run db:seed` | Popular dados de exemplo |
-| `npm run db:migrate` | Aplicar migrations (`prisma migrate deploy`) |
+Spreadsheet import with supervisor approval is stubbed for a later board.

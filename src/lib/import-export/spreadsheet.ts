@@ -175,21 +175,17 @@ export async function applyImport(preview: ImportPreviewRow[]) {
 export async function exportInventoryWorkbook() {
   const products = await prisma.product.findMany({ orderBy: { name: "asc" } });
   const rows = products.map((p) => ({
-    ID: p.id,
-    Nome: p.name,
+    ID: p.code,
+    Name: p.name,
     SKU: p.sku,
-    SKU_Secundario: p.secondarySku ?? "",
-    EAN: p.ean ?? "",
-    Quantidade: p.physicalQty,
-    Disponivel: p.availableQty,
-    Reservado: p.reservedQty,
-    Aguardando_Retirada: p.waitingPickupQty,
-    Custo_Medio: p.avgCost,
-    Preco_B2B: p.b2bPrice,
-    Preco_B2C: p.b2cPrice,
-    Valor_Estoque: p.inventoryValue,
-    Peso: p.weight ?? "",
-    Observacoes: p.notes ?? "",
+    Quantity: p.physicalQty,
+    Available: p.availableQty,
+    Reserved: p.reservedQty,
+    Avg_Cost: p.avgCost,
+    B2B: p.b2bPrice,
+    B2C: p.b2cPrice,
+    Total: p.inventoryValue,
+    Notes: p.notes ?? "",
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();

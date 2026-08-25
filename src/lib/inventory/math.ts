@@ -83,15 +83,32 @@ export function allocateAdditionalCosts(
 export function recomputeAvailable(params: {
   physicalQty: number;
   reservedQty: number;
-  waitingPickupQty: number;
-  waitingDeliveryQty: number;
-  unavailableQty: number;
+  waitingPickupQty?: number;
+  waitingDeliveryQty?: number;
+  unavailableQty?: number;
 }): number {
+  return roundMoney(params.physicalQty - params.reservedQty);
+}
+
+export function additionalImportCosts(c: {
+  transferFee?: number;
+  freight?: number;
+  delivery?: number;
+  duties?: number;
+  customs?: number;
+  otherCosts?: number;
+}) {
   return roundMoney(
-    params.physicalQty -
-      params.reservedQty -
-      params.waitingPickupQty -
-      params.waitingDeliveryQty -
-      params.unavailableQty,
+    (c.transferFee ?? 0) +
+      (c.freight ?? 0) +
+      (c.delivery ?? 0) +
+      (c.duties ?? 0) +
+      (c.customs ?? 0) +
+      (c.otherCosts ?? 0),
   );
+}
+
+export function packageCbmM3(l?: number | null, w?: number | null, h?: number | null) {
+  if (!l || !w || !h) return 0;
+  return roundMoney((l * w * h) / 1_000_000, 6);
 }

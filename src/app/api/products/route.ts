@@ -1,11 +1,10 @@
-import { listProducts, createProduct } from "@/lib/inventory/service";
+import { createProduct, listProducts } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q") ?? undefined;
-  const products = await listProducts(q);
-  return jsonOk(products);
+  return jsonOk(await listProducts(q));
 }
 
 export async function POST(req: Request) {
@@ -13,25 +12,19 @@ export async function POST(req: Request) {
     const body = await readJson<{
       name: string;
       sku: string;
-      secondarySku?: string;
-      ean?: string;
-      imageUrl?: string;
+      code?: string;
+      amazonUrl?: string;
       b2bPrice?: number;
       b2cPrice?: number;
-      weight?: number;
-      length?: number;
-      width?: number;
-      height?: number;
       notes?: string;
       initialQty?: number;
       initialUnitCost?: number;
     }>(req);
     if (!body.name?.trim() || !body.sku?.trim()) {
-      return jsonError("Nome e SKU são obrigatórios");
+      return jsonError("Name and SKU are required");
     }
-    const product = await createProduct(body);
-    return jsonOk(product, { status: 201 });
+    return jsonOk(await createProduct(body), { status: 201 });
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : "Erro ao criar produto", 500);
+    return jsonError(e instanceof Error ? e.message : "Could not create product", 500);
   }
 }

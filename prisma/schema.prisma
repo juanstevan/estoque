@@ -20,73 +20,112 @@ enum TransactionType {
   IMPORTATION
 }
 
-enum ImportationStatus {
-  DRAFT
-  IN_TRANSIT
-  PARTIALLY_RECEIVED
-  RECEIVED
-  CANCELLED
+enum ImportKind {
+  DOMESTIC
+  INTERNATIONAL
 }
 
-enum OrderStatus {
-  OPEN
-  PARTIALLY_PICKED
-  READY_PICKUP
-  READY_DELIVERY
+enum ImportStatus {
+  PENDING
+  IN_TRANSIT
+  DELAYED
   COMPLETED
-  CANCELLED
+}
+
+enum ExitStatus {
+  PENDING
+  PREPARING
+  IN_TRANSIT
+  TO_DELIVER
+  DELAYED
+  COMPLETED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("admin")
+  createdAt    DateTime @default(now())
+}
+
+model AppSettings {
+  id                 String @id @default("default")
+  companyName        String @default("Chaleur Manufacturing Co.")
+  logoUrl            String?
+  adjustmentReasons  String @default("[\"Correction\",\"Adjust\",\"Return\",\"Warranty\"]")
+  yearColors         String @default("{\"2024\":\"#22c55e\",\"2025\":\"#3b82f6\",\"2026\":\"#ef4444\",\"2027\":\"#a855f7\"}")
+}
+
+model Supplier {
+  id   String @id @default(cuid())
+  name String @unique
 }
 
 model Product {
-  id                String   @id @default(cuid())
-  name              String
-  sku               String   @unique
-  secondarySku      String?
-  ean               String?
-  imageUrl          String?
-  b2bPrice          Float    @default(0)
-  b2cPrice          Float    @default(0)
-  weight            Float?
-  length            Float?
-  width             Float?
-  height            Float?
-  notes             String?
-  physicalQty       Float    @default(0)
-  availableQty      Float    @default(0)
-  reservedQty       Float    @default(0)
-  waitingPickupQty  Float    @default(0)
-  waitingDeliveryQty Float   @default(0)
-  unavailableQty    Float    @default(0)
-  avgCost           Float    @default(0)
-  inventoryValue    Float    @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  code               String   @unique
+  name               String
+  sku                String   @unique
+  secondarySku       String?
+  ean                String?
+  amazonUrl          String?
+  imageUrl           String?
+  b2bPrice           Float    @default(0)
+  b2cPrice           Float    @default(0)
+  fobCost            Float    @default(0)
+  cifCost            Float    @default(0)
+  lastSoldPrice      Float    @default(0)
+  suppliers          String?
+  weight             Float?
+  length             Float?
+  width              Float?
+  height             Float?
+  packageLength      Float?
+  packageWidth       Float?
+  packageHeight      Float?
+  packageWeight      Float?
+  cutoutLength       Float?
+  cutoutWidth        Float?
+  cutoutHeight       Float?
+  notes              String?
+  physicalQty        Float    @default(0)
+  availableQty       Float    @default(0)
+  reservedQty        Float    @default(0)
+  waitingPickupQty   Float    @default(0)
+  waitingDeliveryQty Float    @default(0)
+  unavailableQty     Float    @default(0)
+  avgCost            Float    @default(0)
+  inventoryValue     Float    @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  transactions      InventoryTransaction[]
-  costHistory       CostHistory[]
-  importationLines  ImportationLine[]
-  orderLines        OrderLine[]
+  transactions     InventoryTransaction[]
+  costHistory      CostHistory[]
+  importationLines ImportationLine[]
+  orderLines       OrderLine[]
 
   @@index([name])
   @@index([ean])
-  @@index([secondarySku])
 }
 
 model InventoryTransaction {
-  id          String          @id @default(cuid())
-  productId   String
-  type        TransactionType
-  quantity    Float
-  unitCost    Float           @default(0)
-  totalValue  Float           @default(0)
-  reference   String?
-  notes       String?
-  userId      String          @default("demo")
-  occurredAt  DateTime        @default(now())
-  metadata    String?
-  createdAt   DateTime        @default(now())
+  id         String          @id @default(cuid())
+  productId  String
+  type       TransactionType
+  quantity   Float
+  unitCost   Float           @default(0)
+  totalValue Float           @default(0)
+  reference  String?
+  notes      String?
+  clientName String?
+  userId     String          @default("demo")
+  occurredAt DateTime        @default(now())
+  metadata   String?
+  createdAt  DateTime        @default(now())
 
-  product     Product         @relation(fields: [productId], references: [id])
+  product     Product      @relation(fields: [productId], references: [id])
   costHistory CostHistory?
 
   @@index([productId, occurredAt])
@@ -106,95 +145,101 @@ model CostHistory {
   resultingValue   Float
   occurredAt       DateTime @default(now())
 
-  product          Product              @relation(fields: [productId], references: [id])
-  transaction      InventoryTransaction @relation(fields: [transactionId], references: [id])
+  product     Product              @relation(fields: [productId], references: [id])
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id])
 
   @@index([productId, occurredAt])
 }
 
 model Importation {
-  id                   String            @id @default(cuid())
-  reference            String            @unique
-  status               ImportationStatus @default(DRAFT)
+  id                   String       @id @default(cuid())
+  reference            String       @unique
+  kind                 ImportKind   @default(INTERNATIONAL)
+  status               ImportStatus @default(PENDING)
+  supplierName         String?
   expectedDate         DateTime?
   notes                String?
-  freightIntl          Float             @default(0)
-  customs              Float             @default(0)
-  brokerFees           Float             @default(0)
-  portFees             Float             @default(0)
-  freightDomestic      Float             @default(0)
-  otherCosts           Float             @default(0)
-  productSubtotal      Float             @default(0)
-  totalAdditionalCosts Float             @default(0)
-  createdBy            String            @default("demo")
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
+  transferFee          Float        @default(0)
+  freight              Float        @default(0)
+  delivery             Float        @default(0)
+  duties               Float        @default(0)
+  customs              Float        @default(0)
+  otherCosts           Float        @default(0)
+  productSubtotal      Float        @default(0)
+  totalAdditionalCosts Float        @default(0)
+  coefficient          Float        @default(1)
+  createdBy            String       @default("demo")
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
   receivedAt           DateTime?
 
-  lines                ImportationLine[]
+  lines ImportationLine[]
 }
 
 model ImportationLine {
-  id                     String  @id @default(cuid())
-  importationId          String
-  productId              String?
-  draftName              String?
-  draftSku               String?
-  draftEan               String?
-  quantity               Float
-  purchaseUnitCost       Float   @default(0)
-  allocatedAdditionalCost Float  @default(0)
-  landedUnitCost         Float   @default(0)
-  weight                 Float?
-  length                 Float?
-  width                  Float?
-  height                 Float?
-  notes                  String?
+  id                      String  @id @default(cuid())
+  importationId           String
+  productId               String?
+  draftName               String?
+  draftSku                String?
+  quantity                Float
+  purchaseUnitCost        Float   @default(0)
+  allocatedAdditionalCost Float   @default(0)
+  landedUnitCost          Float   @default(0)
+  notes                   String?
 
-  importation            Importation @relation(fields: [importationId], references: [id], onDelete: Cascade)
-  product                Product?    @relation(fields: [productId], references: [id])
+  importation Importation @relation(fields: [importationId], references: [id], onDelete: Cascade)
+  product     Product?    @relation(fields: [productId], references: [id])
 
   @@index([importationId])
 }
 
 model Order {
-  id          String      @id @default(cuid())
-  externalRef String      @unique
+  id           String     @id @default(cuid())
+  externalRef  String     @unique
   customerName String?
-  status      OrderStatus @default(OPEN)
-  source      String      @default("manual")
-  notes       String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  seller       String?
+  assignedTo   String?
+  address      String?
+  deliverBy    DateTime?
+  status       ExitStatus @default(PENDING)
+  onKanban     Boolean    @default(false)
+  source       String     @default("invoice")
+  notes        String?
+  photos       String?
+  totalAmount  Float      @default(0)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  lines       OrderLine[]
+  lines OrderLine[]
 }
 
 model OrderLine {
-  id            String @id @default(cuid())
-  orderId       String
-  productId     String
-  orderedQty    Float
-  reservedQty   Float  @default(0)
-  pickedQty     Float  @default(0)
-  waitingPickupQty Float @default(0)
-  deliveredQty  Float  @default(0)
-  remainingQty  Float  @default(0)
+  id               String @id @default(cuid())
+  orderId          String
+  productId        String
+  orderedQty       Float
+  reservedQty      Float  @default(0)
+  pickedQty        Float  @default(0)
+  waitingPickupQty Float  @default(0)
+  deliveredQty     Float  @default(0)
+  remainingQty     Float  @default(0)
+  unitPrice        Float  @default(0)
 
-  order         Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product       Product @relation(fields: [productId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
 
   @@index([orderId])
   @@index([productId])
 }
 
 model QbSyncEvent {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   eventType   String
   externalId  String?
   payload     String
-  processed   Boolean  @default(false)
+  processed   Boolean   @default(false)
   processedAt DateTime?
   notes       String?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 }

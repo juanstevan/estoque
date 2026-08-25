@@ -6,20 +6,15 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   const item = await getImportation(id);
-  if (!item) return jsonError("Importação não encontrada", 404);
+  if (!item) return jsonError("Importation not found", 404);
   return jsonOk(item);
 }
 
-export async function POST(req: Request, ctx: Ctx) {
+export async function POST(_req: Request, ctx: Ctx) {
   try {
     const { id } = await ctx.params;
-    const url = new URL(req.url);
-    if (url.searchParams.get("action") === "confirm") {
-      const received = await confirmImportation(id);
-      return jsonOk(received);
-    }
-    return jsonError("Ação inválida");
+    return jsonOk(await confirmImportation(id));
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : "Erro", 400);
+    return jsonError(e instanceof Error ? e.message : "Error", 400);
   }
 }
