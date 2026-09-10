@@ -7,6 +7,7 @@ import {
   ImagePlus,
   Pencil,
   Search,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,6 +96,33 @@ type Detail = ProductRow & {
 
 const LBS_PER_KG = 2.20462;
 
+function parseSuppliers(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  } catch {
+    // Older rows stored a plain comma-separated string.
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function serializeSuppliers(list: string[]) {
+  return JSON.stringify(list);
+}
+
+/** Soft badge colors from the Figma Product Card, cycled by index. */
+const SUPPLIER_BADGE = [
+  { bg: "#ffdbdb", fg: "#940606" },
+  { bg: "#fff2ca", fg: "#b77100" },
+  { bg: "#e3f0ff", fg: "#1a5fb4" },
+  { bg: "#e6f4ea", fg: "#1e7a3a" },
+  { bg: "#f3e8ff", fg: "#6b21a8" },
+] as const;
+
 function blankDetail(): Detail {
   return {
     id: "",
@@ -148,28 +176,31 @@ export function ProductDialog({
 }) {
   const isCreate = mode === "create";
   const [tab, setTab] = useState("info");
-  const [editing, setEditing] = useState(false);
+  /** Only one field is ever open; a double-click hands the editor over. */
+  const [editingField, setEditingField] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [qtyOpen, setQtyOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setTab("info");
     setError(null);
+    setEditingField(null);
     if (isCreate) {
       setDetail(blankDetail());
-      setEditing(true);
       return;
     }
-    setEditing(false);
     setDetail(null);
     if (productId) {
       fetch(`/api/products/${productId}`)
         .then((r) => r.json())
-        .then(setDetail);
+        .then((row: Detail) =>
+          setDetail({ ...row, code: (row.code ?? "").slice(0, 3) }),
+        );
     }
   }, [open, productId, isCreate]);
 
@@ -197,7 +228,7 @@ export function ProductDialog({
       return;
     }
     const payload = {
-      code: detail.code || undefined,
+      code: detail.code.trim().toUpperCase().slice(0, 3) || undefined,
       name: detail.name,
       sku: detail.sku,
       amazonUrl: detail.amazonUrl,
@@ -236,105 +267,93 @@ export function ProductDialog({
       setError(data.error ?? "Couldn't save the product");
       return;
     }
-    setEditing(false);
+    setEditingField(null);
     onSaved();
     if (isCreate) onClose();
   }
 
   if (!open) return null;
 
-  const locked = !isCreate && !editing;
-  const suppliersText: string = (() => {
-    try {
-      return (JSON.parse(detail?.suppliers || "[]") as string[]).join(", ");
-    } catch {
-      return detail?.suppliers ?? "";
-    }
-  })();
+  /** A new product has nothing to read yet, so it opens straight into inputs. */
+  const isOpen = (field: string) => isCreate || editingField === field;
+  const openField = (field: string) => setEditingField(field);
+  const closeField = () => !isCreate && setEditingField(null);
+  const suppliers: string[] = parseSuppliers(detail?.suppliers);
+  const hasImage = Boolean(
+    detail?.imageUrl && detail.imageUrl !== "/file.svg",
+  );
 
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
           showCloseButton={false}
-          className="flex h-[88vh] max-h-[860px] w-full flex-col gap-0 p-0 sm:max-w-[880px]"
+          className="flex w-auto max-w-none flex-col items-center gap-0 border-0 bg-transparent p-0 shadow-none sm:max-w-none"
         >
           <DialogTitle className="sr-only">
             {isCreate ? "Create product" : "Product card"}
           </DialogTitle>
 
           {!detail ? (
-            <ProductSkeleton />
+            <div className="flex h-[720px] min-h-[720px] w-[1080px] min-w-[1080px] flex-col rounded-[9px] border border-border bg-surface p-6 shadow-md">
+              <ProductSkeleton />
+            </div>
           ) : (
             <>
-              <div className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border px-6">
+              {/* Tabs live on the backdrop, above the white card. */}
+              <div className="flex h-[54px] w-[1080px] shrink-0 items-center justify-center bg-transparent">
                 {isCreate ? (
-                  <div className="text-md font-semibold text-gray-900">
+                  <div className="w-full text-md font-semibold text-gray-900">
                     Create product
                   </div>
                 ) : (
                   <Tabs
                     value={tab}
-                    onValueChange={setTab}
-                    className="h-full self-stretch"
+                    onValueChange={(v) => {
+                      setEditingField(null);
+                      setTab(String(v));
+                    }}
+                    className="w-full gap-0"
                   >
-                    <TabsList
-                      variant="line"
-                      className="h-full w-fit border-b-0"
-                    >
-                      <TabsTrigger value="info">Info</TabsTrigger>
-                      <TabsTrigger value="log">Log</TabsTrigger>
+                    <TabsList className="mx-auto w-[208px] bg-[#f2f2f7]">
+                      <TabsTrigger
+                        value="info"
+                        className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
+                      >
+                        Info
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="log"
+                        className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
+                      >
+                        Log
+                      </TabsTrigger>
                     </TabsList>
                   </Tabs>
                 )}
-                {!isCreate && (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          size="icon-sm"
-                          variant={editing ? "default" : "ghost"}
-                          onClick={() => setEditing((e) => !e)}
-                          aria-label={
-                            editing ? "Lock fields" : "Edit product details"
-                          }
-                        />
-                      }
-                    >
-                      <Pencil />
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {editing ? "Lock fields" : "Edit details"}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
               </div>
 
+              <div className="flex h-[720px] min-h-[720px] w-[1080px] min-w-[1080px] flex-col overflow-hidden rounded-[9px] border border-border bg-surface p-6 shadow-md">
               {tab === "info" ? (
-                <div className="grid min-h-0 flex-1 gap-8 overflow-auto p-6 md:grid-cols-[300px_1fr]">
-                  <div className="flex flex-col gap-5">
+                <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
+                  <div className="flex w-[520px] min-w-0 shrink-0 flex-col gap-3">
                     <button
                       type="button"
                       onClick={() => fileRef.current?.click()}
-                      className="group relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-sunken text-gray-500"
+                      className="group relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken"
                     >
-                      {detail.imageUrl ? (
+                      {hasImage && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={detail.imageUrl}
+                          src={detail.imageUrl!}
                           alt=""
                           className="h-full w-full object-contain"
                           onError={() => patch({ imageUrl: null })}
                         />
-                      ) : (
-                        <span className="flex flex-col items-center gap-2 text-xs">
-                          <ImagePlus className="size-5" />
-                          Add image
-                        </span>
                       )}
-                      <span className="absolute inset-0 flex items-center justify-center gap-2 bg-surface/85 text-xs font-medium text-gray-700 opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100">
-                        <ImagePlus className="size-4" />
-                        {detail.imageUrl ? "Change image" : "Upload image"}
+                      <span className="absolute inset-0 flex items-center justify-center gap-1.5 bg-surface/85 text-xs font-medium text-gray-700 opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100">
+                        <ImagePlus className="size-3.5" />
+                        {hasImage ? "Change image" : "Upload image"}
                       </span>
                     </button>
                     <input
@@ -349,256 +368,436 @@ export function ProductDialog({
                       }}
                     />
 
-                    <div className="grid gap-3">
-                      <FieldRow label="ID">
-                        <Input
-                          className="font-mono text-xs"
-                          value={detail.code}
-                          disabled={locked}
-                          placeholder="Auto"
-                          onChange={(e) => patch({ code: e.target.value })}
-                        />
-                      </FieldRow>
-                      <FieldRow
-                        label="Name"
-                        action={
-                          detail.amazonUrl ? (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    size="icon-sm"
-                                    variant="secondary"
-                                    aria-label="Open Amazon page"
-                                    render={
-                                      <a
-                                        href={detail.amazonUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                      />
-                                    }
-                                  />
-                                }
-                              >
-                                <ExternalLink />
-                              </TooltipTrigger>
-                              <TooltipContent>Open Amazon page</TooltipContent>
-                            </Tooltip>
-                          ) : undefined
-                        }
-                      >
-                        <Input
-                          value={detail.name}
-                          disabled={locked}
-                          placeholder="Complete product name"
-                          onChange={(e) => patch({ name: e.target.value })}
-                        />
-                      </FieldRow>
-                      <FieldRow label="SKU">
-                        <Input
-                          className="font-mono text-xs"
-                          value={detail.sku}
-                          disabled={locked}
-                          onChange={(e) => patch({ sku: e.target.value })}
-                        />
-                      </FieldRow>
-                      {!locked && (
-                        <FieldRow label="Amazon">
-                          <Input
+                    <div className="flex items-start gap-[18px]">
+                      <div className="grid shrink-0 gap-1.5">
+                        <FieldLabel>ID</FieldLabel>
+                        <EditSlot
+                          active={isOpen("code")}
+                          onActivate={() => openField("code")}
+                          onDone={closeField}
+                          className="w-9 font-mono text-sm font-medium"
+                          read={detail.code || <Null />}
+                        >
+                          <BareField
+                            autoFocus
+                            className="font-mono"
+                            value={detail.code}
+                            placeholder="Auto"
+                            aria-label="ID"
+                            maxLength={3}
+                            onChange={(e) =>
+                              patch({
+                                code: e.target.value
+                                  .toUpperCase()
+                                  .replace(/[^0-9A-Z]/g, "")
+                                  .slice(0, 3),
+                              })
+                            }
+                          />
+                        </EditSlot>
+                      </div>
+                      <div className="grid min-w-0 flex-1 gap-1.5">
+                        <FieldLabel>Name</FieldLabel>
+                        <EditSlot
+                          active={isOpen("name")}
+                          onActivate={() => openField("name")}
+                          onDone={closeField}
+                          className="min-h-[27px] h-auto min-w-0 px-[9px] text-sm font-medium"
+                          read={
+                            <span className="truncate">
+                              {detail.name || <Null />}
+                            </span>
+                          }
+                        >
+                          <BareField
+                            autoFocus
+                            value={detail.name}
+                            placeholder="Complete product name"
+                            aria-label="Name"
+                            onChange={(e) => patch({ name: e.target.value })}
+                          />
+                        </EditSlot>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      {isOpen("amazonUrl") ? (
+                        <div
+                          className={cn(SLOT, "w-full border-gray-400")}
+                          onBlur={(e) => {
+                            if (!e.currentTarget.contains(e.relatedTarget)) {
+                              closeField();
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === "Escape") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              closeField();
+                            }
+                          }}
+                        >
+                          <BareField
+                            autoFocus
                             value={detail.amazonUrl ?? ""}
                             placeholder="https://amazon.com/dp/…"
+                            aria-label="Amazon URL"
                             onChange={(e) =>
                               patch({ amazonUrl: e.target.value || null })
                             }
                           />
-                        </FieldRow>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <FieldLabel className="shrink-0">SKU</FieldLabel>
+                            <EditSlot
+                              active={isOpen("sku")}
+                              onActivate={() => openField("sku")}
+                              onDone={closeField}
+                              className="w-[117px] shrink-0 text-xs font-medium"
+                              read={
+                                <span className="truncate">
+                                  {detail.sku || <Null />}
+                                </span>
+                              }
+                            >
+                              <BareField
+                                autoFocus
+                                className="text-xs"
+                                value={detail.sku}
+                                placeholder="SKU"
+                                aria-label="SKU"
+                                maxLength={12}
+                                onChange={(e) => patch({ sku: e.target.value })}
+                              />
+                            </EditSlot>
+                          </div>
+
+                          <div className="group/amazon flex shrink-0 items-center gap-[9px]">
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    size="icon-xs"
+                                    variant="ghost"
+                                    aria-label="Edit Amazon URL"
+                                    className="opacity-0 transition-opacity group-hover/amazon:opacity-100"
+                                    onClick={() => openField("amazonUrl")}
+                                  />
+                                }
+                              >
+                                <Pencil className="size-3" />
+                              </TooltipTrigger>
+                              <TooltipContent>Edit Amazon URL</TooltipContent>
+                            </Tooltip>
+                            {detail.amazonUrl ? (
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      aria-label="Open Amazon page"
+                                      className="h-[27px] gap-1.5 text-xs"
+                                      nativeButton={false}
+                                      render={
+                                        <a
+                                          href={detail.amazonUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        />
+                                      }
+                                    />
+                                  }
+                                >
+                                  Amazon
+                                  <ExternalLink className="size-3.5" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Open Amazon page
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                className="h-[27px] gap-1.5 text-xs"
+                                onClick={() => openField("amazonUrl")}
+                              >
+                                Amazon
+                                <ExternalLink className="size-3.5" />
+                              </Button>
+                            )}
+                          </div>
+                        </>
                       )}
+                    </div>
+
+                    <div className="border-t border-gray-150 pt-3">
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                        <SpecRow
+                          label="Product"
+                          values={[detail.width, detail.length, detail.height]}
+                          editingField={editingField}
+                          fieldPrefix="dim-product"
+                          onOpen={openField}
+                          onDone={closeField}
+                          onChange={([w, d, h]) =>
+                            patch({ width: w, length: d, height: h })
+                          }
+                          isCreate={isCreate}
+                          unit={unit}
+                          onUnitChange={setUnit}
+                        />
+                        <SpecRow
+                          label="Package"
+                          values={[
+                            detail.packageWidth,
+                            detail.packageLength,
+                            detail.packageHeight,
+                          ]}
+                          editingField={editingField}
+                          fieldPrefix="dim-package"
+                          onOpen={openField}
+                          onDone={closeField}
+                          onChange={([w, d, h]) =>
+                            patch({
+                              packageWidth: w,
+                              packageLength: d,
+                              packageHeight: h,
+                            })
+                          }
+                          isCreate={isCreate}
+                          unit={unit}
+                          onUnitChange={setUnit}
+                        />
+                        <SpecRow
+                          label="Cut-Out"
+                          values={[
+                            detail.cutoutWidth,
+                            detail.cutoutLength,
+                            detail.cutoutHeight,
+                          ]}
+                          editingField={editingField}
+                          fieldPrefix="dim-cutout"
+                          onOpen={openField}
+                          onDone={closeField}
+                          onChange={([w, d, h]) =>
+                            patch({
+                              cutoutWidth: w,
+                              cutoutLength: d,
+                              cutoutHeight: h,
+                            })
+                          }
+                          isCreate={isCreate}
+                          unit={unit}
+                          onUnitChange={setUnit}
+                        />
+                        <div className="flex items-center gap-1.5">
+                          <FieldLabel className="shrink-0">Weight</FieldLabel>
+                          <EditSlot
+                            active={isOpen("weight")}
+                            onActivate={() => openField("weight")}
+                            onDone={closeField}
+                            className="font-mono text-xs tabular-nums"
+                            read={
+                              detail.weight === null ? (
+                                <Null />
+                              ) : (
+                                <span className="truncate">
+                                  {detail.weight}
+                                  <span className="text-gray-500">
+                                    {" kg · "}
+                                    {(detail.weight * LBS_PER_KG).toFixed(1)}{" "}
+                                    lbs
+                                  </span>
+                                </span>
+                              )
+                            }
+                          >
+                            <BareField
+                              autoFocus
+                              className="w-9 text-xs tabular-nums"
+                              inputMode="decimal"
+                              aria-label="Weight in kg"
+                              value={detail.weight ?? ""}
+                              onChange={(e) =>
+                                patch({ weight: numOrNull(e.target.value) })
+                              }
+                            />
+                            <span className="text-xs text-gray-500">kg</span>
+                          </EditSlot>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex min-w-0 flex-col gap-6">
-                    <div className="grid gap-x-6 gap-y-5 sm:grid-cols-4">
-                      <Stat
-                        label="Quantity"
-                        value={`${formatQty(detail.physicalQty)}un`}
-                        onClick={isCreate ? undefined : () => setQtyOpen(true)}
-                      />
-                      <Stat
-                        label="Available"
-                        value={`${formatQty(detail.availableQty)}un`}
-                      />
-
-                      <div className="sm:col-span-2">
-                        <Popover>
-                          <PopoverTrigger className="group/reserved -mx-2 -my-1 rounded-md px-2 py-1 text-left outline-none hover:bg-gray-100">
-                            <Eyebrow>Reserved</Eyebrow>
-                            <div className="mt-1 flex items-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900">
-                              {formatQty(detail.reservedQty)}un
-                              <Search className="size-3.5 text-gray-500" />
-                            </div>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="start"
-                            className="flex h-64 w-[460px] flex-col p-2"
-                          >
-                            <DataGrid
-                              rows={detail.orderLines}
-                              getRowId={(r) => r.order.externalRef}
-                              empty="No reserved stock"
-                              emptyHint="Stock is reserved once an exit invoice is on the board."
-                              columns={[
-                                {
-                                  key: "ref",
-                                  label: "Ref.",
-                                  mono: true,
-                                  filterValue: (r) => r.order.externalRef,
-                                  render: (r) => r.order.externalRef,
-                                },
-                                {
-                                  key: "name",
-                                  label: "Client",
-                                  filterValue: (r) =>
-                                    r.order.customerName ?? "",
-                                  render: (r) =>
-                                    r.order.customerName ?? (
-                                      <Null />
-                                    ),
-                                },
-                                {
-                                  key: "reservedQty",
-                                  label: "Qnt",
-                                  numeric: true,
-                                  width: "72px",
-                                  render: (r) => formatQty(r.reservedQty),
-                                },
-                                {
-                                  key: "unitPrice",
-                                  label: "Price",
-                                  numeric: true,
-                                  width: "96px",
-                                  render: (r) => formatMoney(r.unitPrice),
-                                },
-                              ]}
-                            />
-                          </PopoverContent>
-                        </Popover>
+                  <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-hidden">
+                    <div className="flex gap-3">
+                      <div className="flex w-[84px] shrink-0 flex-col gap-8 py-[3px]">
+                        <Stat
+                          label="Quantity"
+                          value={`${formatQty(detail.physicalQty)}un`}
+                          onClick={
+                            isCreate ? undefined : () => setQtyOpen(true)
+                          }
+                        />
+                        <Stat
+                          label="Available"
+                          value={`${formatQty(detail.availableQty)}un`}
+                        />
+                        <div className="min-w-0">
+                          <Popover>
+                            <PopoverTrigger className="rounded-md px-1.5 py-0.5 text-left outline-none hover:bg-gray-100">
+                              <Eyebrow>Reserved</Eyebrow>
+                              <div className="mt-0.5 flex items-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900">
+                                {formatQty(detail.reservedQty)}un
+                                <Search className="size-3.5 text-gray-500" />
+                              </div>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              align="start"
+                              className="flex h-64 w-[459px] flex-col p-1.5"
+                            >
+                              <DataGrid
+                                rows={detail.orderLines}
+                                getRowId={(r) => r.order.externalRef}
+                                empty="No reserved stock"
+                                emptyHint="Stock is reserved once an exit invoice is on the board."
+                                columns={[
+                                  {
+                                    key: "ref",
+                                    label: "Ref.",
+                                    mono: true,
+                                    filterValue: (r) => r.order.externalRef,
+                                    render: (r) => r.order.externalRef,
+                                  },
+                                  {
+                                    key: "name",
+                                    label: "Client",
+                                    filterValue: (r) =>
+                                      r.order.customerName ?? "",
+                                    render: (r) =>
+                                      r.order.customerName ?? <Null />,
+                                  },
+                                  {
+                                    key: "reservedQty",
+                                    label: "Qnt",
+                                    numeric: true,
+                                    width: "72px",
+                                    render: (r) => formatQty(r.reservedQty),
+                                  },
+                                  {
+                                    key: "unitPrice",
+                                    label: "Price",
+                                    numeric: true,
+                                    width: "96px",
+                                    render: (r) => formatMoney(r.unitPrice),
+                                  },
+                                ]}
+                              />
+                            </PopoverContent>
+                          </Popover>
+                        </div>
                       </div>
 
-                      <Stat label="Avg. cost" value={formatMoney(detail.avgCost)} />
-                      <Stat label="CIF cost" value={formatMoney(detail.cifCost)} />
-                      <Stat label="FOB cost" value={formatMoney(detail.fobCost)} />
-                      <Stat
-                        label="Last sold"
-                        value={formatMoney(detail.lastSoldPrice)}
-                      />
-
-                      <FieldStat
-                        label="B2B price"
-                        value={String(detail.b2bPrice)}
-                        disabled={locked}
-                        onChange={(v) => patch({ b2bPrice: Number(v) || 0 })}
-                      />
-                      <FieldStat
-                        label="B2C price"
-                        value={String(detail.b2cPrice)}
-                        disabled={locked}
-                        onChange={(v) => patch({ b2cPrice: Number(v) || 0 })}
-                      />
-                      <div className="sm:col-span-2">
-                        <FieldStat
-                          label="Suppliers"
-                          value={suppliersText}
-                          disabled={locked}
-                          placeholder="Comma separated"
-                          onChange={(v) =>
-                            patch({
-                              suppliers: JSON.stringify(
-                                v
-                                  .split(",")
-                                  .map((s) => s.trim())
-                                  .filter(Boolean),
-                              ),
-                            })
-                          }
+                      <div className="grid min-w-0 flex-1 grid-cols-3 grid-rows-2 gap-x-6 gap-y-8 px-3 py-[3px]">
+                        <Stat
+                          label="Avg. cost"
+                          value={formatMoney(detail.avgCost)}
+                          center
+                        />
+                        <Stat
+                          label="CIF cost"
+                          value={formatMoney(detail.cifCost)}
+                          center
+                        />
+                        <Stat
+                          label="FOB cost"
+                          value={formatMoney(detail.fobCost)}
+                          center
+                        />
+                        <Stat
+                          label="Last sold"
+                          value={formatMoney(detail.lastSoldPrice)}
+                          center
+                        />
+                        <PriceStat
+                          label="B2B price"
+                          value={detail.b2bPrice}
+                          active={isOpen("b2bPrice")}
+                          onActivate={() => openField("b2bPrice")}
+                          onDone={closeField}
+                          onChange={(v) => patch({ b2bPrice: v })}
+                        />
+                        <PriceStat
+                          label="B2C price"
+                          value={detail.b2cPrice}
+                          active={isOpen("b2cPrice")}
+                          onActivate={() => openField("b2cPrice")}
+                          onDone={closeField}
+                          onChange={(v) => patch({ b2cPrice: v })}
                         />
                       </div>
                     </div>
 
-                    <Section title="Specs">
-                      <DimensionRow
-                        label="Product"
-                        locked={locked}
-                        values={[detail.width, detail.length, detail.height]}
-                        onChange={([w, d, h]) =>
-                          patch({ width: w, length: d, height: h })
-                        }
-                      />
-                      <DimensionRow
-                        label="Package"
-                        locked={locked}
-                        values={[
-                          detail.packageWidth,
-                          detail.packageLength,
-                          detail.packageHeight,
-                        ]}
-                        onChange={([w, d, h]) =>
-                          patch({
-                            packageWidth: w,
-                            packageLength: d,
-                            packageHeight: h,
-                          })
-                        }
-                      />
-                      <DimensionRow
-                        label="Cutout"
-                        locked={locked}
-                        values={[
-                          detail.cutoutWidth,
-                          detail.cutoutLength,
-                          detail.cutoutHeight,
-                        ]}
-                        onChange={([w, d, h]) =>
-                          patch({
-                            cutoutWidth: w,
-                            cutoutLength: d,
-                            cutoutHeight: h,
-                          })
-                        }
-                      />
-                      <div className="grid grid-cols-[72px_1fr] items-center gap-3">
-                        <Label>Weight</Label>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            className="w-24 tabular-nums"
-                            inputMode="decimal"
-                            value={detail.weight ?? ""}
-                            disabled={locked}
-                            onChange={(e) =>
-                              patch({ weight: numOrNull(e.target.value) })
-                            }
-                          />
-                          <span className="text-xs text-gray-500 tabular-nums">
-                            kg
-                            {detail.weight
-                              ? ` · ${(detail.weight * LBS_PER_KG).toFixed(1)} lbs`
-                              : ""}
-                          </span>
-                        </div>
-                      </div>
-                    </Section>
-
-                    <Section title="Notes">
+                    <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
+                      <Eyebrow>Notes</Eyebrow>
                       <Textarea
-                        rows={3}
+                        className="h-[78px] min-h-[78px] resize-none px-3 py-2 text-[13px] leading-5"
                         value={detail.notes ?? ""}
-                        placeholder="Always editable, no unlock needed"
+                        placeholder="Notes"
                         onChange={(e) => patch({ notes: e.target.value })}
                       />
-                    </Section>
+                    </div>
+
+                    <div className="border-t border-gray-150 pt-4">
+                      <Eyebrow>Suppliers</Eyebrow>
+                      {suppliers.length ? (
+                        <div className="mt-2 flex flex-wrap gap-3">
+                          {suppliers.map((s, i) => {
+                            const tone =
+                              SUPPLIER_BADGE[i % SUPPLIER_BADGE.length];
+                            return (
+                              <span
+                                key={`${s}-${i}`}
+                                className="group/badge inline-flex max-w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] leading-5"
+                                style={{
+                                  backgroundColor: tone.bg,
+                                  color: tone.fg,
+                                }}
+                              >
+                                <span className="truncate">{s}</span>
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${s}`}
+                                  className="-mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity group-hover/badge:opacity-100 hover:bg-black/10"
+                                  onClick={() =>
+                                    patch({
+                                      suppliers: serializeSuppliers(
+                                        suppliers.filter((_, j) => j !== i),
+                                      ),
+                                    })
+                                  }
+                                >
+                                  <X className="size-3" />
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-gray-500">
+                          Suppliers are picked up from the imports this product
+                          arrives on.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="flex min-h-0 flex-1 flex-col p-6">
+                <div className="flex min-h-0 flex-1 flex-col pb-3">
                   <DataGrid
                     rows={detail.transactions}
                     getRowId={(t) => t.id}
@@ -675,13 +874,13 @@ export function ProductDialog({
                 </div>
               )}
 
-              <DialogFooter className="mx-0 mb-0 shrink-0 px-6 sm:justify-between">
+              <DialogFooter className="mx-0 mb-0 mt-0 h-8 shrink-0 border-0 bg-transparent px-0 py-0 sm:h-8 sm:justify-between">
                 <ErrorText>{error}</ErrorText>
-                <div className="flex gap-2">
-                  <Button variant="secondary" onClick={onClose}>
+                <div className="flex h-8 items-center gap-2">
+                  <Button variant="secondary" className="h-8" onClick={onClose}>
                     Cancel
                   </Button>
-                  <Button disabled={saving} onClick={() => void save()}>
+                  <Button className="h-8" disabled={saving} onClick={() => void save()}>
                     {saving
                       ? "Saving…"
                       : isCreate
@@ -690,6 +889,7 @@ export function ProductDialog({
                   </Button>
                 </div>
               </DialogFooter>
+              </div>
             </>
           )}
         </DialogContent>
@@ -885,11 +1085,11 @@ function ErrorText({ children }: { children: React.ReactNode }) {
 
 function ProductSkeleton() {
   return (
-    <div className="flex min-h-0 flex-1 animate-pulse flex-col gap-8 p-6">
-      <div className="h-6 w-32 rounded-sm bg-gray-100" />
-      <div className="grid flex-1 gap-8 md:grid-cols-[300px_1fr]">
-        <div className="aspect-square w-full rounded-xl bg-gray-100" />
-        <div className="grid content-start gap-4">
+    <div className="flex min-h-0 flex-1 animate-pulse flex-col gap-8">
+      <div className="h-8 w-52 rounded-md bg-gray-100" />
+      <div className="flex flex-1 gap-8">
+        <div className="aspect-[480/382] w-[46%] rounded-[10px] bg-gray-100" />
+        <div className="grid flex-1 content-start gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="h-8 w-full rounded-sm bg-gray-100" />
           ))}
@@ -899,80 +1099,266 @@ function ProductSkeleton() {
   );
 }
 
-function FieldRow({
-  label,
-  action,
+/**
+ * Read and edit share one box. The border is always there (transparent until
+ * editing) so opening a field never resizes it. Hover gray is the whole slot;
+ * the input inside has no chrome of its own.
+ */
+const SLOT =
+  "box-border flex h-[27px] items-center gap-1 overflow-hidden rounded-md border px-1.5 text-sm leading-none text-gray-900";
+
+function BareField({
+  className,
+  ...props
+}: React.ComponentProps<"input">) {
+  return (
+    <input
+      {...props}
+      style={{ boxShadow: "none" }}
+      className={cn(
+        "h-full w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 text-inherit outline-none ring-0",
+        className,
+      )}
+    />
+  );
+}
+
+function EditSlot({
+  active,
+  onActivate,
+  onDone,
+  read,
+  className,
   children,
 }: {
-  label: string;
-  action?: React.ReactNode;
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+  read: React.ReactNode;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid gap-1">
-      <Label>{label}</Label>
-      <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">{children}</div>
-        {action}
-      </div>
+    <div
+      role={active ? undefined : "button"}
+      tabIndex={active ? undefined : 0}
+      title={active ? undefined : "Double-click to edit"}
+      onDoubleClick={active ? undefined : onActivate}
+      onBlur={
+        active
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget)) onDone();
+            }
+          : undefined
+      }
+      onKeyDown={(e) => {
+        if (active && (e.key === "Enter" || e.key === "Escape")) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDone();
+          return;
+        }
+        if (!active && e.key === "Enter") {
+          e.preventDefault();
+          onActivate();
+        }
+      }}
+      className={cn(
+        SLOT,
+        "shadow-none focus-visible:shadow-none",
+        active
+          ? "border-gray-400 bg-surface"
+          : "cursor-text border-transparent outline-none select-none hover:bg-gray-100 focus-visible:bg-gray-100",
+        className,
+      )}
+    >
+      {active ? children : read}
     </div>
   );
 }
 
-function Section({
-  title,
+function FieldLabel({
   children,
+  className,
 }: {
-  title: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="grid gap-3 border-t border-gray-150 pt-4">
-      <Eyebrow>{title}</Eyebrow>
+    <div
+      className={cn("text-2xs font-medium text-gray-600 select-none", className)}
+    >
       {children}
     </div>
   );
 }
 
-function DimensionRow({
+const DIM_AXES = ["W", "D", "H"] as const;
+const UNITS = ["in", "cm"] as const;
+type Unit = (typeof UNITS)[number];
+
+/** The unit is a choice between two values, so editing it opens a list rather
+ *  than a text box. The closed box matches the open trigger, so picking a unit
+ *  never moves the numbers beside it. */
+function UnitSelect({
+  value,
+  onChange,
+  active,
+  onActivate,
+  onDone,
+}: {
+  value: Unit;
+  onChange: (v: Unit) => void;
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+}) {
+  if (!active) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        title="Double-click to change unit"
+        onDoubleClick={onActivate}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onActivate();
+          }
+        }}
+        className={cn(
+          SLOT,
+          "w-[30px] cursor-text justify-center px-1.5 text-xs text-gray-500 outline-none select-none hover:bg-gray-100 focus-visible:bg-gray-100",
+        )}
+      >
+        {value}
+      </div>
+    );
+  }
+  return (
+    <div className={cn(SLOT, "w-[30px] justify-center border-gray-400 px-1")}>
+      <select
+        autoFocus
+        value={value}
+        aria-label="Dimension unit"
+        onChange={(e) => onChange(e.target.value as Unit)}
+        onBlur={onDone}
+        style={{ boxShadow: "none" }}
+        className="h-full w-full border-0 bg-transparent p-0 text-center text-xs text-gray-900 outline-none"
+      >
+        {UNITS.map((u) => (
+          <option key={u} value={u}>
+            {u}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** One W/D/H chip: hover/edit the number only; letter stays glued in read state. */
+function DimAxis({
+  value,
+  axis,
+  active,
+  onActivate,
+  onDone,
+  onChange,
+  ariaLabel,
+}: {
+  value: number | null;
+  axis: (typeof DIM_AXES)[number];
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+  onChange: (v: number | null) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <EditSlot
+      active={active}
+      onActivate={onActivate}
+      onDone={onDone}
+      className="w-[45px] justify-center px-1.5 text-xs"
+      read={
+        <span className="truncate">
+          <span className="font-mono tabular-nums">{value ?? "—"}</span>
+          {axis}
+        </span>
+      }
+    >
+      <BareField
+        autoFocus
+        className="text-center font-mono text-xs tabular-nums"
+        inputMode="decimal"
+        aria-label={ariaLabel}
+        value={value ?? ""}
+        onChange={(e) => onChange(numOrNull(e.target.value))}
+      />
+    </EditSlot>
+  );
+}
+
+function SpecRow({
   label,
   values,
-  locked,
+  editingField,
+  fieldPrefix,
+  onOpen,
+  onDone,
   onChange,
+  isCreate,
+  unit,
+  onUnitChange,
 }: {
   label: string;
   values: [number | null, number | null, number | null];
-  locked?: boolean;
+  editingField: string | null;
+  fieldPrefix: string;
+  onOpen: (field: string) => void;
+  onDone: () => void;
   onChange: (v: [number | null, number | null, number | null]) => void;
+  isCreate: boolean;
+  unit: Unit;
+  onUnitChange: (v: Unit) => void;
 }) {
-  const axes = ["W", "D", "H"];
   return (
-    <div className="grid grid-cols-[72px_1fr] items-center gap-3">
-      <Label>{label}</Label>
-      <div className="flex items-center gap-1.5">
-        {values.map((v, i) => (
-          <div key={axes[i]} className="flex items-center gap-1.5">
-            {i > 0 && <span className="text-xs text-gray-400">×</span>}
-            <Input
-              className="w-20 tabular-nums"
-              inputMode="decimal"
-              placeholder={axes[i]}
-              aria-label={`${label} ${axes[i]}`}
-              value={v ?? ""}
-              disabled={locked}
-              onChange={(e) => {
-                const next = [...values] as [
-                  number | null,
-                  number | null,
-                  number | null,
-                ];
-                next[i] = numOrNull(e.target.value);
-                onChange(next);
-              }}
-            />
-          </div>
-        ))}
-        <span className="ml-1 text-xs text-gray-500">cm</span>
+    <div className="flex items-center gap-[3px]">
+      <FieldLabel className="shrink-0">{label}</FieldLabel>
+      <div className="flex min-w-0 items-center gap-[3px] text-xs text-gray-900">
+        {DIM_AXES.map((axis, i) => {
+          const field = `${fieldPrefix}-${axis}`;
+          const active = isCreate || editingField === field;
+          return (
+            <div key={axis} className="flex items-center gap-[3px]">
+              {i > 0 && <span className="text-gray-400">×</span>}
+              <DimAxis
+                value={values[i]}
+                axis={axis}
+                active={active}
+                onActivate={() => onOpen(field)}
+                onDone={onDone}
+                ariaLabel={`${label} ${axis}`}
+                onChange={(v) => {
+                  const next = [...values] as [
+                    number | null,
+                    number | null,
+                    number | null,
+                  ];
+                  next[i] = v;
+                  onChange(next);
+                }}
+              />
+            </div>
+          );
+        })}
+        <UnitSelect
+          value={unit}
+          onChange={onUnitChange}
+          active={editingField === `${fieldPrefix}-unit`}
+          onActivate={() => onOpen(`${fieldPrefix}-unit`)}
+          onDone={onDone}
+        />
       </div>
     </div>
   );
@@ -982,57 +1368,77 @@ function Stat({
   label,
   value,
   onClick,
+  center,
 }: {
   label: string;
   value: string;
   onClick?: () => void;
+  center?: boolean;
 }) {
   const content = (
     <>
       <Eyebrow>{label}</Eyebrow>
-      <div className="mt-1 flex items-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900">
+      <div
+        className={cn(
+          "mt-0.5 flex items-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900",
+          center && "justify-center",
+        )}
+      >
         {value}
         {onClick && <Pencil className="size-3 text-gray-500" />}
       </div>
     </>
   );
-  if (!onClick) return <div className="min-w-0">{content}</div>;
+  const box = cn(
+    "min-w-0 rounded-md px-1.5 py-0.5",
+    center && "text-center",
+  );
+  if (!onClick) return <div className={box}>{content}</div>;
   return (
     <button
       type="button"
       onClick={onClick}
-      className={cn(
-        "-mx-2 -my-1 min-w-0 rounded-md px-2 py-1 text-left outline-none hover:bg-gray-100",
-      )}
+      className={cn(box, "w-full text-left outline-none hover:bg-gray-100")}
     >
       {content}
     </button>
   );
 }
 
-function FieldStat({
+function PriceStat({
   label,
   value,
+  active,
+  onActivate,
+  onDone,
   onChange,
-  disabled,
-  placeholder,
 }: {
   label: string;
-  value: string;
-  onChange: (v: string) => void;
-  disabled?: boolean;
-  placeholder?: string;
+  value: number;
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+  onChange: (v: number) => void;
 }) {
   return (
-    <div className="grid min-w-0 gap-1">
+    <div className="min-w-0 text-center">
       <Eyebrow>{label}</Eyebrow>
-      <Input
-        className="tabular-nums"
-        value={value}
-        disabled={disabled}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      <EditSlot
+        active={active}
+        onActivate={onActivate}
+        onDone={onDone}
+        className="mt-0.5 h-[30px] w-full min-w-0 justify-center px-[3px] text-center font-mono text-md font-medium tabular-nums"
+        read={formatMoney(value)}
+      >
+        <BareField
+          autoFocus
+          className="text-center text-md font-medium tabular-nums"
+          inputMode="decimal"
+          aria-label={label}
+          value={String(value)}
+          onChange={(e) => onChange(Number(e.target.value) || 0)}
+        />
+      </EditSlot>
     </div>
   );
 }

@@ -117,7 +117,7 @@ async function main() {
 
   const grill = await prisma.product.create({
     data: {
-      code: "034CDO",
+      code: "034",
       name: "Complete Name of the Product just for illustration",
       sku: "SKU-NEW",
       amazonUrl: "https://www.amazon.com",
@@ -141,7 +141,7 @@ async function main() {
   });
   const hood = await prisma.product.create({
     data: {
-      code: "CDO34",
+      code: "CDO",
       name: "Outdoor Grill Hood 36in",
       sku: "HOOD-36",
       b2bPrice: 620,
@@ -157,7 +157,7 @@ async function main() {
   });
   const burner = await prisma.product.create({
     data: {
-      code: "1239",
+      code: "123",
       name: "Side Burner Module",
       sku: "SBM-01",
       b2bPrice: 180,

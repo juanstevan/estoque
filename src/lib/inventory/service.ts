@@ -124,8 +124,15 @@ export async function appendTransaction(
   return txn;
 }
 
-function nextCode() {
-  return `CDO${Date.now().toString(36).toUpperCase().slice(-5)}`;
+/** Codes are the three characters people read off a shelf, so they count up in
+ *  base 36 — 001 through ZZZ — rather than encoding a timestamp. */
+async function nextCode(tx: Tx) {
+  const rows = await tx.product.findMany({ select: { code: true } });
+  const highest = rows.reduce((max, { code }) => {
+    if (!/^[0-9A-Z]{3}$/.test(code)) return max;
+    return Math.max(max, Number.parseInt(code, 36));
+  }, 0);
+  return (highest + 1).toString(36).toUpperCase().padStart(3, "0");
 }
 
 export async function createProduct(input: {
@@ -160,7 +167,8 @@ export async function createProduct(input: {
       data: {
         name: input.name,
         sku: input.sku,
-        code: input.code?.trim() || nextCode(),
+        code:
+          input.code?.trim().toUpperCase().slice(0, 3) || (await nextCode(tx)),
         secondarySku: input.secondarySku || null,
         ean: input.ean || null,
         amazonUrl: input.amazonUrl || null,
@@ -206,7 +214,11 @@ export async function updateProduct(
   id: string,
   input: Prisma.ProductUpdateInput,
 ) {
-  return prisma.product.update({ where: { id }, data: input });
+  const code =
+    typeof input.code === "string"
+      ? input.code.trim().toUpperCase().slice(0, 3)
+      : input.code;
+  return prisma.product.update({ where: { id }, data: { ...input, code } });
 }
 
 export async function listProducts(search?: string) {
@@ -471,7 +483,7 @@ export async function confirmImportation(importationId: string) {
           data: {
             name: line.draftName?.trim() || sku,
             sku,
-            code: nextCode(),
+            code: await nextCode(tx),
           },
         });
         productId = created.id;
