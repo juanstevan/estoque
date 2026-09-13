@@ -58,12 +58,11 @@
   --info-text: #2239a0;
 
   --scrim: rgb(13 16 21 / 0.32);
-  --focus-ring: 0 0 0 2px var(--gray-0), 0 0 0 4px var(--blue-500);
 
   /* ---------- shadcn semantic mapping ----------
      `--primary` is the one accent. `--accent` is the neutral hover fill that
      shadcn primitives use for menu/row hover, not the brand blue. */
-  --background: var(--gray-50);
+  --background: var(--gray-0);
   --foreground: var(--gray-900);
   --card: var(--gray-0);
   --card-foreground: var(--gray-900);
@@ -102,7 +101,7 @@
 
 @theme {
   /* Surfaces named by role, for places where the shadcn names read wrong. */
-  --color-canvas: #f7f8fa;
+  --color-canvas: #ffffff;
   --color-surface: #ffffff;
   --color-sunken: #f0f2f5;
   --color-selected: #eef3ff;
@@ -234,6 +233,10 @@
   --radius-4xl: 10px;
 }
 
+@utility border-1 {
+  border-width: 1px;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -265,11 +268,8 @@
   }
 }
 
-/* One focus treatment everywhere. */
 :focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
-  border-radius: var(--radius-sm);
 }
 
 ::selection {

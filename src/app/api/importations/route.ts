@@ -1,6 +1,6 @@
 import { ImportKind, ImportStatus } from "@prisma/client";
 import {
-  confirmImportation,
+  deleteImportation,
   listImportations,
   setImportStatus,
   upsertImportation,
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{
       id?: string;
-      action?: "save" | "status";
+      action?: "save" | "status" | "delete";
       reference?: string;
       kind?: ImportKind;
       status?: ImportStatus;
@@ -38,10 +38,12 @@ export async function POST(req: Request) {
     }>(req);
 
     if (body.action === "status" && body.id && body.status) {
-      if (body.status === "COMPLETED") {
-        return jsonOk(await confirmImportation(body.id));
-      }
       return jsonOk(await setImportStatus(body.id, body.status));
+    }
+
+    if (body.action === "delete" && body.id) {
+      await deleteImportation(body.id);
+      return jsonOk({ ok: true });
     }
 
     if (!body.lines?.length) return jsonError("Add at least one product line");

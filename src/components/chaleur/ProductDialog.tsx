@@ -7,6 +7,7 @@ import {
   ImagePlus,
   Pencil,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -172,7 +173,7 @@ export function ProductDialog({
   mode?: "edit" | "create";
   reasons: string[];
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (created?: { id: string; code: string; name: string }) => void;
 }) {
   const isCreate = mode === "create";
   const [tab, setTab] = useState("info");
@@ -268,8 +269,10 @@ export function ProductDialog({
       return;
     }
     setEditingField(null);
-    onSaved();
-    if (isCreate) onClose();
+    onSaved(
+      data?.id ? { id: data.id, code: data.code, name: data.name } : undefined,
+    );
+    onClose();
   }
 
   if (!open) return null;
@@ -288,7 +291,8 @@ export function ProductDialog({
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
           showCloseButton={false}
-          className="flex w-auto max-w-none flex-col items-center gap-0 border-0 bg-transparent p-0 shadow-none sm:max-w-none"
+          className="flex w-auto max-w-none flex-col items-center gap-0 overflow-visible border-0 bg-transparent p-0 shadow-none outline-none focus-visible:shadow-none sm:max-w-none"
+          style={{ boxShadow: "none" }}
         >
           <DialogTitle className="sr-only">
             {isCreate ? "Create product" : "Product card"}
@@ -300,8 +304,8 @@ export function ProductDialog({
             </div>
           ) : (
             <>
-              {/* Tabs live on the backdrop, above the white card. */}
-              <div className="flex h-[54px] w-[1080px] shrink-0 items-center justify-center bg-transparent">
+              {/* Tabs sit above the card so vertical centering uses the card only. */}
+              <div className="absolute bottom-full left-0 flex h-[54px] w-[1080px] items-center justify-center">
                 {isCreate ? (
                   <div className="w-full text-md font-semibold text-gray-900">
                     Create product
@@ -337,11 +341,7 @@ export function ProductDialog({
               {tab === "info" ? (
                 <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
                   <div className="flex w-[520px] min-w-0 shrink-0 flex-col gap-3">
-                    <button
-                      type="button"
-                      onClick={() => fileRef.current?.click()}
-                      className="group relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken"
-                    >
+                    <div className="group relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken">
                       {hasImage && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -351,11 +351,27 @@ export function ProductDialog({
                           onError={() => patch({ imageUrl: null })}
                         />
                       )}
-                      <span className="absolute inset-0 flex items-center justify-center gap-1.5 bg-surface/85 text-xs font-medium text-gray-700 opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100">
-                        <ImagePlus className="size-3.5" />
-                        {hasImage ? "Change image" : "Upload image"}
-                      </span>
-                    </button>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/85 text-xs font-medium opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100">
+                        <button
+                          type="button"
+                          className="flex items-center gap-1.5 text-gray-700"
+                          onClick={() => fileRef.current?.click()}
+                        >
+                          <ImagePlus className="size-3.5" />
+                          {hasImage ? "Change image" : "Upload image"}
+                        </button>
+                        {hasImage && (
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-danger-text"
+                            onClick={() => patch({ imageUrl: null })}
+                          >
+                            <Trash2 className="size-3.5" />
+                            Delete image
+                          </button>
+                        )}
+                      </div>
+                    </div>
                     <input
                       ref={fileRef}
                       type="file"
@@ -421,19 +437,19 @@ export function ProductDialog({
                     </div>
 
                     <div className="flex items-center justify-between gap-3">
-                      {isOpen("amazonUrl") ? (
+                      {editingField === "amazonUrl" ? (
                         <div
                           className={cn(SLOT, "w-full border-gray-400")}
                           onBlur={(e) => {
                             if (!e.currentTarget.contains(e.relatedTarget)) {
-                              closeField();
+                              setEditingField(null);
                             }
                           }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === "Escape") {
                               e.preventDefault();
                               e.stopPropagation();
-                              closeField();
+                              setEditingField(null);
                             }
                           }}
                         >

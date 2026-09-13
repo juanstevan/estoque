@@ -1,26 +1,138 @@
 "use client";
 
-import { useState } from "react";
-import { Download, Pencil, Plus, Search, Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Columns3, Download, Pencil, Plus, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
+  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { DataGrid } from "@/components/chaleur/DataGrid";
+import { DataGrid, type GridCol } from "@/components/chaleur/DataGrid";
 import {
   ProductDialog,
   type ProductRow,
 } from "@/components/chaleur/ProductDialog";
 import { formatMoney, formatQty } from "@/lib/format";
+
+const COLUMNS_KEY = "chaleur.storage.columns";
+
+const LOCKED = new Set(["code", "name"]);
+const DEFAULT_VISIBLE = [
+  "code",
+  "name",
+  "sku",
+  "physicalQty",
+  "avgCost",
+  "inventoryValue",
+  "b2bPrice",
+  "b2cPrice",
+];
+
+const money = (v: number) => formatMoney(v);
+const qty = (v: number) => `${formatQty(v)}un`;
+const value = { numeric: true, align: "center" as const };
+
+const ALL_COLUMNS: GridCol<ProductRow>[] = [
+  { key: "code", label: "ID", mono: true, width: "96px" },
+  {
+    key: "name",
+    label: "Name",
+    render: (p) => (
+      <span className="font-medium text-gray-900" title={p.name}>
+        {p.name}
+      </span>
+    ),
+  },
+  { key: "sku", label: "SKU", mono: true, width: "120px" },
+  {
+    key: "physicalQty",
+    label: "Qnt",
+    width: "96px",
+    ...value,
+    render: (p) => qty(p.physicalQty),
+  },
+  {
+    key: "availableQty",
+    label: "Available",
+    width: "108px",
+    ...value,
+    render: (p) => qty(p.availableQty),
+  },
+  {
+    key: "reservedQty",
+    label: "Reserved",
+    width: "108px",
+    ...value,
+    render: (p) => qty(p.reservedQty),
+  },
+  {
+    key: "avgCost",
+    label: "Cost",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.avgCost),
+  },
+  {
+    key: "cifCost",
+    label: "CIF cost",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.cifCost),
+  },
+  {
+    key: "fobCost",
+    label: "FOB cost",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.fobCost),
+  },
+  {
+    key: "inventoryValue",
+    label: "Total",
+    width: "128px",
+    ...value,
+    render: (p) => money(p.inventoryValue),
+  },
+  {
+    key: "lastSoldPrice",
+    label: "Last sold",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.lastSoldPrice),
+  },
+  {
+    key: "b2bPrice",
+    label: "B2B price",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.b2bPrice),
+  },
+  {
+    key: "b2cPrice",
+    label: "B2C price",
+    width: "112px",
+    ...value,
+    render: (p) => money(p.b2cPrice),
+  },
+  {
+    key: "weight",
+    label: "Weight",
+    width: "108px",
+    align: "center",
+    render: (p) => (p.weight == null ? "—" : `${p.weight} kg`),
+  },
+];
 
 export function StorageTab({
   products,
@@ -37,6 +149,45 @@ export function StorageTab({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(COLUMNS_KEY);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.includes("code")) return;
+      setVisibleKeys(parsed.map(String));
+    } catch {
+      /* keep defaults */
+    }
+  }, []);
+
+  function toggleColumn(key: string) {
+    if (LOCKED.has(key)) return;
+    setVisibleKeys((keys) => {
+      const next = keys.includes(key)
+        ? keys.filter((k) => k !== key)
+        : [...keys, key];
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  const columns = useMemo(() => {
+    const shown = new Set(visibleKeys);
+    const cols = ALL_COLUMNS.filter((c) => shown.has(String(c.key)));
+    cols.push({
+      key: "edit",
+      label: "",
+      plain: true,
+      width: "44px",
+      render: () => (
+        <Pencil className="size-3.5 text-gray-500 opacity-0 transition-opacity duration-[80ms] group-hover:opacity-100" />
+      ),
+    });
+    return cols;
+  }, [visibleKeys]);
 
   const visible = products.filter((p) => {
     const q = search.toLowerCase();
@@ -58,6 +209,35 @@ export function StorageTab({
             onChange={(e) => onSearch(e.target.value)}
           />
         </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button size="icon" variant="secondary" aria-label="Columns" />
+            }
+          >
+            <Columns3 />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-48">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Columns</DropdownMenuLabel>
+              {ALL_COLUMNS.map((col) => {
+                const key = String(col.key);
+                const locked = LOCKED.has(key);
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={key}
+                    checked={visibleKeys.includes(key)}
+                    disabled={locked}
+                    onCheckedChange={() => toggleColumn(key)}
+                  >
+                    {col.label}
+                  </DropdownMenuCheckboxItem>
+                );
+              })}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <Tooltip>
           <TooltipTrigger
@@ -114,9 +294,7 @@ export function StorageTab({
         getRowId={(p) => p.id}
         onRowClick={(p) => setSelected(p.id)}
         selectedId={selected}
-        empty={
-          search ? `No matches for “${search}”` : "No products yet"
-        }
+        empty={search ? `No matches for “${search}”` : "No products yet"}
         emptyHint={
           search
             ? "Try a shorter search, or check the ID and SKU."
@@ -127,62 +305,7 @@ export function StorageTab({
             <Button onClick={() => setCreating(true)}>Create product</Button>
           )
         }
-        columns={[
-          { key: "code", label: "ID", mono: true, width: "128px" },
-          {
-            key: "name",
-            label: "Name",
-            render: (p) => (
-              <span className="font-medium text-gray-900" title={p.name}>
-                {p.name}
-              </span>
-            ),
-          },
-          {
-            key: "physicalQty",
-            label: "Qnt",
-            numeric: true,
-            width: "104px",
-            render: (p) => `${formatQty(p.physicalQty)}un`,
-          },
-          {
-            key: "avgCost",
-            label: "Cost",
-            numeric: true,
-            width: "128px",
-            render: (p) => formatMoney(p.avgCost),
-          },
-          {
-            key: "inventoryValue",
-            label: "Total",
-            numeric: true,
-            width: "144px",
-            render: (p) => formatMoney(p.inventoryValue),
-          },
-          {
-            key: "b2bPrice",
-            label: "B2B price",
-            numeric: true,
-            width: "128px",
-            render: (p) => formatMoney(p.b2bPrice),
-          },
-          {
-            key: "b2cPrice",
-            label: "B2C price",
-            numeric: true,
-            width: "128px",
-            render: (p) => formatMoney(p.b2cPrice),
-          },
-          {
-            key: "edit",
-            label: "",
-            plain: true,
-            width: "44px",
-            render: () => (
-              <Pencil className="size-3.5 text-gray-500 opacity-0 transition-opacity duration-[80ms] group-hover:opacity-100" />
-            ),
-          },
-        ]}
+        columns={columns}
       />
 
       <ProductDialog

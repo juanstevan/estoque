@@ -13,6 +13,7 @@ export async function POST(req: Request) {
       companyName?: string;
       logoUrl?: string | null;
       adjustmentReasons?: string[];
+      importColumns?: unknown;
       suppliers?: string[];
     }>(req);
     const settings = await prisma.appSettings.upsert({
@@ -23,6 +24,10 @@ export async function POST(req: Request) {
         adjustmentReasons: body.adjustmentReasons
           ? JSON.stringify(body.adjustmentReasons)
           : undefined,
+        importColumns:
+          body.importColumns !== undefined
+            ? JSON.stringify(body.importColumns)
+            : undefined,
       },
       create: {
         id: "default",

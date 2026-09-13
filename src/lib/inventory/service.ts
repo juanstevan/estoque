@@ -437,17 +437,68 @@ export async function upsertImportation(input: {
 
 export async function setImportStatus(id: string, status: ImportStatus) {
   const current = await prisma.importation.findUniqueOrThrow({ where: { id } });
-  if (current.status === ImportStatus.COMPLETED) {
-    throw new Error("Importation already completed");
-  }
   if (status === ImportStatus.COMPLETED) {
+    if (current.status === ImportStatus.COMPLETED) {
+      return prisma.importation.findUniqueOrThrow({
+        where: { id },
+        include: { lines: { include: { product: true } } },
+      });
+    }
+    if (current.receivedAt) {
+      return prisma.importation.update({
+        where: { id },
+        data: { status: ImportStatus.COMPLETED },
+        include: { lines: { include: { product: true } } },
+      });
+    }
     return confirmImportation(id);
+  }
+  if (current.status === ImportStatus.COMPLETED) {
+    return reopenImportation(id, status);
   }
   return prisma.importation.update({
     where: { id },
     data: { status },
     include: { lines: { include: { product: true } } },
   });
+}
+
+async function reopenImportation(id: string, status: ImportStatus) {
+  return prisma.$transaction(async (tx) => {
+    const importation = await tx.importation.findUniqueOrThrow({
+      where: { id },
+    });
+    const receipts = await tx.inventoryTransaction.findMany({
+      where: {
+        type: TransactionType.IMPORTATION,
+        reference: importation.reference,
+      },
+    });
+    for (const receipt of receipts) {
+      await appendTransaction(tx, {
+        productId: receipt.productId,
+        type: TransactionType.CORRECTION,
+        quantity: -receipt.quantity,
+        unitCost: receipt.unitCost,
+        reference: importation.reference,
+        notes: `Reopen ${importation.reference}`,
+        affectsPhysical: true,
+      });
+    }
+    return tx.importation.update({
+      where: { id },
+      data: { status, receivedAt: null },
+      include: { lines: { include: { product: true } } },
+    });
+  });
+}
+
+export async function deleteImportation(id: string) {
+  const current = await prisma.importation.findUniqueOrThrow({ where: { id } });
+  if (current.status === ImportStatus.COMPLETED) {
+    throw new Error("Completed importations cannot be deleted");
+  }
+  await prisma.importation.delete({ where: { id } });
 }
 
 export async function confirmImportation(importationId: string) {

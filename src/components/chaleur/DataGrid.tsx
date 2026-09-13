@@ -24,6 +24,8 @@ export type GridCol<T> = {
   /** Decorative column (row actions) — no header menu. */
   plain?: boolean;
   width?: string;
+  /** Header + cells. Numeric columns default to end if omitted. */
+  align?: "start" | "center" | "end";
 };
 
 type Sort = { key: string; dir: "asc" | "desc" };
@@ -60,6 +62,7 @@ export function DataGrid<T extends object>({
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [scrolled, setScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const dragged = useRef(false);
 
   const filtered = useMemo(
     () =>
@@ -124,7 +127,8 @@ export function DataGrid<T extends object>({
                     key={key}
                     style={col.width ? { width: col.width } : undefined}
                     className={cn(
-                      "h-9 border-b border-border bg-sunken text-left align-middle text-xs font-medium text-gray-600",
+                      "h-9 border-b border-border bg-sunken align-middle text-xs font-medium text-gray-600",
+                      col.align === "center" ? "text-center" : "text-left",
                       colIndex === 0 ? "px-4" : "px-3",
                       scrolled && "shadow-xs",
                     )}
@@ -136,7 +140,9 @@ export function DataGrid<T extends object>({
                         <PopoverTrigger
                           className={cn(
                             "group/th -mx-1 flex h-7 w-full items-center gap-1.5 rounded-sm px-1 outline-none hover:text-gray-900 data-popup-open:text-gray-900",
-                            col.numeric && "justify-end",
+                            col.align === "center"
+                              ? "justify-center"
+                              : col.numeric && "justify-end",
                             (isSorted || isFiltered) && "text-gray-900",
                           )}
                         >
@@ -242,10 +248,24 @@ export function DataGrid<T extends object>({
                         ? "bg-selected"
                         : onRowClick && "hover:bg-gray-50",
                     )}
-                    onClick={() => onRowClick?.(row)}
+                    onClick={() => {
+                      if (dragged.current) {
+                        dragged.current = false;
+                        return;
+                      }
+                      onRowClick?.(row);
+                    }}
                     draggable={draggable}
                     onDragStart={(e) => {
-                      if (draggable) e.dataTransfer.setData("text/plain", id);
+                      if (!draggable) return;
+                      dragged.current = true;
+                      e.dataTransfer.setData("text/plain", id);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragEnd={() => {
+                      window.setTimeout(() => {
+                        dragged.current = false;
+                      }, 0);
                     }}
                   >
                     {columns.map((col, colIndex) => (
@@ -259,7 +279,10 @@ export function DataGrid<T extends object>({
                           colIndex === 0 &&
                             isSelected &&
                             "shadow-[inset_2px_0_0_0_var(--blue-600)]",
-                          col.numeric && "text-right tabular-nums",
+                          col.align === "center"
+                            ? "text-center"
+                            : col.numeric && "text-right",
+                          col.numeric && "tabular-nums",
                           col.mono && "font-mono text-xs text-gray-600",
                         )}
                       >

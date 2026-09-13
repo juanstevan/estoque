@@ -139,6 +139,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
           <ImportsTab
             imports={imports}
             products={products}
+            reasons={reasons}
             onReload={() => void load()}
           />
         )}

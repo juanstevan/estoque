@@ -244,6 +244,15 @@ async function main() {
       productSubtotal: 9000,
       totalAdditionalCosts: 1200,
       coefficient: 1.133,
+      lines: {
+        create: {
+          productId: grill.id,
+          quantity: 10,
+          purchaseUnitCost: 900,
+          allocatedAdditionalCost: 120,
+          landedUnitCost: 1020,
+        },
+      },
     },
   });
 
@@ -258,6 +267,15 @@ async function main() {
       productSubtotal: 15000,
       totalAdditionalCosts: 2456.08,
       coefficient: 1.164,
+      lines: {
+        create: {
+          productId: grill.id,
+          quantity: 15,
+          purchaseUnitCost: 1000,
+          allocatedAdditionalCost: 163.74,
+          landedUnitCost: 1163.74,
+        },
+      },
     },
   });
 

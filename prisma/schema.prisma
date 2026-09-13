@@ -56,6 +56,7 @@ model AppSettings {
   logoUrl            String?
   adjustmentReasons  String @default("[\"Correction\",\"Adjust\",\"Return\",\"Warranty\"]")
   yearColors         String @default("{\"2024\":\"#22c55e\",\"2025\":\"#3b82f6\",\"2026\":\"#ef4444\",\"2027\":\"#a855f7\"}")
+  importColumns      String @default("[]")
 }
 
 model Supplier {

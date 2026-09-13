@@ -36,13 +36,48 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+export const KIND_COLOR = {
+  INTERNATIONAL: "#6B4FBB",
+  DOMESTIC: "#D96B1A",
+} as const;
+
+export function kindColor(kind: string) {
+  return kind === "INTERNATIONAL"
+    ? KIND_COLOR.INTERNATIONAL
+    : KIND_COLOR.DOMESTIC;
+}
+
 /** Domestic / international is a category, not a status — only the dot carries hue. */
 export function KindChip({ kind }: { kind: string }) {
   const international = kind === "INTERNATIONAL";
   return (
     <Badge variant="tag">
-      <BadgeDot className={international ? "bg-blue-600" : "bg-gray-400"} />
+      <BadgeDot style={{ background: kindColor(kind) }} />
       {international ? "International" : "Domestic"}
     </Badge>
+  );
+}
+
+/** Bookmark tab on the import dialog — hangs from the top edge. */
+export function KindBookmark({
+  kind,
+  onClick,
+}: {
+  kind: string;
+  onClick?: () => void;
+}) {
+  const international = kind === "INTERNATIONAL";
+  return (
+    <button
+      type="button"
+      aria-label={
+        international ? "Switch to domestic" : "Switch to international"
+      }
+      className="absolute top-0 right-16 flex w-[76px] shrink-0 items-center justify-center rounded-b-xl py-3 font-mono text-xs font-medium text-white"
+      style={{ background: kindColor(kind) }}
+      onClick={onClick}
+    >
+      {international ? "INT" : "DOM"}
+    </button>
   );
 }
