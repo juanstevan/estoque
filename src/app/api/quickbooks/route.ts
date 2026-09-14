@@ -1,30 +1,38 @@
-import {
-  describeQbFlow,
-  listQbSyncEvents,
-  storeQbSyncEvent,
-} from "@/lib/quickbooks/adapter";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
+import {
+  ingestInvoice,
+  ingestItems,
+} from "@/lib/quickbooks/ingest";
+import { listQbSyncEvents } from "@/lib/quickbooks/adapter";
+import { assertQbSecret } from "@/lib/quickbooks/secret";
 
-export async function GET() {
-  const events = await listQbSyncEvents();
-  return jsonOk({ flow: describeQbFlow(), events });
+export async function GET(req: Request) {
+  try {
+    assertQbSecret(req);
+    return jsonOk({ events: await listQbSyncEvents() });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "QuickBooks error";
+    return jsonError(message, message === "Unauthorized" ? 401 : 400);
+  }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await readJson<{ action?: string; payload?: unknown }>(req);
-    if (body.action === "ingest") {
-      const payload = body.payload as { docNumber?: string; id?: string };
-      const event = await storeQbSyncEvent({
-        eventType: "invoice.created",
-        externalId: payload?.docNumber ?? payload?.id,
-        payload: body.payload,
-        notes: "Stored (stub). Exit invoices are managed on the Exit tab.",
-      });
-      return jsonOk(event, { status: 201 });
+    assertQbSecret(req);
+    const body = await readJson<{
+      action?: "invoice" | "items" | "ingest";
+      invoice?: unknown;
+      items?: unknown;
+      payload?: unknown;
+    }>(req);
+
+    if (body.action === "items") {
+      return jsonOk(await ingestItems(body.items ?? body.payload));
     }
-    return jsonError("Live QuickBooks processing is stubbed in this version");
+    const raw = body.invoice ?? body.payload ?? body;
+    return jsonOk(await ingestInvoice(raw), { status: 201 });
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : "QuickBooks error", 400);
+    const message = e instanceof Error ? e.message : "QuickBooks error";
+    return jsonError(message, message === "Unauthorized" ? 401 : 400);
   }
 }

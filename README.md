@@ -26,6 +26,23 @@ Open http://localhost:3000
 
 **Login:** `admin` / `chaleur`
 
+## QuickBooks (read-only)
+
+Pipedream keeps OAuth. It POSTs invoices (and a one-shot item list) here. This app never writes to QuickBooks.
+
+Set `QB_SYNC_SECRET` in `.env` and in Vercel. Pipedream:
+
+```
+POST https://YOUR-DOMAIN/api/quickbooks
+Authorization: Bearer THE_SECRET
+Content-Type: application/json
+
+{ "action": "invoice", "invoice": { /* QuickBooks Invoice JSON */ } }
+{ "action": "items", "items": [ /* Item objects or QueryResponse */ ] }
+```
+
+Matched invoice lines become Exit reservations (SKU, then `qb:{Item.Id}`, then name). Existing products are not overwritten on item import.
+
 ## Tabs
 
 - **Storage** — product table, product card (Info/Log), quantity add/remove, reserved invoices
