@@ -2,35 +2,32 @@ import { createHash, randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { databaseUrl } from "@/lib/database-url";
 
 const ADMIN_HASH = createHash("sha256").update("chaleur").digest("hex");
 
+const MIGRATIONS = [
+  "20260811185313_init",
+  "20260825134712_chaleur",
+  "20260911162000_import_columns",
+] as const;
+
 export function sqliteFile(): string {
-  const raw = (process.env.DATABASE_URL ?? "file:./prisma/dev.db").replace(
-    /^file:/,
-    "",
-  );
-  const local = path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
   if (process.env.VERCEL) return "/tmp/chaleur.db";
-  return local;
+  const raw = databaseUrl().replace(/^file:/, "");
+  return path.isAbsolute(raw)
+    ? raw
+    : path.join(/*turbopackIgnore: true*/ process.cwd(), raw);
 }
 
-function migrationsDir(): string | null {
-  for (const dir of [
-    path.join(process.cwd(), "prisma/migrations"),
-    path.join(process.cwd(), "../prisma/migrations"),
-  ]) {
-    if (fs.existsSync(dir)) return dir;
-  }
-  return null;
+function migrationSql(name: string) {
+  return fs.readFileSync(
+    path.join(process.cwd(), "prisma", "migrations", name, "migration.sql"),
+    "utf8",
+  );
 }
 
 export function prepareSqlite(file: string) {
-  const bundled = path.join(process.cwd(), "prisma/dev.db");
-  if (file !== bundled && fs.existsSync(bundled) && !fs.existsSync(file)) {
-    fs.copyFileSync(bundled, file);
-  }
-
   const db = new Database(file);
   try {
     const hasUser = db
@@ -39,14 +36,7 @@ export function prepareSqlite(file: string) {
       )
       .get();
     if (!hasUser) {
-      const dir = migrationsDir();
-      if (!dir) {
-        throw new Error("prisma/migrations not found; cannot create User table");
-      }
-      for (const name of fs.readdirSync(dir).sort()) {
-        const sqlPath = path.join(dir, name, "migration.sql");
-        if (fs.existsSync(sqlPath)) db.exec(fs.readFileSync(sqlPath, "utf8"));
-      }
+      for (const name of MIGRATIONS) db.exec(migrationSql(name));
     }
     if (!db.prepare("SELECT 1 FROM User WHERE username = 'admin'").get()) {
       db.prepare(
