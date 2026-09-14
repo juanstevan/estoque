@@ -16,18 +16,24 @@ export function LoginForm() {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "login", username, password }),
-    });
-    setSubmitting(false);
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error || "Couldn't sign in with those details");
-      return;
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "login", username, password }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(data.error || "Couldn't sign in with those details");
+        return;
+      }
+      window.location.assign("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in failed");
+    } finally {
+      setSubmitting(false);
     }
-    window.location.href = "/";
   }
 
   return (

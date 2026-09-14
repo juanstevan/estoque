@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import {
   ExitStatus,
   ImportKind,
@@ -8,7 +8,7 @@ import {
   TransactionType,
 } from "@prisma/client";
 import { createHash } from "crypto";
-import { sqliteFile } from "../src/lib/sqlite";
+import { databaseUrl } from "../src/lib/database-url";
 import {
   allocateAdditionalCosts,
   calcWeightedAverageCost,
@@ -16,8 +16,11 @@ import {
   roundMoney,
 } from "../src/lib/inventory/math";
 
-const url = `file:${sqliteFile()}`;
-const adapter = new PrismaBetterSqlite3({ url });
+const connectionString = databaseUrl();
+if (!connectionString.startsWith("postgres")) {
+  throw new Error("DATABASE_URL must be a postgres:// Prisma Postgres URL");
+}
+const adapter = new PrismaPg({ connectionString });
 const prisma = new PrismaClient({ adapter });
 
 function hash(p: string) {

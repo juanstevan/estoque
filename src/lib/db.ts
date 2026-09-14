@@ -1,14 +1,19 @@
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { prepareSqlite, sqliteFile } from "@/lib/sqlite";
+import { databaseUrl } from "./database-url";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 function createPrismaClient() {
-  const file = sqliteFile();
-  prepareSqlite(file);
-  const adapter = new PrismaBetterSqlite3({ url: `file:${file}` });
-  return new PrismaClient({ adapter });
+  const connectionString = databaseUrl();
+  if (!connectionString.startsWith("postgres")) {
+    throw new Error(
+      "DATABASE_URL must be the Prisma Postgres connection string (postgres://...). Copy it from Prisma Console → Connect.",
+    );
+  }
+  return new PrismaClient({
+    adapter: new PrismaPg({ connectionString }),
+  });
 }
 
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();

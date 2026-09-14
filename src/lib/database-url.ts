@@ -1,4 +1,6 @@
-/** Prisma 7 and Vercel both treat "" as a set URL. Never return empty. */
+/** Prisma CLI + app. Empty Vercel env vars must not win over a real URL. */
 export function databaseUrl(): string {
-  return process.env.DATABASE_URL?.trim() || "file:./prisma/dev.db";
+  const url =
+    process.env.DIRECT_URL?.trim() || process.env.DATABASE_URL?.trim() || "";
+  return url;
 }

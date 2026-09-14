@@ -1,4 +1,10 @@
-import { login, logout, currentUser } from "@/lib/auth";
+import {
+  login,
+  logout,
+  currentUser,
+  SESSION_COOKIE,
+  sessionCookieOptions,
+} from "@/lib/auth";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 export async function GET() {
@@ -20,11 +26,14 @@ export async function POST(req: Request) {
       password?: string;
     }>(req);
     if (body.action === "logout") {
-      await logout();
-      return jsonOk({ ok: true });
+      const res = jsonOk({ ok: true });
+      res.cookies.delete(SESSION_COOKIE);
+      return res;
     }
     const user = await login(body.username ?? "", body.password ?? "");
-    return jsonOk(user);
+    const res = jsonOk(user);
+    res.cookies.set(SESSION_COOKIE, user.id, sessionCookieOptions());
+    return res;
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Auth error", 401);
   }

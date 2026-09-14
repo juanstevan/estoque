@@ -2,7 +2,17 @@ import { createHash } from "crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db";
 
-const COOKIE = "chaleur_session";
+export const SESSION_COOKIE = "chaleur_session";
+
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    path: "/",
+    secure: process.env.VERCEL === "1",
+    maxAge: 60 * 60 * 24 * 30,
+  };
+}
 
 export function hashPassword(password: string) {
   return createHash("sha256").update(password).digest("hex");
@@ -13,20 +23,20 @@ export async function login(username: string, password: string) {
   if (!user || user.passwordHash !== hashPassword(password)) {
     throw new Error("Invalid username or password");
   }
-  (await cookies()).set(COOKIE, user.id, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-  });
-  return { id: user.id, username: user.username, name: user.name, role: user.role };
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+  };
 }
 
 export async function logout() {
-  (await cookies()).delete(COOKIE);
+  (await cookies()).delete(SESSION_COOKIE);
 }
 
 export async function currentUser() {
-  const id = (await cookies()).get(COOKIE)?.value;
+  const id = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!id) return null;
   return prisma.user.findUnique({ where: { id } });
 }

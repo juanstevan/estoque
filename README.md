@@ -6,13 +6,16 @@ Internal inventory and warehouse system for Chaleur Manufacturing Co.
 
 - Next.js (App Router) + TypeScript + Tailwind v4
 - shadcn/ui + Tremor
-- SQLite via Prisma 7
+- Prisma Postgres
 
 ## Run
+
+Copy the **Prisma Postgres** connection string from Prisma Console → Connect (or Vercel → Storage → prisma-estoque) into `.env` as `DATABASE_URL`.
 
 ```bash
 cd ~/repos/estoque
 cp .env.example .env
+# paste the postgres:// URL into .env
 npm install
 npx prisma migrate deploy
 npm run db:seed
