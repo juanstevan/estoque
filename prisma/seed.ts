@@ -7,8 +7,8 @@ import {
   PrismaClient,
   TransactionType,
 } from "@prisma/client";
-import path from "path";
 import { createHash } from "crypto";
+import { sqliteFile } from "../src/lib/sqlite";
 import {
   allocateAdditionalCosts,
   calcWeightedAverageCost,
@@ -16,9 +16,7 @@ import {
   roundMoney,
 } from "../src/lib/inventory/math";
 
-const url =
-  process.env.DATABASE_URL ??
-  `file:${path.join(process.cwd(), "prisma", "dev.db")}`;
+const url = `file:${sqliteFile()}`;
 const adapter = new PrismaBetterSqlite3({ url });
 const prisma = new PrismaClient({ adapter });
 
