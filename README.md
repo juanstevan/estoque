@@ -30,7 +30,7 @@ Open http://localhost:3000
 
 This app never writes to QuickBooks. Inventory qty is owned here after the first item pull.
 
-Same Intuit app as `~/Desktop/dash`: copy `client_id`, `client_secret`, `realm_id` from `dash/config.json` and `refresh_token` from `dash/data/retail/quickbooks_token.json` into `.env`. Optionally set `QB_TOKEN_PATH` to that JSON file so Intuit refresh-token rotation stays in sync with dash.
+Same Intuit app as `~/Desktop/dash`: copy `client_id`, `client_secret`, `realm_id` from `dash/config.json` and `refresh_token` from `dash/data/retail/quickbooks_token.json` into `.env`. For local `npm run qb:sync` you can also set `QB_TOKEN_PATH` to that JSON file so refresh-token rotation stays in sync with dash.
 
 ```bash
 npm run qb:sync

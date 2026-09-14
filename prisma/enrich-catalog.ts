@@ -57,7 +57,7 @@ type CatalogItem = {
 function parseCatalog(html: string): CatalogItem[] {
   const items: CatalogItem[] = [];
   const block =
-    /<details><summary><span class="sid">([^<]*)<\/span><span class="snm">([^<]*)<\/span><\/summary>(.*?)<\/details>/gs;
+    /<details><summary><span class="sid">([^<]*)<\/span><span class="snm">([^<]*)<\/span><\/summary>([\s\S]*?)<\/details>/g;
   for (const match of html.matchAll(block)) {
     const body = match[3];
     const sku = skuOf(body.match(/<div class="sku">([^<]*)<\/div>/)?.[1] ?? "");

@@ -1,6 +1,3 @@
-import "dotenv/config";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const BASE_URL = "https://quickbooks.api.intuit.com";
 
@@ -10,35 +7,6 @@ function required(name: string) {
   return value;
 }
 
-function tokenPath() {
-  return process.env.QB_TOKEN_PATH?.trim() || "";
-}
-
-function loadStoredToken(): Record<string, unknown> | null {
-  const path = tokenPath();
-  if (!path || !existsSync(path)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredToken(token: Record<string, unknown>) {
-  const path = tokenPath();
-  if (!path) return;
-  const prev = loadStoredToken() ?? {};
-  writeFileSync(
-    path,
-    JSON.stringify(
-      { ...prev, ...token, saved_at: Date.now() / 1000 },
-      null,
-      2,
-    ),
-  );
-}
-
 function basicAuth() {
   const id = required("QB_CLIENT_ID");
   const secret = required("QB_CLIENT_SECRET");
@@ -46,10 +14,7 @@ function basicAuth() {
 }
 
 export async function qboAccessToken() {
-  const stored = loadStoredToken();
-  const refresh =
-    (typeof stored?.refresh_token === "string" && stored.refresh_token) ||
-    required("QB_REFRESH_TOKEN");
+  const refresh = required("QB_REFRESH_TOKEN");
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: {
@@ -73,8 +38,7 @@ export async function qboAccessToken() {
       data.error_description || data.error || "QuickBooks token refresh failed",
     );
   }
-  process.env.QB_REFRESH_TOKEN = data.refresh_token || refresh;
-  saveStoredToken(data);
+  if (data.refresh_token) process.env.QB_REFRESH_TOKEN = data.refresh_token;
   return data.access_token;
 }
 
@@ -84,10 +48,7 @@ export async function qboQuery(
   where = "",
   orderby = "",
 ) {
-  const stored = loadStoredToken();
-  const realmId =
-    (typeof stored?.realm_id === "string" && stored.realm_id) ||
-    required("QB_REALM_ID");
+  const realmId = required("QB_REALM_ID");
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
@@ -112,8 +73,8 @@ export async function qboQuery(
     const json = (await res.json()) as {
       QueryResponse?: Record<string, unknown>;
     };
-    let page = json.QueryResponse?.[entity] ?? [];
-    if (!Array.isArray(page)) page = page ? [page] : [];
+    const raw = json.QueryResponse?.[entity];
+    const page = Array.isArray(raw) ? raw : raw ? [raw] : [];
     if (!page.length) break;
     rows.push(...page);
     if (page.length < 1000) break;
