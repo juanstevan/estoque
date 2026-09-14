@@ -201,15 +201,19 @@ export async function ingestItems(raw: unknown) {
     const codeTaken = preferred
       ? await prisma.product.findUnique({ where: { code: preferred } })
       : null;
-    await createProduct({
-      name,
-      sku,
-      code: preferred && !codeTaken ? preferred : undefined,
-      secondarySku: `qb:${id}`,
-      initialQty: Math.max(0, num(item.QtyOnHand ?? item.qtyOnHand)),
-      notes: "Imported from QuickBooks (qty is owned here after this)",
-    });
-    created.push(sku);
+    try {
+      await createProduct({
+        name,
+        sku,
+        code: preferred && !codeTaken ? preferred : undefined,
+        secondarySku: `qb:${id}`,
+        initialQty: Math.max(0, num(item.QtyOnHand ?? item.qtyOnHand)),
+        notes: "Imported from QuickBooks (qty is owned here after this)",
+      });
+      created.push(sku);
+    } catch {
+      skipped.push(sku);
+    }
   }
   await storeQbSyncEvent({
     eventType: "items",

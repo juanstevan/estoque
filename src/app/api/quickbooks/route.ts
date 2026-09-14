@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   try {
     assertQbSecret(req);
     const body = await readJson<{
-      action?: "invoice" | "items" | "ingest";
+      action?: "invoice" | "items" | "ingest" | "sync";
       invoice?: unknown;
       items?: unknown;
       payload?: unknown;
@@ -28,6 +28,10 @@ export async function POST(req: Request) {
 
     if (body.action === "items") {
       return jsonOk(await ingestItems(body.items ?? body.payload));
+    }
+    if (body.action === "sync") {
+      const { syncQuickBooks } = await import("@/lib/quickbooks/sync");
+      return jsonOk(await syncQuickBooks());
     }
     const raw = body.invoice ?? body.payload ?? body;
     return jsonOk(await ingestInvoice(raw), { status: 201 });

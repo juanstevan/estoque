@@ -5,7 +5,7 @@ Internal inventory and warehouse system for Chaleur Manufacturing Co.
 ## Stack
 
 - Next.js (App Router) + TypeScript + Tailwind v4
-- shadcn/ui + Tremor
+- shadcn/ui
 - Prisma Postgres
 
 ## Run
@@ -28,15 +28,22 @@ Open http://localhost:3000
 
 ## QuickBooks (read-only)
 
-Pipedream keeps OAuth. It POSTs invoices (and a one-shot item list) here. This app never writes to QuickBooks.
+This app never writes to QuickBooks. Inventory qty is owned here after the first item pull.
 
-Set `QB_SYNC_SECRET` in `.env` and in Vercel. Pipedream:
+Same Intuit app as `~/Desktop/dash`: copy `client_id`, `client_secret`, `realm_id` from `dash/config.json` and `refresh_token` from `dash/data/retail/quickbooks_token.json` into `.env`. Optionally set `QB_TOKEN_PATH` to that JSON file so Intuit refresh-token rotation stays in sync with dash.
+
+```bash
+npm run qb:sync
+```
+
+That pulls active Inventory items (SKU, name, opening QtyOnHand) and invoices from the last 7 days. Pipedream can still POST:
 
 ```
 POST https://YOUR-DOMAIN/api/quickbooks
 Authorization: Bearer THE_SECRET
 Content-Type: application/json
 
+{ "action": "sync" }
 { "action": "invoice", "invoice": { /* QuickBooks Invoice JSON */ } }
 { "action": "items", "items": [ /* Item objects or QueryResponse */ ] }
 ```

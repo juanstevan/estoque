@@ -428,6 +428,15 @@ export async function upsertImportation(input: {
       });
     }
 
+    const supplier = input.supplierName?.trim();
+    if (supplier) {
+      await tx.supplier.upsert({
+        where: { name: supplier },
+        create: { name: supplier },
+        update: {},
+      });
+    }
+
     return tx.importation.findUniqueOrThrow({
       where: { id: importationId! },
       include: { lines: { include: { product: true } } },

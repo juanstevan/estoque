@@ -236,6 +236,17 @@ export function ImportsTab({
   const [draftColor, setDraftColor] = useState(COL_COLORS[3]);
   const [editingCol, setEditingCol] = useState<string | null>(null);
   const [organizeOpen, setOrganizeOpen] = useState(false);
+  const [savedSuppliers, setSavedSuppliers] = useState<string[]>([]);
+  const knownSuppliers = useMemo(() => {
+    const names = new Set(savedSuppliers);
+    for (const row of imports) {
+      if (row.supplierName) names.add(row.supplierName);
+    }
+    for (const product of products) {
+      for (const name of splitSuppliers(product.suppliers)) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [savedSuppliers, imports, products]);
   const [doneNotice, setDoneNotice] = useState<{
     id: string;
     reference: string;
@@ -262,6 +273,11 @@ export function ImportsTab({
         } catch {
           /* keep empty */
         }
+        setSavedSuppliers(
+          Array.isArray(s.suppliers)
+            ? s.suppliers.map((row: { name: string }) => row.name).filter(Boolean)
+            : [],
+        );
       });
     return () => window.clearTimeout(doneTimer.current);
   }, []);
@@ -817,6 +833,7 @@ export function ImportsTab({
           initial={editing}
           kind={editing?.kind ?? "INTERNATIONAL"}
           products={products}
+          suppliers={knownSuppliers}
           reasons={reasons}
           onClose={() => {
             setEditing(null);
@@ -1225,6 +1242,7 @@ function ImportDialog({
   initial,
   kind: initialKind,
   products,
+  suppliers,
   reasons,
   onClose,
   onSaved,
@@ -1234,6 +1252,7 @@ function ImportDialog({
   initial: ImportRow | null;
   kind: "DOMESTIC" | "INTERNATIONAL";
   products: ProductRow[];
+  suppliers: string[];
   reasons: string[];
   onClose: () => void;
   onSaved: () => void;
@@ -1260,8 +1279,10 @@ function ImportDialog({
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
-  const [editingLine, setEditingLine] = useState<number | null>(null);
   const [replacing, setReplacing] = useState<number | null>(null);
+  const [focusQty, setFocusQty] = useState<number | null>(
+    form.lines.length ? form.lines.length - 1 : null,
+  );
   const [kind, setKind] = useState(initialKind);
   const [catalog, setCatalog] = useState(products);
   const clickTimer = useRef(0);
@@ -1305,6 +1326,8 @@ function ImportDialog({
   );
 
   function addLine(product: { id: string; code: string; name: string }) {
+    const priced = catalog.find((p) => p.id === product.id);
+    const nextIndex = form.lines.length;
     setForm((f) => ({
       ...f,
       lines: [
@@ -1313,10 +1336,11 @@ function ImportDialog({
           productId: product.id,
           name: product.name,
           quantity: 1,
-          purchaseUnitCost: 0,
+          purchaseUnitCost: priced?.fobCost || priced?.cifCost || 0,
         },
       ],
     }));
+    setFocusQty(nextIndex);
     setAdding(false);
     setQuery("");
   }
@@ -1343,7 +1367,7 @@ function ImportDialog({
       if (lines.length === 0) setAdding(true);
       return { ...f, lines };
     });
-    setEditingLine((cur) => {
+    setFocusQty((cur) => {
       if (cur == null) return cur;
       if (cur === index) return null;
       return cur > index ? cur - 1 : cur;
@@ -1411,9 +1435,9 @@ function ImportDialog({
             onChange={(reference) => setForm({ ...form, reference })}
           />
           <span className="text-md font-semibold text-gray-900">•</span>
-          <HugInput
-            placeholder="Supplier"
+          <SupplierPicker
             value={form.supplierName}
+            options={suppliers}
             onChange={(supplierName) => setForm({ ...form, supplierName })}
           />
           <ImportProgress status={initial?.status ?? "PENDING"} />
@@ -1432,7 +1456,6 @@ function ImportDialog({
             {form.lines.map((l, i) => {
               const code =
                 catalog.find((p) => p.id === l.productId)?.code ?? "—";
-              const editing = editingLine === i;
               const changing = replacing === i;
               return (
                 <div
@@ -1452,15 +1475,14 @@ function ImportDialog({
                     );
                   }}
                   onDoubleClick={(e) => {
-                    if (changing || (e.target as HTMLElement).closest("button")) {
+                    if (changing || (e.target as HTMLElement).closest("button, input")) {
                       return;
                     }
                     window.clearTimeout(clickTimer.current);
-                    setEditingLine(i);
+                    openProduct(l.productId);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
-                      setEditingLine(null);
                       setReplacing(null);
                       setQuery("");
                     }
@@ -1492,7 +1514,6 @@ function ImportDialog({
                         onClick={(e) => {
                           e.stopPropagation();
                           window.clearTimeout(clickTimer.current);
-                          setEditingLine(null);
                           setAdding(false);
                           setReplacing(i);
                           setQuery("");
@@ -1502,45 +1523,40 @@ function ImportDialog({
                       </button>
                     </div>
                   )}
-                  {editing ? (
-                    <Input
-                      autoFocus
-                      className="h-7 border-0 bg-transparent text-right shadow-none"
-                      inputMode="numeric"
-                      value={l.quantity}
-                      onChange={(e) => {
-                        const lines = [...form.lines];
-                        lines[i] = {
-                          ...l,
-                          quantity: Number(e.target.value) || 0,
-                        };
-                        setForm({ ...form, lines });
-                      }}
-                    />
-                  ) : (
-                    <div className="px-3 text-right tabular-nums">
-                      {l.quantity}
-                    </div>
-                  )}
-                  {editing ? (
-                    <Input
-                      className="h-7 border-0 bg-transparent text-right font-mono shadow-none"
-                      inputMode="decimal"
-                      value={l.purchaseUnitCost}
-                      onChange={(e) => {
-                        const lines = [...form.lines];
-                        lines[i] = {
-                          ...l,
-                          purchaseUnitCost: Number(e.target.value) || 0,
-                        };
-                        setForm({ ...form, lines });
-                      }}
-                    />
-                  ) : (
-                    <div className="px-3 text-right font-mono tabular-nums">
-                      {formatMoney(l.purchaseUnitCost)}
-                    </div>
-                  )}
+                  <Input
+                    autoFocus={focusQty === i}
+                    className="h-7 border-0 bg-transparent text-right shadow-none"
+                    type="number"
+                    min={0}
+                    step="any"
+                    aria-label={`${l.name || code} quantity`}
+                    value={Number.isFinite(l.quantity) ? l.quantity : 0}
+                    onFocus={() => setFocusQty(i)}
+                    onChange={(e) => {
+                      const lines = [...form.lines];
+                      lines[i] = {
+                        ...l,
+                        quantity: Number(e.target.value) || 0,
+                      };
+                      setForm({ ...form, lines });
+                    }}
+                  />
+                  <Input
+                    className="h-7 border-0 bg-transparent text-right font-mono shadow-none"
+                    type="number"
+                    min={0}
+                    step="any"
+                    aria-label={`${l.name || code} cost`}
+                    value={Number.isFinite(l.purchaseUnitCost) ? l.purchaseUnitCost : 0}
+                    onChange={(e) => {
+                      const lines = [...form.lines];
+                      lines[i] = {
+                        ...l,
+                        purchaseUnitCost: Number(e.target.value) || 0,
+                      };
+                      setForm({ ...form, lines });
+                    }}
+                  />
                   <div className="px-3 text-right font-mono tabular-nums">
                     {formatMoney(l.quantity * l.purchaseUnitCost)}
                   </div>
@@ -1803,16 +1819,92 @@ function SummaryRow({
   );
 }
 
+function splitSuppliers(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  } catch {
+    /* plain string */
+  }
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function SupplierPicker({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const q = value.trim().toLowerCase();
+  const matches = options.filter(
+    (name) =>
+      name.toLowerCase() !== q &&
+      (!q || name.toLowerCase().includes(q)),
+  );
+
+  useEffect(() => {
+    function down(e: PointerEvent) {
+      if (root.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    }
+    document.addEventListener("pointerdown", down);
+    return () => document.removeEventListener("pointerdown", down);
+  }, []);
+
+  return (
+    <div ref={root} className="relative">
+      <HugInput
+        placeholder="Supplier"
+        value={value}
+        onFocus={() => setOpen(true)}
+        onChange={(next) => {
+          onChange(next);
+          setOpen(true);
+        }}
+      />
+      {open && matches.length > 0 && (
+        <div className="absolute top-full left-0 z-30 mt-1 max-h-48 min-w-48 overflow-auto rounded-md border border-border bg-popover py-1 shadow-sm">
+          {matches.slice(0, 8).map((name) => (
+            <button
+              key={name}
+              type="button"
+              className="flex w-full px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(name);
+                setOpen(false);
+              }}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HugInput({
   value,
   onChange,
   placeholder,
   mono,
+  onFocus,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   mono?: boolean;
+  onFocus?: () => void;
 }) {
   return (
     <input
@@ -1825,6 +1917,7 @@ function HugInput({
       }}
       value={value}
       placeholder={placeholder}
+      onFocus={onFocus}
       onChange={(e) => onChange(e.target.value)}
     />
   );
