@@ -1,6 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   ArrowRight,
   Check,
@@ -1134,7 +1141,7 @@ function ImportCard({
         "group relative flex h-[100px] w-[240px] shrink-0 cursor-pointer flex-col justify-between rounded-md bg-[#fcfcfc] p-3 transition-[box-shadow,opacity] duration-[80ms] hover:[box-shadow:inset_0_0_0_1px_var(--kind-border)] active:[box-shadow:inset_0_0_0_1px_var(--kind-border)]",
         faded && "opacity-35",
       )}
-      style={{ ["--kind-border"]: tone }}
+      style={{ "--kind-border": tone } as CSSProperties}
       onClick={onOpen}
     >
       <button
