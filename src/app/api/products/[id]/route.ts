@@ -1,4 +1,8 @@
-import { getProductDetail, updateProduct } from "@/lib/inventory/service";
+import {
+  deleteProduct,
+  getProductDetail,
+  updateProduct,
+} from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -17,5 +21,18 @@ export async function PATCH(req: Request, ctx: Ctx) {
     return jsonOk(await updateProduct(id, body as never));
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Update failed", 500);
+  }
+}
+
+export async function DELETE(_req: Request, ctx: Ctx) {
+  try {
+    const { id } = await ctx.params;
+    await deleteProduct(id);
+    return jsonOk({ ok: true });
+  } catch (e) {
+    return jsonError(
+      e instanceof Error ? e.message : "Couldn't delete the product",
+      400,
+    );
   }
 }

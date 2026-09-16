@@ -18,7 +18,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
+  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
@@ -196,6 +198,7 @@ export function ProductDialog({
   const [qtyOpen, setQtyOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -205,6 +208,7 @@ export function ProductDialog({
     setTab("info");
     setError(null);
     setEditingField(null);
+    setConfirmDelete(false);
     if (isCreate) {
       setDetail(blankDetail());
       return;
@@ -292,6 +296,23 @@ export function ProductDialog({
     onSaved(
       data?.id ? { id: data.id, code: data.code, name: data.name } : undefined,
     );
+    onClose();
+  }
+
+  async function remove() {
+    if (!detail || isCreate) return;
+    setSaving(true);
+    setError(null);
+    const res = await fetch(`/api/products/${detail.id}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    setSaving(false);
+    if (!res.ok) {
+      setConfirmDelete(false);
+      setError(data.error ?? "Couldn't delete the product");
+      return;
+    }
+    setConfirmDelete(false);
+    onSaved();
     onClose();
   }
 
@@ -975,6 +996,16 @@ export function ProductDialog({
               <DialogFooter className="mx-0 mb-0 mt-0 h-8 shrink-0 border-0 bg-transparent px-0 py-0 sm:h-8 sm:justify-between">
                 <ErrorText>{error}</ErrorText>
                 <div className="flex h-8 items-center gap-2">
+                  {!isCreate && (
+                    <Button
+                      variant="secondary"
+                      className="h-8 text-danger-text"
+                      disabled={saving}
+                      onClick={() => setConfirmDelete(true)}
+                    >
+                      Delete
+                    </Button>
+                  )}
                   <Button variant="secondary" className="h-8" onClick={onClose}>
                     Cancel
                   </Button>
@@ -990,6 +1021,37 @@ export function ProductDialog({
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmDelete}
+        onOpenChange={(v) => !v && setConfirmDelete(false)}
+      >
+        <DialogContent showCloseButton={false} className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Delete product?</DialogTitle>
+            <DialogDescription>
+              {detail
+                ? `Delete ${detail.name}? This cannot be undone.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              onClick={() => setConfirmDelete(false)}
+            >
+              No
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={saving}
+              onClick={() => void remove()}
+            >
+              Yes
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

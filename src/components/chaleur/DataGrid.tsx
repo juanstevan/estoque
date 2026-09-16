@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Filter, ListFilter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Popover,
   PopoverContent,
@@ -35,7 +36,6 @@ function rawValue<T extends object>(col: GridCol<T>, row: T) {
   return String((row as Record<string, unknown>)[String(col.key)] ?? "");
 }
 
-const CHECK = "size-4 cursor-pointer rounded-[3px] accent-blue-600";
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
 export function DataGrid<T extends object>({
@@ -74,7 +74,19 @@ export function DataGrid<T extends object>({
   const [scrolled, setScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragged = useRef(false);
-  const selectAllRef = useRef<HTMLInputElement>(null);
+  const onRowClickRef = useRef(onRowClick);
+  onRowClickRef.current = onRowClick;
+  const toggleRef = useRef<(id: string) => void>(() => {});
+  const fireRowClick = useRef((row: T) => {
+    if (dragged.current) {
+      dragged.current = false;
+      return;
+    }
+    onRowClickRef.current?.(row);
+  }).current;
+  const fireToggle = useRef((id: string) => {
+    toggleRef.current(id);
+  }).current;
 
   const filtered = useMemo(
     () =>
@@ -124,11 +136,6 @@ export function DataGrid<T extends object>({
 
   if (visibleIdsRef) visibleIdsRef.current = sorted.map(getRowId);
 
-  useEffect(() => {
-    const el = selectAllRef.current;
-    if (el) el.indeterminate = Boolean(someVisibleChecked && !allVisibleChecked);
-  }, [someVisibleChecked, allVisibleChecked]);
-
   function toggleChecked(id: string) {
     if (!onCheckedIdsChange) return;
     const next = new Set(checked);
@@ -136,6 +143,7 @@ export function DataGrid<T extends object>({
     else next.add(id);
     onCheckedIdsChange(next);
   }
+  toggleRef.current = toggleChecked;
 
   function toggleAllVisible() {
     if (!onCheckedIdsChange || sorted.length === 0) return;
@@ -172,13 +180,13 @@ export function DataGrid<T extends object>({
                     scrolled && "shadow-xs",
                   )}
                 >
-                  <input
-                    ref={selectAllRef}
-                    type="checkbox"
+                  <Checkbox
                     aria-label="Select all"
-                    className={CHECK}
                     checked={Boolean(allVisibleChecked)}
-                    onChange={toggleAllVisible}
+                    indeterminate={Boolean(
+                      someVisibleChecked && !allVisibleChecked,
+                    )}
+                    onCheckedChange={() => toggleAllVisible()}
                   />
                 </th>
               )}
@@ -301,85 +309,21 @@ export function DataGrid<T extends object>({
             ) : (
               sorted.map((row) => {
                 const id = getRowId(row);
-                const isSelected = selectedId === id;
                 return (
-                  <tr
+                  <GridRow
                     key={id}
-                    aria-selected={isSelected || undefined}
-                    className={cn(
-                      "group h-10 transition-colors duration-[80ms]",
-                      onRowClick && "cursor-pointer",
-                      isSelected
-                        ? "bg-selected"
-                        : onRowClick && "hover:bg-gray-50",
-                    )}
-                    onClick={() => {
-                      if (dragged.current) {
-                        dragged.current = false;
-                        return;
-                      }
-                      onRowClick?.(row);
-                    }}
+                    row={row}
+                    id={id}
+                    columns={columns}
+                    selectable={selectable}
+                    isChecked={checked.has(id)}
+                    isSelected={selectedId === id}
+                    clickable={Boolean(onRowClick)}
+                    onRowClick={fireRowClick}
+                    onToggleChecked={fireToggle}
                     draggable={draggable}
-                    onDragStart={(e) => {
-                      if (!draggable) return;
-                      dragged.current = true;
-                      e.dataTransfer.setData("text/plain", id);
-                      e.dataTransfer.effectAllowed = "move";
-                    }}
-                    onDragEnd={() => {
-                      window.setTimeout(() => {
-                        dragged.current = false;
-                      }, 0);
-                    }}
-                  >
-                    {selectable && (
-                      <td
-                        className={cn(
-                          "w-10 border-b border-gray-150 px-3 text-center align-middle",
-                          isSelected &&
-                            "shadow-[inset_2px_0_0_0_var(--blue-600)]",
-                        )}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <input
-                          type="checkbox"
-                          aria-label="Select row"
-                          className={CHECK}
-                          checked={checked.has(id)}
-                          onChange={() => toggleChecked(id)}
-                        />
-                      </td>
-                    )}
-                    {columns.map((col, colIndex) => (
-                      <td
-                        key={String(col.key)}
-                        className={cn(
-                          "truncate border-b border-gray-150 align-middle",
-                          colIndex === 0 && !selectable
-                            ? "px-4"
-                            : "px-3",
-                          !selectable &&
-                            colIndex === 0 &&
-                            isSelected &&
-                            "shadow-[inset_2px_0_0_0_var(--blue-600)]",
-                          col.align === "center"
-                            ? "text-center"
-                            : col.numeric && "text-right",
-                          col.numeric && "tabular-nums",
-                          col.mono && "font-mono text-xs text-gray-600",
-                        )}
-                      >
-                        {col.render
-                          ? col.render(row)
-                          : String(
-                              (row as Record<string, unknown>)[
-                                String(col.key)
-                              ] ?? "",
-                            )}
-                      </td>
-                    ))}
-                  </tr>
+                    dragged={dragged}
+                  />
                 );
               })
             )}
@@ -403,6 +347,104 @@ export function DataGrid<T extends object>({
     </div>
   );
 }
+
+type GridRowProps<T extends object> = {
+  row: T;
+  id: string;
+  columns: GridCol<T>[];
+  selectable?: boolean;
+  isChecked: boolean;
+  isSelected: boolean;
+  clickable: boolean;
+  onRowClick: (row: T) => void;
+  onToggleChecked: (id: string) => void;
+  draggable?: boolean;
+  dragged: { current: boolean };
+};
+
+function GridRowInner<T extends object>({
+  row,
+  id,
+  columns,
+  selectable,
+  isChecked,
+  isSelected,
+  clickable,
+  onRowClick,
+  onToggleChecked,
+  draggable,
+  dragged,
+}: GridRowProps<T>) {
+  return (
+    <tr
+      aria-selected={isSelected || undefined}
+      className={cn(
+        "group h-10 transition-colors duration-[80ms]",
+        clickable && "cursor-pointer",
+        isSelected ? "bg-selected" : clickable && "hover:bg-gray-50",
+      )}
+      onClick={() => {
+        if (dragged.current) {
+          dragged.current = false;
+          return;
+        }
+        onRowClick(row);
+      }}
+      draggable={draggable}
+      onDragStart={(e) => {
+        if (!draggable) return;
+        dragged.current = true;
+        e.dataTransfer.setData("text/plain", id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragEnd={() => {
+        window.setTimeout(() => {
+          dragged.current = false;
+        }, 0);
+      }}
+    >
+      {selectable && (
+        <td
+          className={cn(
+            "w-10 border-b border-gray-150 px-3 text-center align-middle",
+            isSelected && "shadow-[inset_2px_0_0_0_var(--blue-600)]",
+          )}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Checkbox
+            aria-label="Select row"
+            checked={isChecked}
+            onCheckedChange={() => onToggleChecked(id)}
+          />
+        </td>
+      )}
+      {columns.map((col, colIndex) => (
+        <td
+          key={String(col.key)}
+          className={cn(
+            "truncate border-b border-gray-150 align-middle",
+            colIndex === 0 && !selectable ? "px-4" : "px-3",
+            !selectable &&
+              colIndex === 0 &&
+              isSelected &&
+              "shadow-[inset_2px_0_0_0_var(--blue-600)]",
+            col.align === "center"
+              ? "text-center"
+              : col.numeric && "text-right",
+            col.numeric && "tabular-nums",
+            col.mono && "font-mono text-xs text-gray-600",
+          )}
+        >
+          {col.render
+            ? col.render(row)
+            : String((row as Record<string, unknown>)[String(col.key)] ?? "")}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
+const GridRow = memo(GridRowInner) as typeof GridRowInner;
 
 function EmptyState({
   title,

@@ -285,6 +285,32 @@ export async function updateProduct(
   return prisma.product.update({ where: { id }, data: { ...data, code } });
 }
 
+export async function deleteProduct(id: string) {
+  const onOrder = await prisma.orderLine.count({ where: { productId: id } });
+  if (onOrder) {
+    throw new Error("This product is on an exit invoice and can't be deleted");
+  }
+  await prisma.$transaction(async (tx) => {
+    const lines = await tx.importationLine.findMany({
+      where: { productId: id },
+      include: { product: true },
+    });
+    for (const line of lines) {
+      await tx.importationLine.update({
+        where: { id: line.id },
+        data: {
+          productId: null,
+          draftName: line.draftName || line.product?.name || null,
+          draftSku: line.draftSku || line.product?.sku || null,
+        },
+      });
+    }
+    await tx.costHistory.deleteMany({ where: { productId: id } });
+    await tx.inventoryTransaction.deleteMany({ where: { productId: id } });
+    await tx.product.delete({ where: { id } });
+  });
+}
+
 export async function listProducts(search?: string) {
   const q = search?.trim();
   if (!q) return prisma.product.findMany({ orderBy: { name: "asc" } });
