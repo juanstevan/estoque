@@ -45,6 +45,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { DataGrid } from "@/components/chaleur/DataGrid";
 import {
   KindBookmark,
@@ -52,7 +58,7 @@ import {
   kindColor,
   statusLabel,
 } from "@/components/chaleur/StatusBadge";
-import { ProductDialog } from "@/components/chaleur/ProductDialog";
+import { ProductDialog, uniqueProductTypes } from "@/components/chaleur/ProductDialog";
 import { formatDayMonth, formatMoney, YEAR_COLORS } from "@/lib/format";
 import {
   additionalImportCosts,
@@ -213,12 +219,16 @@ export function ImportsTab({
   imports,
   products,
   reasons,
-  onReload,
+  onImportsChange,
+  onProductsReload,
 }: {
   imports: ImportRow[];
   products: ProductRow[];
   reasons: string[];
-  onReload: () => void;
+  onImportsChange: (
+    next: ImportRow[] | ((prev: ImportRow[]) => ImportRow[]),
+  ) => void;
+  onProductsReload: () => void;
 }) {
   const [kind, setKind] = useState<"ALL" | "DOMESTIC" | "INTERNATIONAL">("ALL");
   const [search, setSearch] = useState("");
@@ -255,6 +265,8 @@ export function ImportsTab({
   } | null>(null);
   const [doneFading, setDoneFading] = useState(false);
   const doneTimer = useRef(0);
+  const noticeTimer = useRef(0);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const columnNames = useMemo(
     () => [
@@ -279,7 +291,10 @@ export function ImportsTab({
             : [],
         );
       });
-    return () => window.clearTimeout(doneTimer.current);
+    return () => {
+      window.clearTimeout(doneTimer.current);
+      window.clearTimeout(noticeTimer.current);
+    };
   }, []);
 
   const customIds = new Set(extras.flatMap((c) => c.importIds));
@@ -305,6 +320,21 @@ export function ImportsTab({
     });
   }
 
+  useEffect(() => {
+    const delayed = new Set(
+      imports.filter((i) => i.status === "DELAYED").map((i) => i.id),
+    );
+    if (delayed.size === 0) return;
+    let changed = false;
+    const next = extras.map((c) => {
+      if (c.core === "DELAYED") return c;
+      const importIds = c.importIds.filter((id) => !delayed.has(id));
+      if (importIds.length !== c.importIds.length) changed = true;
+      return { ...c, importIds };
+    });
+    if (changed) saveExtras(next);
+  }, [imports, extras]);
+
   function pullFromExtras(id: string, cols = extras) {
     return cols.map((c) => ({
       ...c,
@@ -312,7 +342,25 @@ export function ImportsTab({
     }));
   }
 
-  async function move(id: string, status: ImportRow["status"]) {
+  function flash(message: string) {
+    setNotice(message);
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
+  }
+
+  function applyStatus(id: string, status: ImportRow["status"]) {
+    onImportsChange((rows) =>
+      rows.map((row) => (row.id === id ? { ...row, status } : row)),
+    );
+  }
+
+  function clearDrag() {
+    endCardDrag();
+    setDraggingId(null);
+    setOverDelete(false);
+  }
+
+  async function persistStatus(id: string, status: ImportRow["status"]) {
     const res = await fetch("/api/importations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -322,7 +370,18 @@ export function ImportsTab({
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error ?? "Couldn't update status");
     }
-    onReload();
+  }
+
+  async function move(id: string, status: ImportRow["status"]) {
+    const before = imports.find((row) => row.id === id)?.status;
+    applyStatus(id, status);
+    try {
+      await persistStatus(id, status);
+      if (status === "COMPLETED" || before === "COMPLETED") onProductsReload();
+    } catch (err) {
+      if (before) applyStatus(id, before);
+      throw err;
+    }
   }
 
   function showDone(imp: ImportRow, extraId?: string) {
@@ -341,9 +400,17 @@ export function ImportsTab({
   }
 
   async function completeImport(imp: ImportRow, extraId?: string) {
-    await move(imp.id, "COMPLETED");
-    saveExtras(pullFromExtras(imp.id));
+    const extraSnap = extras;
     showDone(imp, extraId);
+    saveExtras(pullFromExtras(imp.id));
+    try {
+      await move(imp.id, "COMPLETED");
+    } catch (err) {
+      saveExtras(extraSnap);
+      setDoneNotice(null);
+      setDoneFading(false);
+      throw err;
+    }
   }
 
   async function undoComplete() {
@@ -363,15 +430,25 @@ export function ImportsTab({
   }
 
   async function assign(id: string, colId: string) {
+    const extraSnap = extras;
+    const before = imports.find((row) => row.id === id)?.status;
+    const revert = (err: Error) => {
+      if (before) applyStatus(id, before);
+      saveExtras(extraSnap);
+      flash(err.message);
+    };
     if ((COLS as readonly string[]).includes(colId)) {
-      await move(id, colId as ImportRow["status"]);
+      applyStatus(id, colId as ImportRow["status"]);
       saveExtras(pullFromExtras(id));
+      void persistStatus(id, colId as ImportRow["status"]).catch(revert);
       return;
     }
     const extra = extras.find((c) => c.id === colId);
     if (!extra) return;
-    const row = imports.find((i) => i.id === id);
-    if (row?.status !== extra.core) await move(id, extra.core);
+    if (before && before !== extra.core) {
+      applyStatus(id, extra.core);
+      void persistStatus(id, extra.core).catch(revert);
+    }
     saveExtras(
       pullFromExtras(id).map((c) =>
         c.id === colId ? { ...c, importIds: [...c.importIds, id] } : c,
@@ -380,31 +457,39 @@ export function ImportsTab({
   }
 
   async function removeCustomColumn(col: ExtraCol) {
-    try {
-      for (const id of col.importIds) {
-        await move(id, col.core);
-      }
-      saveExtras(extras.filter((c) => c.id !== col.id));
-      setEditingCol(null);
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Couldn't delete column");
-    }
+    saveExtras(extras.filter((c) => c.id !== col.id));
+    setEditingCol(null);
   }
 
   function onDrop(colId: string, e: React.DragEvent) {
     e.preventDefault();
     const id = e.dataTransfer.getData("text/plain");
+    clearDrag();
     if (!id) return;
-    void assign(id, colId).catch((err: Error) => window.alert(err.message));
+    void assign(id, colId);
   }
 
   async function remove(id: string) {
-    await fetch("/api/importations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "delete", id }),
-    });
-    onReload();
+    const snapshot = imports;
+    const extraSnap = extras;
+    onImportsChange((rows) => rows.filter((row) => row.id !== id));
+    saveExtras(pullFromExtras(id));
+    setPendingDelete(null);
+    try {
+      const res = await fetch("/api/importations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "Couldn't delete importation");
+      }
+    } catch (err) {
+      onImportsChange(snapshot);
+      saveExtras(extraSnap);
+      flash(err instanceof Error ? err.message : "Couldn't delete importation");
+    }
   }
 
   return (
@@ -489,7 +574,7 @@ export function ImportsTab({
                         void (col === "PENDING"
                           ? move(imp.id, "IN_TRANSIT")
                           : completeImport(imp)
-                        ).catch((err: Error) => window.alert(err.message))
+                        ).catch((err: Error) => flash(err.message))
                       }
                       onDragBegin={(el, e) => {
                         e.dataTransfer.setData("text/plain", imp.id);
@@ -497,11 +582,7 @@ export function ImportsTab({
                         startCardDrag(el, e);
                         setDraggingId(imp.id);
                       }}
-                      onDragEnd={() => {
-                        endCardDrag();
-                        setDraggingId(null);
-                        setOverDelete(false);
-                      }}
+                      onDragEnd={clearDrag}
                     />
                   ))}
                 </BoardColumn>
@@ -559,7 +640,7 @@ export function ImportsTab({
                       onOpen={() => setEditing(imp)}
                       onAdvance={() =>
                         void completeImport(imp, custom.id).catch((err: Error) =>
-                          window.alert(err.message),
+                          flash(err.message),
                         )
                       }
                       onDragBegin={(el, e) => {
@@ -568,11 +649,7 @@ export function ImportsTab({
                         startCardDrag(el, e);
                         setDraggingId(imp.id);
                       }}
-                      onDragEnd={() => {
-                        endCardDrag();
-                        setDraggingId(null);
-                        setOverDelete(false);
-                      }}
+                      onDragEnd={clearDrag}
                     />
                   ))}
                 </BoardColumn>
@@ -630,6 +707,15 @@ export function ImportsTab({
             )}
           </div>
 
+          {notice && !draggingId && (
+            <div
+              role="alert"
+              className="absolute top-3 left-1/2 z-20 flex h-12 -translate-x-1/2 items-center rounded-md border border-danger-text bg-danger-fill px-3 text-xs font-medium text-danger-text"
+            >
+              {notice}
+            </div>
+          )}
+
           {doneNotice && !draggingId && (
             <div
               role="status"
@@ -645,9 +731,7 @@ export function ImportsTab({
                 type="button"
                 className="underline decoration-success-text/40 underline-offset-2 outline-none hover:decoration-success-text"
                 onClick={() =>
-                  void undoComplete().catch((err: Error) =>
-                    window.alert(err.message),
-                  )
+                  void undoComplete().catch((err: Error) => flash(err.message))
                 }
               >
                 Undo
@@ -676,8 +760,8 @@ export function ImportsTab({
             onDrop={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              setOverDelete(false);
               const id = e.dataTransfer.getData("text/plain");
+              clearDrag();
               const row = imports.find((i) => i.id === id);
               if (row) setPendingDelete(row);
             }}
@@ -818,9 +902,7 @@ export function ImportsTab({
             const old = prev.get(col.id);
             if (!old || old.core === col.core) continue;
             for (const id of col.importIds) {
-              void move(id, col.core).catch((err: Error) =>
-                window.alert(err.message),
-              );
+              void move(id, col.core).catch((err: Error) => flash(err.message));
             }
           }
         }}
@@ -839,12 +921,19 @@ export function ImportsTab({
             setEditing(null);
             setAddingImport(false);
           }}
-          onSaved={() => {
+          onSaved={(row) => {
             setEditing(null);
             setAddingImport(false);
-            onReload();
+            onImportsChange((rows) => {
+              const i = rows.findIndex((r) => r.id === row.id);
+              if (i === -1) return [row, ...rows];
+              const next = [...rows];
+              next[i] = row;
+              return next;
+            });
           }}
-          onCatalogChange={onReload}
+          onError={flash}
+          onCatalogChange={onProductsReload}
         />
       )}
     </div>
@@ -1246,6 +1335,7 @@ function ImportDialog({
   reasons,
   onClose,
   onSaved,
+  onError,
   onCatalogChange,
 }: {
   open: boolean;
@@ -1255,13 +1345,14 @@ function ImportDialog({
   suppliers: string[];
   reasons: string[];
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (row: ImportRow) => void;
+  onError: (message: string) => void;
   onCatalogChange: () => void;
 }) {
   const [form, setForm] = useState(() => ({
     reference: initial?.reference ?? "",
     supplierName: initial?.supplierName ?? "",
-    expectedDate: initial?.expectedDate?.slice(0, 10) ?? "",
+    expectedDate: initial?.expectedDate?.slice(0, 10) || toYmd(new Date()),
     transferFee: initial?.transferFee ?? 0,
     freight: initial?.freight ?? 0,
     delivery: initial?.delivery ?? 0,
@@ -1271,8 +1362,8 @@ function ImportDialog({
     lines: (initial?.lines ?? []).map((l) => ({
       productId: l.productId,
       name: l.product?.name ?? l.draftName ?? "",
-      quantity: l.quantity,
-      purchaseUnitCost: l.purchaseUnitCost,
+      quantity: String(l.quantity),
+      purchaseUnitCost: String(l.purchaseUnitCost),
     })),
   }));
   const [adding, setAdding] = useState(form.lines.length === 0);
@@ -1280,12 +1371,14 @@ function ImportDialog({
   const [creating, setCreating] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [replacing, setReplacing] = useState<number | null>(null);
-  const [focusQty, setFocusQty] = useState<number | null>(
-    form.lines.length ? form.lines.length - 1 : null,
-  );
+  const [editCell, setEditCell] = useState<{
+    i: number;
+    field: "quantity" | "cost";
+  } | null>(null);
   const [kind, setKind] = useState(initialKind);
   const [catalog, setCatalog] = useState(products);
   const clickTimer = useRef(0);
+  const busy = useRef(false);
 
   useEffect(() => () => window.clearTimeout(clickTimer.current), []);
 
@@ -1294,7 +1387,7 @@ function ImportDialog({
   }, [products]);
 
   const subtotal = form.lines.reduce(
-    (s, l) => s + l.quantity * l.purchaseUnitCost,
+    (s, l) => s + numOrZero(l.quantity) * numOrZero(l.purchaseUnitCost),
     0,
   );
   const additional = additionalImportCosts(form);
@@ -1308,13 +1401,13 @@ function ImportDialog({
           p?.packageWidth ?? p?.width,
           p?.packageHeight ?? p?.height,
         ) *
-          l.quantity
+          numOrZero(l.quantity)
       );
     }, 0);
   }, [form.lines, catalog]);
   const kg = form.lines.reduce((s, l) => {
     const p = catalog.find((x) => x.id === l.productId);
-    return s + (p?.packageWeight ?? p?.weight ?? 0) * l.quantity;
+    return s + (p?.packageWeight ?? p?.weight ?? 0) * numOrZero(l.quantity);
   }, 0);
 
   const q = query.trim().toLowerCase();
@@ -1335,12 +1428,12 @@ function ImportDialog({
         {
           productId: product.id,
           name: product.name,
-          quantity: 1,
-          purchaseUnitCost: priced?.fobCost || priced?.cifCost || 0,
+          quantity: "1",
+          purchaseUnitCost: String(priced?.cifCost || priced?.fobCost || 0),
         },
       ],
     }));
-    setFocusQty(nextIndex);
+    setEditCell({ i: nextIndex, field: "quantity" });
     setAdding(false);
     setQuery("");
   }
@@ -1367,10 +1460,10 @@ function ImportDialog({
       if (lines.length === 0) setAdding(true);
       return { ...f, lines };
     });
-    setFocusQty((cur) => {
+    setEditCell((cur) => {
       if (cur == null) return cur;
-      if (cur === index) return null;
-      return cur > index ? cur - 1 : cur;
+      if (cur.i === index) return null;
+      return cur.i > index ? { ...cur, i: cur.i - 1 } : cur;
     });
     setReplacing((cur) => {
       if (cur == null) return cur;
@@ -1386,48 +1479,71 @@ function ImportDialog({
   }
 
   async function save() {
-    await fetch("/api/importations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: initial?.id,
-        kind,
-        reference: form.reference,
-        supplierName: form.supplierName,
-        expectedDate: form.expectedDate,
-        transferFee: form.transferFee,
-        freight: form.freight,
-        delivery: form.delivery,
-        duties: form.duties,
-        customs: form.customs,
-        otherCosts: form.otherCosts,
-        lines: form.lines.map((l) => ({
-          productId: l.productId,
-          draftName: l.name,
-          quantity: l.quantity,
-          purchaseUnitCost: l.purchaseUnitCost,
-        })),
-      }),
-    });
-    onSaved();
+    if (busy.current) return;
+    busy.current = true;
+    onClose();
+    try {
+      const res = await fetch("/api/importations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: initial?.id,
+          kind,
+          reference: form.reference,
+          supplierName: form.supplierName,
+          expectedDate: form.expectedDate || null,
+          transferFee: form.transferFee,
+          freight: form.freight,
+          delivery: form.delivery,
+          duties: form.duties,
+          customs: form.customs,
+          otherCosts: form.otherCosts,
+          lines: form.lines.map((l) => ({
+            productId: l.productId,
+            draftName: l.name,
+            quantity: numOrZero(l.quantity),
+            purchaseUnitCost: numOrZero(l.purchaseUnitCost),
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        onError(data.error ?? "Couldn't save importation");
+        return;
+      }
+      onSaved((await res.json()) as ImportRow);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Couldn't save importation");
+    } finally {
+      busy.current = false;
+    }
   }
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[88vh] overflow-hidden sm:max-w-[1080px]">
+      <DialogContent
+        className="max-h-[88vh] overflow-hidden sm:max-w-[1080px]"
+        initialFocus={false}
+      >
         <DialogTitle className="sr-only">
           {initial ? "Importation" : "New importation"}
         </DialogTitle>
-        <KindBookmark
-          kind={kind}
-          onClick={() =>
-            setKind((k) =>
-              k === "INTERNATIONAL" ? "DOMESTIC" : "INTERNATIONAL",
-            )
-          }
-        />
+        <div className="absolute top-0 right-16 flex items-stretch gap-4">
+          <ExpectedDateField
+            value={form.expectedDate}
+            onChange={(expectedDate) => setForm({ ...form, expectedDate })}
+          />
+          <KindBookmark
+            kind={kind}
+            onClick={() =>
+              setKind((k) =>
+                k === "INTERNATIONAL" ? "DOMESTIC" : "INTERNATIONAL",
+              )
+            }
+          />
+        </div>
 
-        <div className="flex items-center gap-3 pr-10">
+        <div className="flex items-center gap-3 pr-56">
           <HugInput
             mono
             placeholder="CODE"
@@ -1443,16 +1559,15 @@ function ImportDialog({
           <ImportProgress status={initial?.status ?? "PENDING"} />
         </div>
 
-        <div className="flex h-[360px] flex-col overflow-hidden rounded-lg border border-border bg-surface">
-          <div className="grid h-9 shrink-0 grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] border-b border-border bg-sunken text-xs font-medium text-gray-600">
-            <div className="flex items-center px-3">ID</div>
-            <div className="flex items-center px-3">Name</div>
-            <div className="flex items-center justify-end px-3">Qnt</div>
-            <div className="flex items-center justify-end px-3">Cost</div>
-            <div className="flex items-center justify-end px-3">Total</div>
-            <div />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <ScrollArea className="h-[360px] rounded-lg border border-border bg-surface">
+          <div className="sticky top-0 z-10 grid h-9 grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] border-b border-border bg-sunken pr-2.5 text-xs font-medium text-gray-600">
+              <div className="flex items-center px-3">ID</div>
+              <div className="flex items-center px-3">Name</div>
+              <div className="flex items-center justify-center px-3">Qnt</div>
+              <div className="flex items-center justify-center px-3">Cost</div>
+              <div className="flex items-center justify-end px-3">Total</div>
+              <div />
+            </div>
             {form.lines.map((l, i) => {
               const code =
                 catalog.find((p) => p.id === l.productId)?.code ?? "—";
@@ -1460,11 +1575,13 @@ function ImportDialog({
               return (
                 <div
                   key={`${l.productId ?? "draft"}-${i}`}
-                  className="group/line grid cursor-pointer grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5 text-xs hover:bg-gray-50"
+                  className="group/line grid cursor-pointer grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5 pr-2.5 text-xs hover:bg-gray-50"
                   onClick={(e) => {
                     if (
                       changing ||
-                      (e.target as HTMLElement).closest("button, input")
+                      (e.target as HTMLElement).closest(
+                        "button, input, [data-line-num]",
+                      )
                     ) {
                       return;
                     }
@@ -1475,7 +1592,12 @@ function ImportDialog({
                     );
                   }}
                   onDoubleClick={(e) => {
-                    if (changing || (e.target as HTMLElement).closest("button, input")) {
+                    if (
+                      changing ||
+                      (e.target as HTMLElement).closest(
+                        "button, input, [data-line-num]",
+                      )
+                    ) {
                       return;
                     }
                     window.clearTimeout(clickTimer.current);
@@ -1523,42 +1645,44 @@ function ImportDialog({
                       </button>
                     </div>
                   )}
-                  <Input
-                    autoFocus={focusQty === i}
-                    className="h-7 border-0 bg-transparent text-right shadow-none"
-                    type="number"
-                    min={0}
-                    step="any"
-                    aria-label={`${l.name || code} quantity`}
-                    value={Number.isFinite(l.quantity) ? l.quantity : 0}
-                    onFocus={() => setFocusQty(i)}
-                    onChange={(e) => {
+                  <LineNum
+                    value={l.quantity}
+                    active={editCell?.i === i && editCell.field === "quantity"}
+                    ariaLabel={`${l.name || code} quantity`}
+                    onActivate={() =>
+                      setEditCell({ i, field: "quantity" })
+                    }
+                    onDone={() =>
+                      setEditCell((cur) =>
+                        cur?.i === i && cur.field === "quantity" ? null : cur,
+                      )
+                    }
+                    onChange={(quantity) => {
                       const lines = [...form.lines];
-                      lines[i] = {
-                        ...l,
-                        quantity: Number(e.target.value) || 0,
-                      };
+                      lines[i] = { ...l, quantity };
                       setForm({ ...form, lines });
                     }}
                   />
-                  <Input
-                    className="h-7 border-0 bg-transparent text-right font-mono shadow-none"
-                    type="number"
-                    min={0}
-                    step="any"
-                    aria-label={`${l.name || code} cost`}
-                    value={Number.isFinite(l.purchaseUnitCost) ? l.purchaseUnitCost : 0}
-                    onChange={(e) => {
+                  <LineNum
+                    value={l.purchaseUnitCost}
+                    active={editCell?.i === i && editCell.field === "cost"}
+                    ariaLabel={`${l.name || code} cost`}
+                    onActivate={() => setEditCell({ i, field: "cost" })}
+                    onDone={() =>
+                      setEditCell((cur) =>
+                        cur?.i === i && cur.field === "cost" ? null : cur,
+                      )
+                    }
+                    onChange={(purchaseUnitCost) => {
                       const lines = [...form.lines];
-                      lines[i] = {
-                        ...l,
-                        purchaseUnitCost: Number(e.target.value) || 0,
-                      };
+                      lines[i] = { ...l, purchaseUnitCost };
                       setForm({ ...form, lines });
                     }}
                   />
                   <div className="px-3 text-right font-mono tabular-nums">
-                    {formatMoney(l.quantity * l.purchaseUnitCost)}
+                    {formatMoney(
+                      numOrZero(l.quantity) * numOrZero(l.purchaseUnitCost),
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1575,7 +1699,7 @@ function ImportDialog({
               );
             })}
             {adding ? (
-              <div className="relative grid grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5">
+              <div className="relative grid grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5 pr-2.5">
                 <div />
                 <ProductPicker
                   query={query}
@@ -1593,7 +1717,7 @@ function ImportDialog({
             ) : (
               <button
                 type="button"
-                className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400"
+                className="flex w-full items-center gap-1.5 px-3 py-1.5 pr-2.5 text-xs text-gray-400"
                 onClick={() => {
                   setAdding(true);
                   setQuery("");
@@ -1602,8 +1726,7 @@ function ImportDialog({
                 <Plus className="size-3.5" /> Add Product
               </button>
             )}
-          </div>
-        </div>
+        </ScrollArea>
 
         <div className="flex items-center gap-6">
           <div className="grid min-w-0 flex-1 grid-cols-3 gap-x-3 gap-y-4">
@@ -1655,6 +1778,7 @@ function ImportDialog({
         productId={creating ? null : viewingId}
         mode={creating ? "create" : "edit"}
         reasons={reasons}
+        types={uniqueProductTypes(catalog)}
         onClose={() => {
           setCreating(false);
           setViewingId(null);
@@ -1889,6 +2013,273 @@ function SupplierPicker({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function numOrZero(value: string) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isNumericText(value: string) {
+  return /^\d*\.?\d*$/.test(value.trim());
+}
+
+function LineNum({
+  value,
+  active,
+  ariaLabel,
+  onActivate,
+  onDone,
+  onChange,
+}: {
+  value: string;
+  active: boolean;
+  ariaLabel: string;
+  onActivate: () => void;
+  onDone: () => void;
+  onChange: (value: string) => void;
+}) {
+  const invalid = !isNumericText(value);
+  return (
+    <div
+      data-line-num=""
+      role={active ? undefined : "button"}
+      tabIndex={active ? undefined : 0}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!active) onActivate();
+      }}
+      onBlur={
+        active
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget)) onDone();
+            }
+          : undefined
+      }
+      onKeyDown={(e) => {
+        if (active && (e.key === "Enter" || e.key === "Escape")) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDone();
+          return;
+        }
+        if (!active && e.key === "Enter") {
+          e.preventDefault();
+          onActivate();
+        }
+      }}
+      className={cn(
+        "mx-1 box-border flex h-[1.5rem] items-center justify-center overflow-hidden rounded-md border px-1.5 font-mono text-xs tabular-nums leading-none",
+        active
+          ? "border-gray-400 bg-surface"
+          : "cursor-text border-transparent hover:bg-gray-100",
+      )}
+    >
+      {active ? (
+        <input
+          autoFocus
+          aria-label={ariaLabel}
+          value={value}
+          className={cn(
+            "h-full w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-center outline-none",
+            invalid ? "text-[#e07a72]" : "text-gray-900",
+          )}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      ) : (
+        <span
+          className={cn(
+            "truncate",
+            invalid ? "text-[#e07a72]" : "text-gray-900",
+          )}
+        >
+          {value}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function parseYmd(value: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function toYmd(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function formatMdY(d: Date) {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${mm}/${dd}/${yy}`;
+}
+
+const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function ExpectedDateField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const selected = parseYmd(value);
+  const [open, setOpen] = useState(false);
+  const [pickingMonth, setPickingMonth] = useState(false);
+  const [cursor, setCursor] = useState(() => selected ?? new Date());
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = toYmd(new Date());
+
+  return (
+    <div className="flex items-center">
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (next) {
+            setCursor(selected ?? new Date());
+            setPickingMonth(false);
+          }
+        }}
+      >
+        <PopoverTrigger
+          className={cn(
+            "box-border flex h-[1.5rem] w-[calc(8ch+1.5rem)] items-center justify-center rounded-md border px-3 font-mono text-base leading-none text-gray-900 tabular-nums outline-none",
+            open
+              ? "border-gray-400 bg-surface"
+              : "border-transparent hover:bg-gray-100",
+          )}
+          aria-label="Expected date"
+        >
+          {formatMdY(selected ?? new Date())}
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-[252px] gap-2 p-3">
+          <div className="flex items-center justify-between">
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={pickingMonth ? "Previous year" : "Previous month"}
+              onClick={() =>
+                setCursor(
+                  pickingMonth
+                    ? new Date(year - 1, month, 1)
+                    : new Date(year, month - 1, 1),
+                )
+              }
+            >
+              <ChevronLeft />
+            </Button>
+            <button
+              type="button"
+              className="rounded-md px-1.5 py-0.5 text-sm font-medium text-gray-900 hover:bg-gray-100"
+              onClick={() => setPickingMonth((v) => !v)}
+            >
+              {pickingMonth
+                ? String(year)
+                : cursor.toLocaleDateString("en-US", {
+                    month: "long",
+                    year: "numeric",
+                  })}
+            </button>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={pickingMonth ? "Next year" : "Next month"}
+              onClick={() =>
+                setCursor(
+                  pickingMonth
+                    ? new Date(year + 1, month, 1)
+                    : new Date(year, month + 1, 1),
+                )
+              }
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+          {pickingMonth ? (
+            <div className="grid grid-cols-3 gap-1">
+              {MONTHS.map((name, i) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => {
+                    setCursor(new Date(year, i, 1));
+                    setPickingMonth(false);
+                  }}
+                  className={cn(
+                    "h-8 rounded-md text-xs outline-none hover:bg-gray-100",
+                    i === month && "bg-gray-900 text-white hover:bg-gray-900",
+                  )}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-7 gap-0.5">
+              {WEEKDAYS.map((d) => (
+                <div
+                  key={d}
+                  className="flex h-7 items-center justify-center text-2xs font-medium tracking-caps text-gray-500 uppercase"
+                >
+                  {d}
+                </div>
+              ))}
+              {Array.from({ length: firstWeekday }, (_, i) => (
+                <div key={`pad-${i}`} />
+              ))}
+              {Array.from({ length: daysInMonth }, (_, i) => {
+                const day = i + 1;
+                const ymd = toYmd(new Date(year, month, day));
+                const isSelected = ymd === value;
+                const isToday = ymd === today;
+                return (
+                  <button
+                    key={ymd}
+                    type="button"
+                    onClick={() => {
+                      onChange(ymd);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex size-8 items-center justify-center rounded-md text-xs tabular-nums outline-none hover:bg-gray-100",
+                      isSelected && "bg-gray-900 text-white hover:bg-gray-900",
+                      !isSelected && isToday && "font-medium ring-1 ring-gray-300",
+                      !isSelected && !isToday && "text-gray-800",
+                    )}
+                  >
+                    {day}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }

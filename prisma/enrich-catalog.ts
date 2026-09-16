@@ -2,6 +2,7 @@ import "dotenv/config";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { readFileSync } from "fs";
+import type { PrismaClient } from "@prisma/client";
 
 const DEFAULT_HTML =
   "/Users/juanstevan/Downloads/Chaleur_Price_List_Mobile_Full.html";
@@ -45,6 +46,7 @@ type CatalogItem = {
   sid: string;
   name: string;
   sku: string;
+  type: string | null;
   notes: string;
   overall: ReturnType<typeof dims>;
   cutout: ReturnType<typeof dims>;
@@ -56,10 +58,15 @@ type CatalogItem = {
 
 function parseCatalog(html: string): CatalogItem[] {
   const items: CatalogItem[] = [];
-  const block =
-    /<details><summary><span class="sid">([^<]*)<\/span><span class="snm">([^<]*)<\/span><\/summary>([\s\S]*?)<\/details>/g;
-  for (const match of html.matchAll(block)) {
-    const body = match[3];
+  let currentType: string | null = null;
+  const token =
+    /<h2>([^<]*)<\/h2>|<details><summary><span class="sid">([^<]*)<\/span><span class="snm">([^<]*)<\/span><\/summary>([\s\S]*?)<\/details>/g;
+  for (const match of html.matchAll(token)) {
+    if (match[2] == null) {
+      currentType = decode(match[1]) || null;
+      continue;
+    }
+    const body = match[4];
     const sku = skuOf(body.match(/<div class="sku">([^<]*)<\/div>/)?.[1] ?? "");
     const notes = decode(body.match(/<div class="ds">([^<]*)<\/div>/)?.[1] ?? "");
     let overall = null;
@@ -86,9 +93,10 @@ function parseCatalog(html: string): CatalogItem[] {
     }
     const img = body.match(/<img src="data:image\/jpeg;base64,([^"]+)"/)?.[1];
     items.push({
-      sid: decode(match[1]),
-      name: decode(match[2]),
+      sid: decode(match[2]),
+      name: decode(match[3]),
       sku,
+      type: currentType,
       notes,
       overall,
       cutout,
@@ -136,6 +144,64 @@ function pickProduct<T extends { id: string; sku: string; code: string; name: st
   return null;
 }
 
+function round4(value: number) {
+  return Math.round((value + Number.EPSILON) * 10000) / 10000;
+}
+
+async function applyCatalogCost(
+  db: PrismaClient,
+  productId: string,
+  cost: number,
+) {
+  const product = await db.product.findUniqueOrThrow({
+    where: { id: productId },
+  });
+  const txns = await db.inventoryTransaction.findMany({
+    where: { productId },
+    orderBy: { occurredAt: "asc" },
+  });
+  const initial = txns.find(
+    (t) => t.reference === "INITIAL" || t.notes === "Initial stock",
+  );
+  const moving = txns.filter((t) => t.quantity !== 0);
+  const onlyInitial = Boolean(initial && moving.length === 1);
+
+  if (initial) {
+    const qty = onlyInitial ? product.physicalQty : initial.quantity;
+    await db.inventoryTransaction.update({
+      where: { id: initial.id },
+      data: {
+        quantity: qty,
+        unitCost: cost,
+        totalValue: round4(Math.abs(qty) * cost),
+      },
+    });
+    await db.costHistory.updateMany({
+      where: { transactionId: initial.id },
+      data: {
+        unitCost: cost,
+        quantityDelta: qty,
+        resultingAvgCost: cost,
+        resultingQty: product.physicalQty,
+        resultingValue: round4(product.physicalQty * cost),
+      },
+    });
+  }
+
+  await db.product.update({
+    where: { id: productId },
+    data: {
+      fobCost: cost,
+      ...(product.avgCost === 0 || onlyInitial
+        ? {
+            avgCost: product.physicalQty > 0 ? cost : 0,
+            inventoryValue: round4(product.physicalQty * cost),
+          }
+        : {}),
+    },
+  });
+}
+
 async function main() {
   if (process.argv.includes("--self-check")) {
     const d = dims("27.55W x 18.5D x 18.58H in");
@@ -144,13 +210,85 @@ async function main() {
     }
     if (money("$1,090.00") !== 1090) throw new Error("money parse failed");
     if (money("no price") !== null) throw new Error("no price should be null");
+    const typed = parseCatalog(
+      `<h2>Grill</h2><details><summary><span class="sid">10</span><span class="snm">Grill Smokeless</span></summary><div class="sku">CH-G-SMK</div></details>`,
+    );
+    if (typed[0]?.type !== "Grill") throw new Error("type parse failed");
     console.log("ok");
     return;
   }
 
   const { prisma } = await import("../src/lib/db");
-  const htmlPath = process.argv[2] || DEFAULT_HTML;
+  const typesOnly = process.argv.includes("--types-only");
+  const costsOnly = process.argv.includes("--costs-only");
+  const htmlPath =
+    process.argv.slice(2).find((a) => !a.startsWith("-")) || DEFAULT_HTML;
   const items = parseCatalog(readFileSync(htmlPath, "utf8"));
+
+  if (typesOnly) {
+    const products = await prisma.product.findMany();
+    let updated = 0;
+    const unmatched: string[] = [];
+    for (const item of items) {
+      const product = pickProduct(item, products);
+      if (!product) {
+        unmatched.push(`${item.sid} ${item.sku || "—"} ${item.name}`);
+        continue;
+      }
+      if (!item.type) continue;
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { type: item.type },
+      });
+      updated += 1;
+    }
+    console.log(
+      JSON.stringify(
+        {
+          catalog: items.length,
+          updated,
+          unmatched: unmatched.length,
+          types: [...new Set(items.map((i) => i.type).filter(Boolean))],
+        },
+        null,
+        2,
+      ),
+    );
+    await prisma.$disconnect();
+    return;
+  }
+
+  if (costsOnly) {
+    const products = await prisma.product.findMany();
+    let updated = 0;
+    let costs = 0;
+    const unmatched: string[] = [];
+    for (const item of items) {
+      const product = pickProduct(item, products);
+      if (!product) {
+        unmatched.push(`${item.sid} ${item.sku || "—"} ${item.name}`);
+        continue;
+      }
+      updated += 1;
+      if (item.cost == null) continue;
+      await applyCatalogCost(prisma, product.id, item.cost);
+      costs += 1;
+    }
+    console.log(
+      JSON.stringify(
+        {
+          catalog: items.length,
+          matched: updated,
+          costs,
+          unmatched: unmatched.length,
+        },
+        null,
+        2,
+      ),
+    );
+    await prisma.$disconnect();
+    return;
+  }
   await prisma.product.updateMany({
     data: {
       width: null,
@@ -207,8 +345,10 @@ async function main() {
         ...(item.b2c != null ? { b2cPrice: item.b2c } : {}),
         ...(item.notes ? { notes: item.notes } : {}),
         ...(imageUrl ? { imageUrl } : {}),
+        ...(item.type ? { type: item.type } : {}),
       },
     });
+    if (item.cost != null) await applyCatalogCost(prisma, product.id, item.cost);
     updated += 1;
   }
 

@@ -7,7 +7,7 @@ import {
   type Product,
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { currentUserId } from "@/lib/user";
+import { currentUserId, DEMO_USER } from "@/lib/user";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -18,6 +18,37 @@ import {
 } from "@/lib/inventory/math";
 
 type Tx = Prisma.TransactionClient;
+
+function ymd(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+function shouldAutoDelay(
+  expectedDate: Date | null | undefined,
+  status: ImportStatus,
+  overridden: boolean,
+) {
+  if (overridden || !expectedDate) return false;
+  if (
+    status === ImportStatus.COMPLETED ||
+    status === ImportStatus.DELAYED
+  ) {
+    return false;
+  }
+  return ymd(expectedDate) < ymd(new Date());
+}
+
+async function applyOverdueDelays() {
+  const startToday = new Date(`${ymd(new Date())}T00:00:00.000Z`);
+  await prisma.importation.updateMany({
+    where: {
+      delayOverridden: false,
+      expectedDate: { lt: startToday },
+      status: { in: [ImportStatus.PENDING, ImportStatus.IN_TRANSIT] },
+    },
+    data: { status: ImportStatus.DELAYED },
+  });
+}
 
 export async function appendTransaction(
   tx: Tx,
@@ -36,6 +67,7 @@ export async function appendTransaction(
     reason?: string | null;
   },
 ) {
+  await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
   const product = await tx.product.findUniqueOrThrow({
     where: { id: input.productId },
   });
@@ -138,6 +170,7 @@ async function nextCode(tx: Tx) {
 export async function createProduct(input: {
   name: string;
   sku: string;
+  type?: string | null;
   code?: string;
   secondarySku?: string | null;
   ean?: string | null;
@@ -167,6 +200,7 @@ export async function createProduct(input: {
       data: {
         name: input.name,
         sku: input.sku,
+        type: input.type?.trim() || null,
         code:
           input.code?.trim().toUpperCase().slice(0, 3) || (await nextCode(tx)),
         secondarySku: input.secondarySku || null,
@@ -229,10 +263,8 @@ export async function listProducts(search?: string) {
       OR: [
         { name: { contains: q } },
         { sku: { contains: q } },
-        { secondarySku: { contains: q } },
-        { ean: { contains: q } },
+        { type: { contains: q } },
         { code: { contains: q } },
-        { id: { contains: q } },
       ],
     },
     orderBy: { name: "asc" },
@@ -240,20 +272,39 @@ export async function listProducts(search?: string) {
 }
 
 export async function getProductDetail(id: string) {
-  return prisma.product.findUnique({
-    where: { id },
-    include: {
-      transactions: { orderBy: { occurredAt: "desc" } },
-      costHistory: { orderBy: { occurredAt: "desc" } },
-      orderLines: {
-        where: {
-          reservedQty: { gt: 0 },
-          order: { status: { not: ExitStatus.COMPLETED } },
+  const [product, users] = await Promise.all([
+    prisma.product.findUnique({
+      where: { id },
+      include: {
+        transactions: { orderBy: { occurredAt: "desc" } },
+        costHistory: { orderBy: { occurredAt: "desc" } },
+        orderLines: {
+          where: {
+            reservedQty: { gt: 0 },
+            order: { status: { not: ExitStatus.COMPLETED } },
+          },
+          include: { order: true },
         },
-        include: { order: true },
       },
-    },
-  });
+    }),
+    prisma.user.findMany({ select: { id: true, username: true, name: true } }),
+  ]);
+  if (!product) return null;
+  const names = new Map<string, string>([
+    ["admin", DEMO_USER.name],
+    ["demo", DEMO_USER.name],
+  ]);
+  for (const u of users) {
+    names.set(u.id, u.name);
+    names.set(u.username, u.name);
+  }
+  return {
+    ...product,
+    transactions: product.transactions.map((t) => ({
+      ...t,
+      userName: names.get(t.userId) ?? t.userId,
+    })),
+  };
 }
 
 export async function changeQuantity(input: {
@@ -379,12 +430,34 @@ export async function upsertImportation(input: {
 
   return prisma.$transaction(async (tx) => {
     let importationId = input.id;
+    const existing = importationId
+      ? await tx.importation.findUniqueOrThrow({ where: { id: importationId } })
+      : null;
+    if (existing?.status === ImportStatus.COMPLETED) {
+      throw new Error("Completed importations cannot be edited");
+    }
+    const dateChanged =
+      (existing?.expectedDate?.getTime() ?? null) !==
+      (input.expectedDate?.getTime() ?? null);
+    const delayOverridden = dateChanged
+      ? false
+      : (existing?.delayOverridden ?? false);
+    const nextStatus =
+      input.status ?? existing?.status ?? ImportStatus.PENDING;
+    const status = shouldAutoDelay(
+      input.expectedDate,
+      nextStatus,
+      delayOverridden,
+    )
+      ? ImportStatus.DELAYED
+      : nextStatus;
     const reference =
       input.reference?.trim() || `IMP-${Date.now().toString(36).toUpperCase()}`;
     const data = {
       reference,
-      kind: input.kind ?? ImportKind.INTERNATIONAL,
-      status: input.status ?? ImportStatus.PENDING,
+      kind: input.kind ?? existing?.kind ?? ImportKind.INTERNATIONAL,
+      status,
+      delayOverridden,
       supplierName: input.supplierName ?? null,
       expectedDate: input.expectedDate ?? null,
       notes: input.notes ?? null,
@@ -394,13 +467,7 @@ export async function upsertImportation(input: {
       coefficient,
     };
 
-    if (importationId) {
-      const existing = await tx.importation.findUniqueOrThrow({
-        where: { id: importationId },
-      });
-      if (existing.status === ImportStatus.COMPLETED) {
-        throw new Error("Completed importations cannot be edited");
-      }
+    if (existing) {
       await tx.importationLine.deleteMany({ where: { importationId } });
       await tx.importation.update({ where: { id: importationId }, data });
     } else {
@@ -465,9 +532,16 @@ export async function setImportStatus(id: string, status: ImportStatus) {
   if (current.status === ImportStatus.COMPLETED) {
     return reopenImportation(id, status);
   }
+  const delayOverridden =
+    current.status === ImportStatus.DELAYED && status !== ImportStatus.DELAYED;
   return prisma.importation.update({
     where: { id },
-    data: { status },
+    data: {
+      status,
+      ...(current.status === ImportStatus.DELAYED || status === ImportStatus.DELAYED
+        ? { delayOverridden }
+        : {}),
+    },
     include: { lines: { include: { product: true } } },
   });
 }
@@ -522,6 +596,13 @@ export async function confirmImportation(importationId: string) {
     if (importation.lines.length === 0) throw new Error("Importation has no products");
 
     const totalAdditional = additionalImportCosts(importation);
+    const productSubtotal = roundMoney(
+      importation.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
+    );
+    const coefficient =
+      productSubtotal > 0
+        ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
+        : 1;
     const allocated = allocateAdditionalCosts(
       importation.lines.map((l) => ({
         id: l.id,
@@ -534,6 +615,8 @@ export async function confirmImportation(importationId: string) {
     for (let i = 0; i < importation.lines.length; i++) {
       const line = importation.lines[i];
       const alloc = allocated[i];
+      const cifCost = roundMoney(line.purchaseUnitCost);
+      const fobCost = roundMoney(line.purchaseUnitCost * coefficient);
       let productId = line.productId;
       if (!productId) {
         const sku =
@@ -553,14 +636,14 @@ export async function confirmImportation(importationId: string) {
         data: {
           productId,
           allocatedAdditionalCost: alloc.allocatedAdditionalCost,
-          landedUnitCost: alloc.landedUnitCost,
+          landedUnitCost: fobCost,
         },
       });
       await appendTransaction(tx, {
         productId,
         type: TransactionType.IMPORTATION,
         quantity: line.quantity,
-        unitCost: alloc.landedUnitCost,
+        unitCost: fobCost,
         reference: importation.reference,
         notes: `Import ${importation.reference}`,
         affectsPhysical: true,
@@ -568,21 +651,17 @@ export async function confirmImportation(importationId: string) {
         metadata: {
           importationId: importation.id,
           purchaseUnitCost: line.purchaseUnitCost,
-          allocatedAdditionalCost: alloc.allocatedAdditionalCost,
+          coefficient,
+          cifCost,
+          fobCost,
         },
       });
       await tx.product.update({
         where: { id: productId },
-        data: {
-          fobCost: line.purchaseUnitCost,
-          cifCost: alloc.landedUnitCost,
-        },
+        data: { cifCost, fobCost },
       });
     }
 
-    const productSubtotal = roundMoney(
-      importation.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
-    );
     return tx.importation.update({
       where: { id: importation.id },
       data: {
@@ -590,10 +669,7 @@ export async function confirmImportation(importationId: string) {
         receivedAt: new Date(),
         totalAdditionalCosts: totalAdditional,
         productSubtotal,
-        coefficient:
-          productSubtotal > 0
-            ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
-            : 1,
+        coefficient,
       },
       include: { lines: { include: { product: true } } },
     });
@@ -601,6 +677,7 @@ export async function confirmImportation(importationId: string) {
 }
 
 export async function listImportations() {
+  await applyOverdueDelays();
   return prisma.importation.findMany({
     orderBy: { createdAt: "desc" },
     include: { lines: { include: { product: true } } },

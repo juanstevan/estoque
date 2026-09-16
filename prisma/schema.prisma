@@ -69,6 +69,7 @@ model Product {
   code               String   @unique
   name               String
   sku                String   @unique
+  type               String?
   secondarySku       String?
   ean                String?
   amazonUrl          String?
@@ -173,6 +174,7 @@ model Importation {
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   receivedAt           DateTime?
+  delayOverridden      Boolean      @default(false)
 
   lines ImportationLine[]
 }

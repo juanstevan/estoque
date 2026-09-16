@@ -140,7 +140,12 @@ export function ChaleurApp({ userName }: { userName: string }) {
             imports={imports}
             products={products}
             reasons={reasons}
-            onReload={() => void load()}
+            onImportsChange={setImports}
+            onProductsReload={() => {
+              void fetch("/api/products")
+                .then((r) => r.json())
+                .then(setProducts);
+            }}
           />
         )}
         {tab === "exit" && <ExitTab exits={exits} onReload={() => void load()} />}

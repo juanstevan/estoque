@@ -39,7 +39,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DataGrid } from "@/components/chaleur/DataGrid";
-import { formatMoney, formatQty, TRANSACTION_TYPE_LABELS } from "@/lib/format";
+import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
 import { calcWeightedAverageCost } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,7 @@ export type ProductRow = {
   code: string;
   name: string;
   sku: string;
+  type: string | null;
   physicalQty: number;
   availableQty: number;
   reservedQty: number;
@@ -85,6 +86,9 @@ type Detail = ProductRow & {
     reference: string | null;
     clientName: string | null;
     notes: string | null;
+    metadata: string | null;
+    userId: string;
+    userName: string;
     occurredAt: string;
   }>;
   orderLines: Array<{
@@ -130,6 +134,7 @@ function blankDetail(): Detail {
     code: "",
     name: "",
     sku: "",
+    type: null,
     physicalQty: 0,
     availableQty: 0,
     reservedQty: 0,
@@ -160,11 +165,16 @@ function blankDetail(): Detail {
   };
 }
 
+export function uniqueProductTypes(products: { type: string | null }[]) {
+  return [...new Set(products.flatMap((p) => (p.type ? [p.type] : [])))].sort();
+}
+
 export function ProductDialog({
   open,
   productId,
   mode = "edit",
   reasons,
+  types = [],
   onClose,
   onSaved,
 }: {
@@ -172,6 +182,7 @@ export function ProductDialog({
   productId: string | null;
   mode?: "edit" | "create";
   reasons: string[];
+  types?: string[];
   onClose: () => void;
   onSaved: (created?: { id: string; code: string; name: string }) => void;
 }) {
@@ -232,6 +243,7 @@ export function ProductDialog({
       code: detail.code.trim().toUpperCase().slice(0, 3) || undefined,
       name: detail.name,
       sku: detail.sku,
+      type: detail.type?.trim() || null,
       amazonUrl: detail.amazonUrl,
       imageUrl: detail.imageUrl,
       b2bPrice: detail.b2bPrice,
@@ -299,7 +311,7 @@ export function ProductDialog({
           </DialogTitle>
 
           {!detail ? (
-            <div className="flex h-[720px] min-h-[720px] w-[1080px] min-w-[1080px] flex-col rounded-[9px] border border-border bg-surface p-6 shadow-md">
+            <div className="flex aspect-[1.6] w-[1080px] min-w-[1080px] flex-col rounded-[9px] border border-border bg-surface p-6 shadow-md">
               <ProductSkeleton />
             </div>
           ) : (
@@ -337,11 +349,11 @@ export function ProductDialog({
                 )}
               </div>
 
-              <div className="flex h-[720px] min-h-[720px] w-[1080px] min-w-[1080px] flex-col overflow-hidden rounded-[9px] border border-border bg-surface p-6 shadow-md">
+              <div className="flex aspect-[1.6] w-[1080px] min-w-[1080px] flex-col overflow-hidden rounded-[9px] border border-border bg-surface p-6 shadow-md">
               {tab === "info" ? (
                 <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
-                  <div className="flex w-[520px] min-w-0 shrink-0 flex-col gap-3">
-                    <div className="group relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken">
+                  <div className="flex w-[45%] shrink-0 flex-col">
+                    <div className="group relative mb-8 flex aspect-square w-full items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken">
                       {hasImage && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -384,8 +396,9 @@ export function ProductDialog({
                       }}
                     />
 
-                    <div className="flex items-start gap-[18px]">
-                      <div className="grid shrink-0 gap-1.5">
+                    <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-6">
+                      <div className="flex shrink-0 items-center gap-1.5">
                         <FieldLabel>ID</FieldLabel>
                         <EditSlot
                           active={isOpen("code")}
@@ -412,31 +425,67 @@ export function ProductDialog({
                           />
                         </EditSlot>
                       </div>
-                      <div className="grid min-w-0 flex-1 gap-1.5">
-                        <FieldLabel>Name</FieldLabel>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <FieldLabel className="shrink-0">SKU</FieldLabel>
                         <EditSlot
-                          active={isOpen("name")}
-                          onActivate={() => openField("name")}
+                          active={isOpen("sku")}
+                          onActivate={() => openField("sku")}
                           onDone={closeField}
-                          className="min-h-[27px] h-auto min-w-0 px-[9px] text-sm font-medium"
+                          className="w-[117px] shrink-0 text-xs font-medium"
                           read={
                             <span className="truncate">
-                              {detail.name || <Null />}
+                              {detail.sku || <Null />}
                             </span>
                           }
                         >
                           <BareField
                             autoFocus
-                            value={detail.name}
-                            placeholder="Complete product name"
-                            aria-label="Name"
-                            onChange={(e) => patch({ name: e.target.value })}
+                            className="text-xs"
+                            value={detail.sku}
+                            placeholder="SKU"
+                            aria-label="SKU"
+                            maxLength={12}
+                            onChange={(e) => patch({ sku: e.target.value })}
                           />
                         </EditSlot>
                       </div>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <FieldLabel className="shrink-0">Type</FieldLabel>
+                        <TypePicker
+                          value={detail.type}
+                          options={types}
+                          active={editingField === "type"}
+                          onActivate={() => openField("type")}
+                          onDone={closeField}
+                          onChange={(type) => patch({ type })}
+                        />
+                      </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="grid gap-1.5">
+                      <FieldLabel>Name</FieldLabel>
+                      <EditSlot
+                        active={isOpen("name")}
+                        onActivate={() => openField("name")}
+                        onDone={closeField}
+                        className="min-h-[1.5rem] h-auto min-w-0 px-[9px] text-sm font-medium"
+                        read={
+                          <span className="truncate">
+                            {detail.name || <Null />}
+                          </span>
+                        }
+                      >
+                        <BareField
+                          autoFocus
+                          value={detail.name}
+                          placeholder="Complete product name"
+                          aria-label="Name"
+                          onChange={(e) => patch({ name: e.target.value })}
+                        />
+                      </EditSlot>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-3">
                       {editingField === "amazonUrl" ? (
                         <div
                           className={cn(SLOT, "w-full border-gray-400")}
@@ -465,31 +514,6 @@ export function ProductDialog({
                         </div>
                       ) : (
                         <>
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <FieldLabel className="shrink-0">SKU</FieldLabel>
-                            <EditSlot
-                              active={isOpen("sku")}
-                              onActivate={() => openField("sku")}
-                              onDone={closeField}
-                              className="w-[117px] shrink-0 text-xs font-medium"
-                              read={
-                                <span className="truncate">
-                                  {detail.sku || <Null />}
-                                </span>
-                              }
-                            >
-                              <BareField
-                                autoFocus
-                                className="text-xs"
-                                value={detail.sku}
-                                placeholder="SKU"
-                                aria-label="SKU"
-                                maxLength={12}
-                                onChange={(e) => patch({ sku: e.target.value })}
-                              />
-                            </EditSlot>
-                          </div>
-
                           <div className="group/amazon flex shrink-0 items-center gap-[9px]">
                             <Tooltip>
                               <TooltipTrigger
@@ -549,8 +573,112 @@ export function ProductDialog({
                         </>
                       )}
                     </div>
+                    </div>
+                  </div>
 
-                    <div className="border-t border-gray-150 pt-3">
+                  <div className="flex min-w-0 flex-1 flex-col gap-8 overflow-hidden">
+                    <div className="grid grid-cols-4 gap-x-6 gap-y-8 px-3 py-[3px]">
+                      <Stat
+                        label="Quantity"
+                        value={`${formatQty(detail.physicalQty)}un`}
+                        center
+                        onClick={
+                          isCreate ? undefined : () => setQtyOpen(true)
+                        }
+                      />
+                      <Stat
+                        label="Avg. cost"
+                        value={formatMoney(detail.avgCost)}
+                        center
+                      />
+                      <Stat
+                        label="CIF cost"
+                        value={formatMoney(detail.cifCost)}
+                        center
+                      />
+                      <Stat
+                        label="FOB cost"
+                        value={formatMoney(detail.fobCost)}
+                        center
+                      />
+                      <div className="min-w-0 text-center">
+                        <Popover>
+                          <PopoverTrigger className="w-full rounded-md px-1.5 py-0.5 outline-none hover:bg-gray-100">
+                            <Eyebrow>Available</Eyebrow>
+                            <div className="mt-0.5 flex items-center justify-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900">
+                              {formatQty(detail.availableQty)}un
+                              <Search className="size-3.5 text-gray-500" />
+                            </div>
+                          </PopoverTrigger>
+                            <PopoverContent
+                              align="start"
+                              className="flex h-64 w-[459px] flex-col p-1.5"
+                            >
+                              <DataGrid
+                                rows={detail.orderLines}
+                                getRowId={(r) => r.order.externalRef}
+                                empty="No reserved stock"
+                                emptyHint="Stock is reserved once an exit invoice is on the board."
+                                columns={[
+                                  {
+                                    key: "ref",
+                                    label: "Ref.",
+                                    mono: true,
+                                    filterValue: (r) => r.order.externalRef,
+                                    render: (r) => r.order.externalRef,
+                                  },
+                                  {
+                                    key: "name",
+                                    label: "Client",
+                                    filterValue: (r) =>
+                                      r.order.customerName ?? "",
+                                    render: (r) =>
+                                      r.order.customerName ?? <Null />,
+                                  },
+                                  {
+                                    key: "reservedQty",
+                                    label: "Qnt",
+                                    numeric: true,
+                                    width: "72px",
+                                    render: (r) => formatQty(r.reservedQty),
+                                  },
+                                  {
+                                    key: "unitPrice",
+                                    label: "Price",
+                                    numeric: true,
+                                    width: "96px",
+                                    render: (r) => formatMoney(r.unitPrice),
+                                  },
+                                ]}
+                              />
+                            </PopoverContent>
+                          </Popover>
+                        </div>
+                      <Stat
+                        label="Last sold"
+                        value={formatMoney(detail.lastSoldPrice)}
+                        center
+                      />
+                      <PriceStat
+                        label="B2B price"
+                        value={detail.b2bPrice}
+                        active={isOpen("b2bPrice")}
+                        onActivate={() => openField("b2bPrice")}
+                        onDone={closeField}
+                        onChange={(v) => patch({ b2bPrice: v })}
+                      />
+                      <PriceStat
+                        label="B2C price"
+                        value={detail.b2cPrice}
+                        active={isOpen("b2cPrice")}
+                        onActivate={() => openField("b2cPrice")}
+                        onDone={closeField}
+                        onChange={(v) => patch({ b2cPrice: v })}
+                      />
+                    </div>
+
+                    <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
+                      <Eyebrow>Specs</Eyebrow>
                       <div className="grid grid-cols-2 gap-x-6 gap-y-3">
                         <SpecRow
                           label="Product"
@@ -622,10 +750,10 @@ export function ProductDialog({
                                 <Null />
                               ) : (
                                 <span className="truncate">
-                                  {detail.weight}
+                                  {formatMeasure(detail.weight)}
                                   <span className="text-gray-500">
                                     {" kg · "}
-                                    {(detail.weight * LBS_PER_KG).toFixed(1)}{" "}
+                                    {formatMeasure(detail.weight * LBS_PER_KG)}{" "}
                                     lbs
                                   </span>
                                 </span>
@@ -634,7 +762,7 @@ export function ProductDialog({
                           >
                             <BareField
                               autoFocus
-                              className="w-9 text-xs tabular-nums"
+                              className="w-[5ch] shrink-0 text-xs tabular-nums"
                               inputMode="decimal"
                               aria-label="Weight in kg"
                               value={detail.weight ?? ""}
@@ -645,116 +773,6 @@ export function ProductDialog({
                             <span className="text-xs text-gray-500">kg</span>
                           </EditSlot>
                         </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-hidden">
-                    <div className="flex gap-3">
-                      <div className="flex w-[84px] shrink-0 flex-col gap-8 py-[3px]">
-                        <Stat
-                          label="Quantity"
-                          value={`${formatQty(detail.physicalQty)}un`}
-                          onClick={
-                            isCreate ? undefined : () => setQtyOpen(true)
-                          }
-                        />
-                        <Stat
-                          label="Available"
-                          value={`${formatQty(detail.availableQty)}un`}
-                        />
-                        <div className="min-w-0">
-                          <Popover>
-                            <PopoverTrigger className="rounded-md px-1.5 py-0.5 text-left outline-none hover:bg-gray-100">
-                              <Eyebrow>Reserved</Eyebrow>
-                              <div className="mt-0.5 flex items-center gap-1.5 font-mono text-md font-medium tabular-nums text-gray-900">
-                                {formatQty(detail.reservedQty)}un
-                                <Search className="size-3.5 text-gray-500" />
-                              </div>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              align="start"
-                              className="flex h-64 w-[459px] flex-col p-1.5"
-                            >
-                              <DataGrid
-                                rows={detail.orderLines}
-                                getRowId={(r) => r.order.externalRef}
-                                empty="No reserved stock"
-                                emptyHint="Stock is reserved once an exit invoice is on the board."
-                                columns={[
-                                  {
-                                    key: "ref",
-                                    label: "Ref.",
-                                    mono: true,
-                                    filterValue: (r) => r.order.externalRef,
-                                    render: (r) => r.order.externalRef,
-                                  },
-                                  {
-                                    key: "name",
-                                    label: "Client",
-                                    filterValue: (r) =>
-                                      r.order.customerName ?? "",
-                                    render: (r) =>
-                                      r.order.customerName ?? <Null />,
-                                  },
-                                  {
-                                    key: "reservedQty",
-                                    label: "Qnt",
-                                    numeric: true,
-                                    width: "72px",
-                                    render: (r) => formatQty(r.reservedQty),
-                                  },
-                                  {
-                                    key: "unitPrice",
-                                    label: "Price",
-                                    numeric: true,
-                                    width: "96px",
-                                    render: (r) => formatMoney(r.unitPrice),
-                                  },
-                                ]}
-                              />
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                      </div>
-
-                      <div className="grid min-w-0 flex-1 grid-cols-3 grid-rows-2 gap-x-6 gap-y-8 px-3 py-[3px]">
-                        <Stat
-                          label="Avg. cost"
-                          value={formatMoney(detail.avgCost)}
-                          center
-                        />
-                        <Stat
-                          label="CIF cost"
-                          value={formatMoney(detail.cifCost)}
-                          center
-                        />
-                        <Stat
-                          label="FOB cost"
-                          value={formatMoney(detail.fobCost)}
-                          center
-                        />
-                        <Stat
-                          label="Last sold"
-                          value={formatMoney(detail.lastSoldPrice)}
-                          center
-                        />
-                        <PriceStat
-                          label="B2B price"
-                          value={detail.b2bPrice}
-                          active={isOpen("b2bPrice")}
-                          onActivate={() => openField("b2bPrice")}
-                          onDone={closeField}
-                          onChange={(v) => patch({ b2bPrice: v })}
-                        />
-                        <PriceStat
-                          label="B2C price"
-                          value={detail.b2cPrice}
-                          active={isOpen("b2cPrice")}
-                          onActivate={() => openField("b2cPrice")}
-                          onDone={closeField}
-                          onChange={(v) => patch({ b2cPrice: v })}
-                        />
                       </div>
                     </div>
 
@@ -821,28 +839,31 @@ export function ProductDialog({
                     emptyHint="Imports, invoices and corrections all land here."
                     columns={[
                       {
-                        key: "reference",
-                        label: "Ref.",
-                        mono: true,
-                        width: "120px",
-                        render: (t) => t.reference ?? <Null />,
+                        key: "occurredAt",
+                        label: "Date",
+                        width: "148px",
+                        sortValue: (t) => new Date(t.occurredAt).getTime(),
+                        render: (t) => formatDateTime(t.occurredAt),
                       },
                       {
-                        key: "notes",
-                        label: "Name",
-                        render: (t) => t.notes ?? <Null />,
+                        key: "reference",
+                        label: "Reference",
+                        mono: true,
+                        width: "128px",
+                        render: (t) => t.reference ?? <Null />,
                       },
                       {
                         key: "type",
                         label: "Type",
-                        width: "104px",
-                        render: (t) =>
-                          TRANSACTION_TYPE_LABELS[t.type] ?? t.type,
+                        width: "120px",
+                        filterValue: (t) => movementReason(t),
+                        render: (t) => movementReason(t),
                       },
                       {
-                        key: "clientName",
-                        label: "Client",
-                        render: (t) => t.clientName ?? <Null />,
+                        key: "userName",
+                        label: "User",
+                        width: "120px",
+                        render: (t) => t.userName || <Null />,
                       },
                       {
                         key: "in",
@@ -917,6 +938,7 @@ export function ProductDialog({
           product={detail}
           reasons={reasons}
           onClose={() => setQtyOpen(false)}
+          onError={setError}
           onSaved={() => {
             setQtyOpen(false);
             onSaved();
@@ -938,18 +960,21 @@ function QuantityDialog({
   reasons,
   onClose,
   onSaved,
+  onError,
 }: {
   open: boolean;
   product: ProductRow;
   reasons: string[];
   onClose: () => void;
   onSaved: () => void;
+  onError: (message: string) => void;
 }) {
   const [mode, setMode] = useState<"add" | "remove">("add");
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState(product.avgCost);
   const [reason, setReason] = useState(reasons[0] ?? "Correction");
   const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -978,23 +1003,30 @@ function QuantityDialog({
   );
 
   async function save() {
-    const res = await fetch("/api/adjustments", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        productId: product.id,
-        mode,
-        quantity,
-        price,
-        reason,
-      }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      setError(data.error ?? "Couldn't save the adjustment");
-      return;
+    if (busy.current) return;
+    busy.current = true;
+    onClose();
+    try {
+      const res = await fetch("/api/adjustments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: product.id,
+          mode,
+          quantity,
+          price,
+          reason,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        onError(data.error ?? "Couldn't save the adjustment");
+        return;
+      }
+      onSaved();
+    } finally {
+      busy.current = false;
     }
-    onSaved();
   }
 
   return (
@@ -1077,6 +1109,14 @@ function numOrNull(v: string) {
   return v.trim() === "" || Number.isNaN(n) ? null : n;
 }
 
+function formatMeasure(n: number | null) {
+  if (n == null) return "—";
+  return n.toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+    useGrouping: false,
+  });
+}
+
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">
@@ -1104,7 +1144,7 @@ function ProductSkeleton() {
     <div className="flex min-h-0 flex-1 animate-pulse flex-col gap-8">
       <div className="h-8 w-52 rounded-md bg-gray-100" />
       <div className="flex flex-1 gap-8">
-        <div className="aspect-[480/382] w-[46%] rounded-[10px] bg-gray-100" />
+        <div className="aspect-square w-[45%] rounded-[10px] bg-gray-100" />
         <div className="grid flex-1 content-start gap-4">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="h-8 w-full rounded-sm bg-gray-100" />
@@ -1121,7 +1161,7 @@ function ProductSkeleton() {
  * the input inside has no chrome of its own.
  */
 const SLOT =
-  "box-border flex h-[27px] items-center gap-1 overflow-hidden rounded-md border px-1.5 text-sm leading-none text-gray-900";
+  "box-border flex h-[1.5rem] items-center gap-1 overflow-hidden rounded-md border px-1.5 text-sm leading-none text-gray-900";
 
 function BareField({
   className,
@@ -1209,73 +1249,114 @@ function FieldLabel({
   );
 }
 
+function TypePicker({
+  value,
+  options,
+  active,
+  onActivate,
+  onDone,
+  onChange,
+}: {
+  value: string | null;
+  options: string[];
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+  onChange: (value: string | null) => void;
+}) {
+  const q = (value ?? "").trim().toLowerCase();
+  const exact = options.some((name) => name.toLowerCase() === q);
+  const matches =
+    !q || exact
+      ? options
+      : options.filter((name) => name.toLowerCase().includes(q));
+
+  return (
+    <Popover
+      open={active}
+      onOpenChange={(open) => (open ? onActivate() : onDone())}
+    >
+      <PopoverTrigger
+        className={cn(
+          SLOT,
+          "w-[120px] shrink-0 cursor-text text-xs font-medium outline-none",
+          active
+            ? "border-gray-400 bg-surface"
+            : "border-transparent hover:bg-gray-100",
+        )}
+      >
+        <span className="truncate">{value || <Null />}</span>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[160px] gap-0 overflow-hidden p-1"
+      >
+        <BareField
+          autoFocus
+          className="h-7 px-2 text-xs"
+          value={value ?? ""}
+          placeholder="Type"
+          aria-label="Type"
+          onChange={(e) => onChange(e.target.value || null)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              onDone();
+            }
+          }}
+        />
+        <div className="mt-1 max-h-40 overflow-auto">
+          {matches.length === 0 ? (
+            <div className="px-2 py-1.5 text-xs text-gray-500">None</div>
+          ) : (
+            matches.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+                onClick={() => {
+                  onChange(name);
+                  onDone();
+                }}
+              >
+                {name}
+              </button>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 const DIM_AXES = ["W", "D", "H"] as const;
 const UNITS = ["in", "cm"] as const;
 type Unit = (typeof UNITS)[number];
 
-/** The unit is a choice between two values, so editing it opens a list rather
- *  than a text box. The closed box matches the open trigger, so picking a unit
- *  never moves the numbers beside it. */
-function UnitSelect({
+function UnitToggle({
   value,
   onChange,
-  active,
-  onActivate,
-  onDone,
 }: {
   value: Unit;
   onChange: (v: Unit) => void;
-  active: boolean;
-  onActivate: () => void;
-  onDone: () => void;
 }) {
-  if (!active) {
-    return (
-      <div
-        role="button"
-        tabIndex={0}
-        title="Double-click to change unit"
-        onDoubleClick={onActivate}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onActivate();
-          }
-        }}
-        className={cn(
-          SLOT,
-          "w-[30px] cursor-text justify-center px-1.5 text-xs text-gray-500 outline-none select-none hover:bg-gray-100 focus-visible:bg-gray-100",
-        )}
-      >
-        {value}
-      </div>
-    );
-  }
   return (
-    <div className={cn(SLOT, "w-[30px] justify-center border-gray-400 px-1")}>
-      <select
-        autoFocus
-        value={value}
-        aria-label="Dimension unit"
-        onChange={(e) => onChange(e.target.value as Unit)}
-        onBlur={onDone}
-        style={{ boxShadow: "none" }}
-        className="h-full w-full border-0 bg-transparent p-0 text-center text-xs text-gray-900 outline-none"
-      >
-        {UNITS.map((u) => (
-          <option key={u} value={u}>
-            {u}
-          </option>
-        ))}
-      </select>
-    </div>
+    <button
+      type="button"
+      aria-label="Dimension unit"
+      title="Click to switch unit"
+      onClick={() => onChange(value === "in" ? "cm" : "in")}
+      className="h-[1.5rem] rounded-md px-1 text-xs text-gray-500 outline-none hover:bg-gray-100 focus-visible:bg-gray-100"
+    >
+      {value}
+    </button>
   );
 }
 
-/** One W/D/H chip: hover/edit the number only; letter stays glued in read state. */
+/** One W/D/H chip: number only; × between values names the axis. */
 function DimAxis({
   value,
-  axis,
   active,
   onActivate,
   onDone,
@@ -1283,7 +1364,6 @@ function DimAxis({
   ariaLabel,
 }: {
   value: number | null;
-  axis: (typeof DIM_AXES)[number];
   active: boolean;
   onActivate: () => void;
   onDone: () => void;
@@ -1295,13 +1375,8 @@ function DimAxis({
       active={active}
       onActivate={onActivate}
       onDone={onDone}
-      className="w-[45px] justify-center px-1.5 text-xs"
-      read={
-        <span className="truncate">
-          <span className="font-mono tabular-nums">{value ?? "—"}</span>
-          {axis}
-        </span>
-      }
+      className="w-12 justify-center px-1 text-xs font-mono tabular-nums"
+      read={formatMeasure(value)}
     >
       <BareField
         autoFocus
@@ -1350,7 +1425,6 @@ function SpecRow({
               {i > 0 && <span className="text-gray-400">×</span>}
               <DimAxis
                 value={values[i]}
-                axis={axis}
                 active={active}
                 onActivate={() => onOpen(field)}
                 onDone={onDone}
@@ -1368,13 +1442,7 @@ function SpecRow({
             </div>
           );
         })}
-        <UnitSelect
-          value={unit}
-          onChange={onUnitChange}
-          active={editingField === `${fieldPrefix}-unit`}
-          onActivate={() => onOpen(`${fieldPrefix}-unit`)}
-          onDone={onDone}
-        />
+        <UnitToggle value={unit} onChange={onUnitChange} />
       </div>
     </div>
   );
@@ -1414,7 +1482,7 @@ function Stat({
     <button
       type="button"
       onClick={onClick}
-      className={cn(box, "w-full text-left outline-none hover:bg-gray-100")}
+        className={cn(box, "w-full outline-none hover:bg-gray-100", center ? "text-center" : "text-left")}
     >
       {content}
     </button>

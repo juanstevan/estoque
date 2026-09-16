@@ -178,17 +178,41 @@ export async function exportInventoryWorkbook() {
     ID: p.code,
     Name: p.name,
     SKU: p.sku,
+    Type: p.type ?? "",
     Quantity: p.physicalQty,
-    Available: p.availableQty,
-    Reserved: p.reservedQty,
-    Avg_Cost: p.avgCost,
     B2B: p.b2bPrice,
     B2C: p.b2cPrice,
-    Total: p.inventoryValue,
+    Weight: p.weight ?? "",
+    Length: p.length ?? "",
+    Width: p.width ?? "",
+    Height: p.height ?? "",
+    Package_Length: p.packageLength ?? "",
+    Package_Width: p.packageWidth ?? "",
+    Package_Height: p.packageHeight ?? "",
+    Package_Weight: p.packageWeight ?? "",
+    Cutout_Length: p.cutoutLength ?? "",
+    Cutout_Width: p.cutoutWidth ?? "",
+    Cutout_Height: p.cutoutHeight ?? "",
     Notes: p.notes ?? "",
+    Amazon_URL: p.amazonUrl ?? "",
+    Image_URL: p.imageUrl ?? "",
+    Suppliers: suppliersCell(p.suppliers),
+    EAN: p.ean ?? "",
+    Secondary_SKU: p.secondarySku ?? "",
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Estoque");
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
+
+function suppliersCell(raw: string | null) {
+  if (!raw) return "";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).join(", ");
+  } catch {
+    /* stored as plain text */
+  }
+  return raw;
 }

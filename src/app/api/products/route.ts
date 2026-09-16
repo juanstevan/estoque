@@ -12,6 +12,7 @@ export async function POST(req: Request) {
     const body = await readJson<{
       name: string;
       sku: string;
+      type?: string | null;
       code?: string;
       amazonUrl?: string | null;
       imageUrl?: string | null;

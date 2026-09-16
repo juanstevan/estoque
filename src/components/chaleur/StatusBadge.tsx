@@ -1,4 +1,5 @@
 import { Badge, BadgeDot } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 /**
  * Domain statuses mapped onto the five meanings in DESIGN.md §2.3.
@@ -62,9 +63,11 @@ export function KindChip({ kind }: { kind: string }) {
 export function KindBookmark({
   kind,
   onClick,
+  className,
 }: {
   kind: string;
   onClick?: () => void;
+  className?: string;
 }) {
   const international = kind === "INTERNATIONAL";
   return (
@@ -73,7 +76,10 @@ export function KindBookmark({
       aria-label={
         international ? "Switch to domestic" : "Switch to international"
       }
-      className="absolute top-0 right-16 flex w-[76px] shrink-0 items-center justify-center rounded-b-xl py-3 font-mono text-xs font-medium text-white"
+      className={cn(
+        "flex w-[76px] shrink-0 items-center justify-center rounded-b-xl py-3 font-mono text-xs font-medium text-white",
+        className,
+      )}
       style={{ background: kindColor(kind) }}
       onClick={onClick}
     >

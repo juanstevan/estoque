@@ -21,6 +21,7 @@ import {
 import { DataGrid, type GridCol } from "@/components/chaleur/DataGrid";
 import {
   ProductDialog,
+  uniqueProductTypes,
   type ProductRow,
 } from "@/components/chaleur/ProductDialog";
 import { formatMoney, formatQty } from "@/lib/format";
@@ -53,6 +54,12 @@ const ALL_COLUMNS: GridCol<ProductRow>[] = [
         {p.name}
       </span>
     ),
+  },
+  {
+    key: "type",
+    label: "Type",
+    width: "120px",
+    render: (p) => p.type || "—",
   },
   { key: "sku", label: "SKU", mono: true, width: "120px" },
   {
@@ -189,13 +196,17 @@ export function StorageTab({
     return cols;
   }, [visibleKeys]);
 
-  const visible = products.filter((p) => {
-    const q = search.toLowerCase();
-    if (!q) return true;
-    return [p.name, p.code, p.sku, p.id].some((v) =>
-      String(v).toLowerCase().includes(q),
-    );
-  });
+  const visible = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return products;
+    const hit = (v: string | null | undefined) =>
+      String(v ?? "").toLowerCase().includes(q);
+    const rank = (p: ProductRow) =>
+      hit(p.code) ? 0 : hit(p.name) ? 1 : hit(p.sku) ? 2 : 3;
+    return products
+      .filter((p) => hit(p.code) || hit(p.name) || hit(p.sku) || hit(p.type))
+      .sort((a, b) => rank(a) - rank(b));
+  }, [products, search]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -204,7 +215,7 @@ export function StorageTab({
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-500" />
           <Input
             className="pl-9"
-            placeholder="Search products by name, ID or SKU"
+            placeholder="Search products by name, ID, SKU or type"
             value={search}
             onChange={(e) => onSearch(e.target.value)}
           />
@@ -312,6 +323,7 @@ export function StorageTab({
         open={Boolean(selected)}
         productId={selected}
         reasons={reasons}
+        types={uniqueProductTypes(products)}
         onClose={() => setSelected(null)}
         onSaved={onReload}
       />
@@ -321,6 +333,7 @@ export function StorageTab({
         productId={null}
         mode="create"
         reasons={reasons}
+        types={uniqueProductTypes(products)}
         onClose={() => setCreating(false)}
         onSaved={onReload}
       />
