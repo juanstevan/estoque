@@ -8,7 +8,14 @@ import {
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 export async function GET() {
-  return jsonOk(await listImportations());
+  try {
+    return jsonOk(await listImportations());
+  } catch (e) {
+    return jsonError(
+      e instanceof Error ? e.message : "Importation error",
+      500,
+    );
+  }
 }
 
 export async function POST(req: Request) {

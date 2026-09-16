@@ -38,6 +38,18 @@ function shouldAutoDelay(
   return ymd(expectedDate) < ymd(new Date());
 }
 
+function rethrowImportError(e: unknown): never {
+  const code =
+    typeof e === "object" && e && "code" in e
+      ? String((e as { code: unknown }).code)
+      : "";
+  const msg = e instanceof Error ? e.message : "";
+  if (code === "P2002" || /unique constraint/i.test(msg)) {
+    throw new Error("This code has already been used.");
+  }
+  throw e;
+}
+
 async function applyOverdueDelays() {
   const startToday = new Date(`${ymd(new Date())}T00:00:00.000Z`);
   await prisma.importation.updateMany({
@@ -171,6 +183,7 @@ export async function createProduct(input: {
   name: string;
   sku: string;
   type?: string | null;
+  hsCode?: string | null;
   code?: string;
   secondarySku?: string | null;
   ean?: string | null;
@@ -201,6 +214,7 @@ export async function createProduct(input: {
         name: input.name,
         sku: input.sku,
         type: input.type?.trim() || null,
+        hsCode: input.hsCode?.trim() || null,
         code:
           input.code?.trim().toUpperCase().slice(0, 3) || (await nextCode(tx)),
         secondarySku: input.secondarySku || null,
@@ -248,11 +262,27 @@ export async function updateProduct(
   id: string,
   input: Prisma.ProductUpdateInput,
 ) {
+  const data = { ...input };
+  for (const key of [
+    "physicalQty",
+    "availableQty",
+    "reservedQty",
+    "waitingPickupQty",
+    "waitingDeliveryQty",
+    "unavailableQty",
+    "avgCost",
+    "inventoryValue",
+    "cifCost",
+    "fobCost",
+    "lastSoldPrice",
+  ] as const) {
+    delete data[key];
+  }
   const code =
-    typeof input.code === "string"
-      ? input.code.trim().toUpperCase().slice(0, 3)
-      : input.code;
-  return prisma.product.update({ where: { id }, data: { ...input, code } });
+    typeof data.code === "string"
+      ? data.code.trim().toUpperCase().slice(0, 3)
+      : data.code;
+  return prisma.product.update({ where: { id }, data: { ...data, code } });
 }
 
 export async function listProducts(search?: string) {
@@ -428,7 +458,8 @@ export async function upsertImportation(input: {
       ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
       : 1;
 
-  return prisma.$transaction(async (tx) => {
+  try {
+    return await prisma.$transaction(async (tx) => {
     let importationId = input.id;
     const existing = importationId
       ? await tx.importation.findUniqueOrThrow({ where: { id: importationId } })
@@ -453,6 +484,13 @@ export async function upsertImportation(input: {
       : nextStatus;
     const reference =
       input.reference?.trim() || `IMP-${Date.now().toString(36).toUpperCase()}`;
+    const taken = await tx.importation.findUnique({
+      where: { reference },
+      select: { id: true },
+    });
+    if (taken && taken.id !== importationId) {
+      throw new Error("This code has already been used.");
+    }
     const data = {
       reference,
       kind: input.kind ?? existing?.kind ?? ImportKind.INTERNATIONAL,
@@ -508,7 +546,10 @@ export async function upsertImportation(input: {
       where: { id: importationId! },
       include: { lines: { include: { product: true } } },
     });
-  });
+    });
+  } catch (e) {
+    rethrowImportError(e);
+  }
 }
 
 export async function setImportStatus(id: string, status: ImportStatus) {
@@ -550,23 +591,43 @@ async function reopenImportation(id: string, status: ImportStatus) {
   return prisma.$transaction(async (tx) => {
     const importation = await tx.importation.findUniqueOrThrow({
       where: { id },
+      include: { lines: true },
     });
+    for (const line of importation.lines) {
+      if (!line.productId) continue;
+      await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${line.productId} FOR UPDATE`;
+      const product = await tx.product.findUniqueOrThrow({
+        where: { id: line.productId },
+      });
+      const nextPhysical = roundMoney(product.physicalQty - line.quantity);
+      await tx.product.update({
+        where: { id: product.id },
+        data: {
+          physicalQty: nextPhysical,
+          inventoryValue: roundMoney(nextPhysical * product.avgCost),
+          availableQty: recomputeAvailable({
+            physicalQty: nextPhysical,
+            reservedQty: product.reservedQty,
+          }),
+        },
+      });
+    }
     const receipts = await tx.inventoryTransaction.findMany({
       where: {
         type: TransactionType.IMPORTATION,
-        reference: importation.reference,
+        OR: [
+          { metadata: { contains: `"importationId":"${importation.id}"` } },
+          { reference: importation.reference },
+        ],
       },
+      select: { id: true },
     });
-    for (const receipt of receipts) {
-      await appendTransaction(tx, {
-        productId: receipt.productId,
-        type: TransactionType.CORRECTION,
-        quantity: -receipt.quantity,
-        unitCost: receipt.unitCost,
-        reference: importation.reference,
-        notes: `Reopen ${importation.reference}`,
-        affectsPhysical: true,
+    const txnIds = receipts.map((r) => r.id);
+    if (txnIds.length) {
+      await tx.costHistory.deleteMany({
+        where: { transactionId: { in: txnIds } },
       });
+      await tx.inventoryTransaction.deleteMany({ where: { id: { in: txnIds } } });
     }
     return tx.importation.update({
       where: { id },
@@ -615,8 +676,8 @@ export async function confirmImportation(importationId: string) {
     for (let i = 0; i < importation.lines.length; i++) {
       const line = importation.lines[i];
       const alloc = allocated[i];
-      const cifCost = roundMoney(line.purchaseUnitCost);
-      const fobCost = roundMoney(line.purchaseUnitCost * coefficient);
+      const fobCost = roundMoney(line.purchaseUnitCost);
+      const cifCost = alloc.landedUnitCost;
       let productId = line.productId;
       if (!productId) {
         const sku =
@@ -636,14 +697,14 @@ export async function confirmImportation(importationId: string) {
         data: {
           productId,
           allocatedAdditionalCost: alloc.allocatedAdditionalCost,
-          landedUnitCost: fobCost,
+          landedUnitCost: cifCost,
         },
       });
       await appendTransaction(tx, {
         productId,
         type: TransactionType.IMPORTATION,
         quantity: line.quantity,
-        unitCost: fobCost,
+        unitCost: cifCost,
         reference: importation.reference,
         notes: `Import ${importation.reference}`,
         affectsPhysical: true,

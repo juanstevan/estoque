@@ -179,6 +179,8 @@
   --width-panel: 360px;
   --width-board-column: 300px;
 
+  --spacing-6: 24px;
+
   --ease-out: cubic-bezier(0.2, 0, 0.2, 1);
   --ease-emphasis: cubic-bezier(0.2, 0, 0, 1);
 }
@@ -234,6 +236,10 @@
 
 @utility border-1 {
   border-width: 1px;
+}
+
+@utility mb-6 {
+  margin-bottom: var(--spacing-6);
 }
 
 @layer base {

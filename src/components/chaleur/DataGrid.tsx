@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Filter, ListFilter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,9 @@ function rawValue<T extends object>(col: GridCol<T>, row: T) {
   return String((row as Record<string, unknown>)[String(col.key)] ?? "");
 }
 
+const CHECK = "size-4 cursor-pointer rounded-[3px] accent-blue-600";
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
 export function DataGrid<T extends object>({
   rows,
   columns,
@@ -46,6 +49,10 @@ export function DataGrid<T extends object>({
   emptyAction,
   draggable,
   className,
+  selectable,
+  checkedIds,
+  onCheckedIdsChange,
+  visibleIdsRef,
 }: {
   rows: T[];
   columns: GridCol<T>[];
@@ -57,12 +64,17 @@ export function DataGrid<T extends object>({
   emptyAction?: React.ReactNode;
   draggable?: boolean;
   className?: string;
+  selectable?: boolean;
+  checkedIds?: ReadonlySet<string>;
+  onCheckedIdsChange?: (ids: Set<string>) => void;
+  visibleIdsRef?: { current: string[] | null };
 }) {
   const [sort, setSort] = useState<Sort | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [scrolled, setScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragged = useRef(false);
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(
     () =>
@@ -101,6 +113,40 @@ export function DataGrid<T extends object>({
 
   const hasFilters = Object.values(filters).some((v) => v?.trim());
   const filteredToNothing = rows.length > 0 && sorted.length === 0;
+  const colSpan = columns.length + (selectable ? 1 : 0);
+  const checked = checkedIds ?? EMPTY_SET;
+  const allVisibleChecked =
+    selectable &&
+    sorted.length > 0 &&
+    sorted.every((row) => checked.has(getRowId(row)));
+  const someVisibleChecked =
+    selectable && sorted.some((row) => checked.has(getRowId(row)));
+
+  if (visibleIdsRef) visibleIdsRef.current = sorted.map(getRowId);
+
+  useEffect(() => {
+    const el = selectAllRef.current;
+    if (el) el.indeterminate = Boolean(someVisibleChecked && !allVisibleChecked);
+  }, [someVisibleChecked, allVisibleChecked]);
+
+  function toggleChecked(id: string) {
+    if (!onCheckedIdsChange) return;
+    const next = new Set(checked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onCheckedIdsChange(next);
+  }
+
+  function toggleAllVisible() {
+    if (!onCheckedIdsChange || sorted.length === 0) return;
+    if (allVisibleChecked) {
+      onCheckedIdsChange(new Set());
+      return;
+    }
+    const next = new Set(checked);
+    for (const row of sorted) next.add(getRowId(row));
+    onCheckedIdsChange(next);
+  }
 
   return (
     <div
@@ -117,6 +163,25 @@ export function DataGrid<T extends object>({
         <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
           <thead className="sticky top-0 z-20">
             <tr>
+              {selectable && (
+                <th
+                  scope="col"
+                  style={{ width: 40 }}
+                  className={cn(
+                    "w-10 border-b border-border bg-sunken px-3 text-center align-middle",
+                    scrolled && "shadow-xs",
+                  )}
+                >
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    aria-label="Select all"
+                    className={CHECK}
+                    checked={Boolean(allVisibleChecked)}
+                    onChange={toggleAllVisible}
+                  />
+                </th>
+              )}
               {columns.map((col, colIndex) => {
                 const key = String(col.key);
                 const isSorted = sort?.key === key;
@@ -211,7 +276,7 @@ export function DataGrid<T extends object>({
           <tbody>
             {sorted.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="p-0">
+                <td colSpan={colSpan} className="p-0">
                   {filteredToNothing ? (
                     <EmptyState
                       title="No results for these filters"
@@ -268,15 +333,34 @@ export function DataGrid<T extends object>({
                       }, 0);
                     }}
                   >
+                    {selectable && (
+                      <td
+                        className={cn(
+                          "w-10 border-b border-gray-150 px-3 text-center align-middle",
+                          isSelected &&
+                            "shadow-[inset_2px_0_0_0_var(--blue-600)]",
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label="Select row"
+                          className={CHECK}
+                          checked={checked.has(id)}
+                          onChange={() => toggleChecked(id)}
+                        />
+                      </td>
+                    )}
                     {columns.map((col, colIndex) => (
                       <td
                         key={String(col.key)}
                         className={cn(
                           "truncate border-b border-gray-150 align-middle",
-                          colIndex === 0
+                          colIndex === 0 && !selectable
                             ? "px-4"
                             : "px-3",
-                          colIndex === 0 &&
+                          !selectable &&
+                            colIndex === 0 &&
                             isSelected &&
                             "shadow-[inset_2px_0_0_0_var(--blue-600)]",
                           col.align === "center"

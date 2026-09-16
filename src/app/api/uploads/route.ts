@@ -24,12 +24,22 @@ export async function POST(req: Request) {
     if (!ext) return jsonError("Use a PNG, JPEG, WebP or GIF image");
     if (file.size > MAX_BYTES) return jsonError("Image must be 5 MB or smaller");
 
-    const dir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(dir, { recursive: true });
-    const name = `${randomUUID()}${ext}`;
-    await writeFile(path.join(dir, name), Buffer.from(await file.arrayBuffer()));
-
-    return jsonOk({ url: `/uploads/${name}` });
+    const bytes = Buffer.from(await file.arrayBuffer());
+    if (!process.env.VERCEL) {
+      try {
+        const dir = path.join(process.cwd(), "public", "uploads");
+        await mkdir(dir, { recursive: true });
+        const name = `${randomUUID()}${ext}`;
+        await writeFile(path.join(dir, name), bytes);
+        return jsonOk({ url: `/uploads/${name}` });
+      } catch {
+        /* fall through to an inline URL */
+      }
+    }
+    // ponytail: data URL on Vercel (read-only /var/task); Blob if images get large
+    return jsonOk({
+      url: `data:${file.type};base64,${bytes.toString("base64")}`,
+    });
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Upload failed", 500);
   }

@@ -20,6 +20,7 @@ import {
   Plus,
   Search,
   Trash2,
+  AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +63,7 @@ import { ProductDialog, uniqueProductTypes } from "@/components/chaleur/ProductD
 import { formatDayMonth, formatMoney, YEAR_COLORS } from "@/lib/format";
 import {
   additionalImportCosts,
+  allocateAdditionalCosts,
   packageCbmM3,
   roundMoney,
 } from "@/lib/inventory/math";
@@ -361,6 +363,7 @@ export function ImportsTab({
   }
 
   async function persistStatus(id: string, status: ImportRow["status"]) {
+    const before = imports.find((row) => row.id === id)?.status;
     const res = await fetch("/api/importations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -370,6 +373,7 @@ export function ImportsTab({
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error ?? "Couldn't update status");
     }
+    if (status === "COMPLETED" || before === "COMPLETED") onProductsReload();
   }
 
   async function move(id: string, status: ImportRow["status"]) {
@@ -377,7 +381,6 @@ export function ImportsTab({
     applyStatus(id, status);
     try {
       await persistStatus(id, status);
-      if (status === "COMPLETED" || before === "COMPLETED") onProductsReload();
     } catch (err) {
       if (before) applyStatus(id, before);
       throw err;
@@ -396,7 +399,7 @@ export function ImportsTab({
     doneTimer.current = window.setTimeout(() => {
       setDoneFading(true);
       doneTimer.current = window.setTimeout(() => setDoneNotice(null), 300);
-    }, 2000);
+    }, 3000);
   }
 
   async function completeImport(imp: ImportRow, extraId?: string) {
@@ -932,7 +935,6 @@ export function ImportsTab({
               return next;
             });
           }}
-          onError={flash}
           onCatalogChange={onProductsReload}
         />
       )}
@@ -1317,6 +1319,9 @@ function ImportCard({
   );
 }
 
+const LINE_GRID =
+  "grid-cols-[104px_minmax(0,1fr)_72px_72px_104px_112px_36px]";
+
 const COST_FIELDS = [
   ["transferFee", "Transfer fee"],
   ["freight", "Freight"],
@@ -1335,7 +1340,6 @@ function ImportDialog({
   reasons,
   onClose,
   onSaved,
-  onError,
   onCatalogChange,
 }: {
   open: boolean;
@@ -1346,7 +1350,6 @@ function ImportDialog({
   reasons: string[];
   onClose: () => void;
   onSaved: (row: ImportRow) => void;
-  onError: (message: string) => void;
   onCatalogChange: () => void;
 }) {
   const [form, setForm] = useState(() => ({
@@ -1377,6 +1380,7 @@ function ImportDialog({
   } | null>(null);
   const [kind, setKind] = useState(initialKind);
   const [catalog, setCatalog] = useState(products);
+  const [error, setError] = useState<string | null>(null);
   const clickTimer = useRef(0);
   const busy = useRef(false);
 
@@ -1391,6 +1395,16 @@ function ImportDialog({
     0,
   );
   const additional = additionalImportCosts(form);
+  const allocated = allocateAdditionalCosts(
+    form.lines.map((l, i) => ({
+      id: String(i),
+      quantity: numOrZero(l.quantity),
+      purchaseUnitCost: numOrZero(l.purchaseUnitCost),
+    })),
+    additional,
+  );
+  const coefficient =
+    subtotal > 0 ? roundMoney((subtotal + additional) / subtotal, 3) : 1;
   const cbm = useMemo(() => {
     return form.lines.reduce((s, l) => {
       const p = catalog.find((x) => x.id === l.productId);
@@ -1429,7 +1443,7 @@ function ImportDialog({
           productId: product.id,
           name: product.name,
           quantity: "1",
-          purchaseUnitCost: String(priced?.cifCost || priced?.fobCost || 0),
+          purchaseUnitCost: String(priced?.fobCost || priced?.cifCost || 0),
         },
       ],
     }));
@@ -1481,7 +1495,7 @@ function ImportDialog({
   async function save() {
     if (busy.current) return;
     busy.current = true;
-    onClose();
+    setError(null);
     try {
       const res = await fetch("/api/importations", {
         method: "POST",
@@ -1508,12 +1522,12 @@ function ImportDialog({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        onError(data.error ?? "Couldn't save importation");
+        setError(data.error ?? "Couldn't save importation");
         return;
       }
       onSaved((await res.json()) as ImportRow);
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Couldn't save importation");
+      setError(err instanceof Error ? err.message : "Couldn't save importation");
     } finally {
       busy.current = false;
     }
@@ -1548,7 +1562,10 @@ function ImportDialog({
             mono
             placeholder="CODE"
             value={form.reference}
-            onChange={(reference) => setForm({ ...form, reference })}
+            onChange={(reference) => {
+              setError(null);
+              setForm({ ...form, reference });
+            }}
           />
           <span className="text-md font-semibold text-gray-900">•</span>
           <SupplierPicker
@@ -1560,9 +1577,12 @@ function ImportDialog({
         </div>
 
         <ScrollArea className="h-[360px] rounded-lg border border-border bg-surface">
-          <div className="sticky top-0 z-10 grid h-9 grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] border-b border-border bg-sunken pr-2.5 text-xs font-medium text-gray-600">
+          <div className={cn("sticky top-0 z-10 grid h-9 border-b border-border bg-sunken pr-2.5 text-xs font-medium text-gray-600", LINE_GRID)}>
               <div className="flex items-center px-3">ID</div>
               <div className="flex items-center px-3">Name</div>
+              <div className="flex items-center justify-center px-3 font-mono tabular-nums">
+                {coefficient}×
+              </div>
               <div className="flex items-center justify-center px-3">Qnt</div>
               <div className="flex items-center justify-center px-3">Cost</div>
               <div className="flex items-center justify-end px-3">Total</div>
@@ -1575,7 +1595,7 @@ function ImportDialog({
               return (
                 <div
                   key={`${l.productId ?? "draft"}-${i}`}
-                  className="group/line grid cursor-pointer grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5 pr-2.5 text-xs hover:bg-gray-50"
+                  className={cn("group/line grid cursor-pointer items-center border-b border-border py-1.5 pr-2.5 text-xs hover:bg-gray-50", LINE_GRID)}
                   onClick={(e) => {
                     if (
                       changing ||
@@ -1645,6 +1665,11 @@ function ImportDialog({
                       </button>
                     </div>
                   )}
+                  <div className="px-3 text-center font-mono tabular-nums">
+                    {allocated[i].purchaseValue > 0
+                      ? `${roundMoney(allocated[i].landedTotal / allocated[i].purchaseValue, 3)}×`
+                      : "—"}
+                  </div>
                   <LineNum
                     value={l.quantity}
                     active={editCell?.i === i && editCell.field === "quantity"}
@@ -1699,7 +1724,7 @@ function ImportDialog({
               );
             })}
             {adding ? (
-              <div className="relative grid grid-cols-[104px_minmax(0,1fr)_72px_104px_112px_36px] items-center border-b border-border py-1.5 pr-2.5">
+              <div className={cn("relative grid items-center border-b border-border py-1.5 pr-2.5", LINE_GRID)}>
                 <div />
                 <ProductPicker
                   query={query}
@@ -1765,11 +1790,21 @@ function ImportDialog({
           </div>
         </div>
 
-        <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={() => void save()}>Save</Button>
+        <DialogFooter className="sm:justify-between">
+          {error ? (
+            <span className="flex items-center gap-1.5 text-xs text-danger-text">
+              <AlertCircle className="size-3.5 shrink-0" />
+              {error}
+            </span>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button onClick={() => void save()}>Save</Button>
+          </div>
         </DialogFooter>
       </DialogContent>
 
@@ -1797,6 +1832,7 @@ function ImportDialog({
                       ...saved,
                       sku: "",
                       type: null,
+                      hsCode: null,
                       physicalQty: 0,
                       availableQty: 0,
                       reservedQty: 0,

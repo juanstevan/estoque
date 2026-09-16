@@ -6,8 +6,7 @@ import {
 } from "@/lib/import-export/spreadsheet";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
-export async function GET() {
-  const buffer = await exportInventoryWorkbook();
+function xlsxFile(buffer: Buffer) {
   return new Response(new Uint8Array(buffer), {
     headers: {
       "Content-Type":
@@ -17,13 +16,24 @@ export async function GET() {
   });
 }
 
+export async function GET() {
+  return xlsxFile(await exportInventoryWorkbook());
+}
+
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
-      const body = await readJson<{ preview: Awaited<ReturnType<typeof previewImport>>; confirm?: boolean }>(req);
+      const body = await readJson<{
+        preview?: Awaited<ReturnType<typeof previewImport>>;
+        confirm?: boolean;
+        ids?: string[];
+      }>(req);
+      if (Array.isArray(body.ids)) {
+        return xlsxFile(await exportInventoryWorkbook(body.ids));
+      }
       if (body.confirm) {
-        const applied = await applyImport(body.preview);
+        const applied = await applyImport(body.preview!);
         return jsonOk({ applied });
       }
       return jsonOk({ preview: body.preview });

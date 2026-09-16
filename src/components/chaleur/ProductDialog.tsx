@@ -49,6 +49,7 @@ export type ProductRow = {
   name: string;
   sku: string;
   type: string | null;
+  hsCode: string | null;
   physicalQty: number;
   availableQty: number;
   reservedQty: number;
@@ -135,6 +136,7 @@ function blankDetail(): Detail {
     name: "",
     sku: "",
     type: null,
+    hsCode: null,
     physicalQty: 0,
     availableQty: 0,
     reservedQty: 0,
@@ -196,6 +198,7 @@ export function ProductDialog({
   const [saving, setSaving] = useState(false);
   const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -232,6 +235,10 @@ export function ProductDialog({
     patch({ imageUrl: data.url });
   }
 
+  function acceptImage(file?: File) {
+    if (file?.type.startsWith("image/")) void uploadImage(file);
+  }
+
   async function save() {
     if (!detail) return;
     setError(null);
@@ -244,6 +251,7 @@ export function ProductDialog({
       name: detail.name,
       sku: detail.sku,
       type: detail.type?.trim() || null,
+      hsCode: detail.hsCode?.trim() || null,
       amazonUrl: detail.amazonUrl,
       imageUrl: detail.imageUrl,
       b2bPrice: detail.b2bPrice,
@@ -352,8 +360,23 @@ export function ProductDialog({
               <div className="flex aspect-[1.6] w-[1080px] min-w-[1080px] flex-col overflow-hidden rounded-[9px] border border-border bg-surface p-6 shadow-md">
               {tab === "info" ? (
                 <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
-                  <div className="flex w-[45%] shrink-0 flex-col">
-                    <div className="group relative mb-8 flex aspect-square w-full items-center justify-center overflow-hidden rounded-[9px] border border-border bg-sunken">
+                  <div className="flex min-h-0 w-[45%] shrink-0 flex-col">
+                    <div
+                      className={cn(
+                        "group relative mb-6 flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border bg-sunken",
+                        dragOver ? "border-gray-900" : "border-border",
+                      )}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragOver(true);
+                      }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragOver(false);
+                        acceptImage(e.dataTransfer.files[0]);
+                      }}
+                    >
                       {hasImage && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -363,16 +386,27 @@ export function ProductDialog({
                           onError={() => patch({ imageUrl: null })}
                         />
                       )}
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/85 text-xs font-medium opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100">
+                      <div
+                        className={cn(
+                          "absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/85 text-xs font-medium transition-opacity duration-[120ms]",
+                          dragOver
+                            ? "opacity-100"
+                            : "opacity-0 group-hover:opacity-100",
+                        )}
+                      >
                         <button
                           type="button"
                           className="flex items-center gap-1.5 text-gray-700"
                           onClick={() => fileRef.current?.click()}
                         >
                           <ImagePlus className="size-3.5" />
-                          {hasImage ? "Change image" : "Upload image"}
+                          {dragOver
+                            ? "Drop image"
+                            : hasImage
+                              ? "Change image"
+                              : "Upload image"}
                         </button>
-                        {hasImage && (
+                        {hasImage && !dragOver && (
                           <button
                             type="button"
                             className="flex items-center gap-1.5 text-danger-text"
@@ -391,12 +425,12 @@ export function ProductDialog({
                       hidden
                       onChange={(e) => {
                         const file = e.target.files?.[0];
-                        if (file) void uploadImage(file);
+                        if (file) acceptImage(file);
                         e.target.value = "";
                       }}
                     />
 
-                    <div className="flex flex-col gap-3">
+                    <div className="flex shrink-0 flex-col gap-4">
                     <div className="flex items-center gap-6">
                       <div className="flex shrink-0 items-center gap-1.5">
                         <FieldLabel>ID</FieldLabel>
@@ -485,10 +519,39 @@ export function ProductDialog({
                       </EditSlot>
                     </div>
 
-                    <div className="flex items-center justify-end gap-3">
+                    <div className="flex h-[27px] items-center gap-3">
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <FieldLabel className="shrink-0">HS code</FieldLabel>
+                        <EditSlot
+                          active={isOpen("hsCode")}
+                          onActivate={() => openField("hsCode")}
+                          onDone={closeField}
+                          className="w-[117px] shrink-0 text-xs font-medium"
+                          read={
+                            <span className="truncate">
+                              {detail.hsCode || <Null />}
+                            </span>
+                          }
+                        >
+                          <BareField
+                            autoFocus
+                            className="text-xs"
+                            value={detail.hsCode ?? ""}
+                            placeholder="HS code"
+                            aria-label="HS code"
+                            maxLength={16}
+                            onChange={(e) =>
+                              patch({ hsCode: e.target.value || null })
+                            }
+                          />
+                        </EditSlot>
+                      </div>
                       {editingField === "amazonUrl" ? (
                         <div
-                          className={cn(SLOT, "w-full border-gray-400")}
+                          className={cn(
+                            SLOT,
+                            "h-[27px] min-w-0 flex-1 border-gray-400",
+                          )}
                           onBlur={(e) => {
                             if (!e.currentTarget.contains(e.relatedTarget)) {
                               setEditingField(null);
@@ -513,8 +576,7 @@ export function ProductDialog({
                           />
                         </div>
                       ) : (
-                        <>
-                          <div className="group/amazon flex shrink-0 items-center gap-[9px]">
+                        <div className="group/amazon ml-auto flex h-[27px] shrink-0 items-center gap-[9px]">
                             <Tooltip>
                               <TooltipTrigger
                                 render={
@@ -570,7 +632,6 @@ export function ProductDialog({
                               </Button>
                             )}
                           </div>
-                        </>
                       )}
                     </div>
                     </div>

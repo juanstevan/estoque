@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Columns3, Download, Pencil, Plus, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +62,13 @@ const ALL_COLUMNS: GridCol<ProductRow>[] = [
     render: (p) => p.type || "—",
   },
   { key: "sku", label: "SKU", mono: true, width: "120px" },
+  {
+    key: "hsCode",
+    label: "HS code",
+    mono: true,
+    width: "120px",
+    render: (p) => p.hsCode || "—",
+  },
   {
     key: "physicalQty",
     label: "Qnt",
@@ -157,6 +164,8 @@ export function StorageTab({
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const gridIdsRef = useRef<string[] | null>(null);
 
   useEffect(() => {
     try {
@@ -207,6 +216,29 @@ export function StorageTab({
       .filter((p) => hit(p.code) || hit(p.name) || hit(p.sku) || hit(p.type))
       .sort((a, b) => rank(a) - rank(b));
   }, [products, search]);
+
+  async function exportSpreadsheet() {
+    const ids =
+      checkedIds.size > 0
+        ? [...checkedIds]
+        : (gridIdsRef.current ?? visible.map((p) => p.id));
+    if (ids.length === products.length) {
+      window.location.href = "/api/import-export";
+      return;
+    }
+    const res = await fetch("/api/import-export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "estoque.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -290,14 +322,41 @@ export function StorageTab({
             >
               <Upload /> Import spreadsheet
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => (window.location.href = "/api/import-export")}
-            >
+            <DropdownMenuItem onClick={() => void exportSpreadsheet()}>
               <Download /> Export spreadsheet
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <input id="sheet-import" type="file" hidden accept=".xlsx,.csv" />
+        <input
+          id="sheet-import"
+          type="file"
+          hidden
+          accept=".xlsx,.csv"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            void (async () => {
+              const form = new FormData();
+              form.append("file", file);
+              const parsed = await fetch("/api/import-export", {
+                method: "POST",
+                body: form,
+              });
+              const data = await parsed.json();
+              if (!parsed.ok || !data.preview) return;
+              await fetch("/api/import-export", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  preview: data.preview,
+                  confirm: true,
+                }),
+              });
+              onReload();
+            })();
+          }}
+        />
       </div>
 
       <DataGrid
@@ -305,6 +364,10 @@ export function StorageTab({
         getRowId={(p) => p.id}
         onRowClick={(p) => setSelected(p.id)}
         selectedId={selected}
+        selectable
+        checkedIds={checkedIds}
+        onCheckedIdsChange={setCheckedIds}
+        visibleIdsRef={gridIdsRef}
         empty={search ? `No matches for “${search}”` : "No products yet"}
         emptyHint={
           search

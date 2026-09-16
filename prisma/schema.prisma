@@ -70,6 +70,7 @@ model Product {
   name               String
   sku                String   @unique
   type               String?
+  hsCode             String?
   secondarySku       String?
   ean                String?
   amazonUrl          String?

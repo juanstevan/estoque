@@ -13,6 +13,7 @@ export async function POST(req: Request) {
       name: string;
       sku: string;
       type?: string | null;
+      hsCode?: string | null;
       code?: string;
       amazonUrl?: string | null;
       imageUrl?: string | null;
