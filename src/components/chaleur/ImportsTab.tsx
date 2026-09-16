@@ -1796,6 +1796,7 @@ function ImportDialog({
                     {
                       ...saved,
                       sku: "",
+                      type: null,
                       physicalQty: 0,
                       availableQty: 0,
                       reservedQty: 0,
