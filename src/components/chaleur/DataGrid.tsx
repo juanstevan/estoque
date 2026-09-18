@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Filter, ListFilter } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, Filter, ListFilter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -10,6 +10,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 export type GridCol<T> = {
@@ -30,10 +37,33 @@ export type GridCol<T> = {
 };
 
 type Sort = { key: string; dir: "asc" | "desc" };
+type CmpOp = "gt" | "lt";
+
+const CMP_OPS = [
+  ["gt", "Higher than"],
+  ["lt", "Lower than"],
+] as const;
+
+const CMP_LABEL: Record<string, string> = {
+  all: "All Values",
+  gt: "Higher than",
+  lt: "Lower than",
+};
 
 function rawValue<T extends object>(col: GridCol<T>, row: T) {
   if (col.filterValue) return col.filterValue(row);
   return String((row as Record<string, unknown>)[String(col.key)] ?? "");
+}
+
+function numValue<T extends object>(col: GridCol<T>, row: T) {
+  const v = col.sortValue
+    ? col.sortValue(row)
+    : (row as Record<string, unknown>)[String(col.key)];
+  return Number(v);
+}
+
+function cmpOk(n: number, op: CmpOp, t: number) {
+  return op === "gt" ? n > t : n < t;
 }
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
@@ -71,6 +101,10 @@ export function DataGrid<T extends object>({
 }) {
   const [sort, setSort] = useState<Sort | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
+  const [exclude, setExclude] = useState<Record<string, boolean>>({});
+  const [compare, setCompare] = useState<
+    Record<string, { op?: CmpOp; value: string }>
+  >({});
   const [scrolled, setScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragged = useRef(false);
@@ -92,12 +126,22 @@ export function DataGrid<T extends object>({
     () =>
       rows.filter((row) =>
         columns.every((col) => {
-          const q = filters[String(col.key)]?.toLowerCase().trim();
-          if (!q) return true;
-          return rawValue(col, row).toLowerCase().includes(q);
+          const key = String(col.key);
+          const q = filters[key]?.toLowerCase().trim();
+          const cmp = compare[key];
+          const t = cmp?.value?.trim() ? Number(cmp.value) : NaN;
+          const hasText = Boolean(q);
+          const hasCmp = Boolean(col.numeric && cmp?.op && !Number.isNaN(t));
+          if (!hasText && !hasCmp) return true;
+          let textOk =
+            !hasText || rawValue(col, row).toLowerCase().includes(q);
+          if (exclude[key] && hasText) textOk = !textOk;
+          if (!hasCmp) return textOk;
+          const n = numValue(col, row);
+          return textOk && !Number.isNaN(n) && cmpOk(n, cmp.op!, t);
         }),
       ),
-    [rows, columns, filters],
+    [rows, columns, filters, exclude, compare],
   );
 
   const sorted = useMemo(() => {
@@ -123,7 +167,13 @@ export function DataGrid<T extends object>({
     return copy;
   }, [filtered, sort, columns]);
 
-  const hasFilters = Object.values(filters).some((v) => v?.trim());
+  const hasFilters = columns.some((col) => {
+    const key = String(col.key);
+    const cmp = compare[key];
+    return Boolean(
+      filters[key]?.trim() || (cmp?.op && cmp.value.trim()),
+    );
+  });
   const filteredToNothing = rows.length > 0 && sorted.length === 0;
   const colSpan = columns.length + (selectable ? 1 : 0);
   const checked = checkedIds ?? EMPTY_SET;
@@ -193,7 +243,21 @@ export function DataGrid<T extends object>({
               {columns.map((col, colIndex) => {
                 const key = String(col.key);
                 const isSorted = sort?.key === key;
-                const isFiltered = Boolean(filters[key]?.trim());
+                const textFilter = filters[key]?.trim() ?? "";
+                const cmp = compare[key];
+                const hasCmp = Boolean(cmp?.op && cmp.value.trim());
+                const isExcluded = Boolean(exclude[key] && textFilter);
+                const isFiltered = Boolean(textFilter || hasCmp);
+                function clearColumn() {
+                  setFilters((f) => ({ ...f, [key]: "" }));
+                  setExclude((e) => ({ ...e, [key]: false }));
+                  setCompare((c) => {
+                    const next = { ...c };
+                    delete next[key];
+                    return next;
+                  });
+                  if (isSorted) setSort(null);
+                }
                 return (
                   <th
                     scope="col"
@@ -212,17 +276,16 @@ export function DataGrid<T extends object>({
                       <Popover>
                         <PopoverTrigger
                           className={cn(
-                            "group/th -mx-1 flex h-7 w-full items-center gap-1.5 rounded-sm px-1 outline-none hover:text-gray-900 data-popup-open:text-gray-900",
-                            col.align === "center"
-                              ? "justify-center"
-                              : col.numeric && "justify-end",
+                            "group/th -mx-1 inline-flex h-7 max-w-full items-center gap-1.5 rounded-sm px-1 outline-none hover:text-gray-900 data-popup-open:text-gray-900",
                             (isSorted || isFiltered) && "text-gray-900",
                           )}
                         >
                           <span className="truncate">{col.label}</span>
-                          {isFiltered && (
+                          {isExcluded ? (
+                            <EyeOff className="size-3 shrink-0" />
+                          ) : isFiltered ? (
                             <Filter className="size-3 shrink-0 fill-current" />
-                          )}
+                          ) : null}
                           {isSorted &&
                             (sort.dir === "asc" ? (
                               <ArrowUp className="size-3 shrink-0" />
@@ -233,10 +296,7 @@ export function DataGrid<T extends object>({
                             <ListFilter className="size-3 shrink-0 text-gray-400 opacity-0 transition-opacity duration-[80ms] group-hover/th:opacity-100" />
                           )}
                         </PopoverTrigger>
-                        <PopoverContent align="start" className="w-60 gap-2 p-2">
-                          <div className="px-1 py-0.5 text-2xs font-medium tracking-caps text-gray-500 uppercase">
-                            {col.label}
-                          </div>
+                        <PopoverContent align="center" className="w-max gap-2 p-2">
                           <div className="grid gap-0.5">
                             <MenuAction
                               active={isSorted && sort.dir === "asc"}
@@ -253,23 +313,105 @@ export function DataGrid<T extends object>({
                               {col.numeric ? "High to low" : "Z to A"}
                             </MenuAction>
                           </div>
+                          {col.numeric && (
+                            <div className="flex items-center gap-2 border-t border-gray-150 pt-2">
+                              <Select
+                                value={cmp?.op ?? "all"}
+                                onValueChange={(v) => {
+                                  const next = String(v);
+                                  setCompare((c) => {
+                                    if (next === "all") {
+                                      const cur = c[key];
+                                      if (!cur?.value.trim()) {
+                                        const copy = { ...c };
+                                        delete copy[key];
+                                        return copy;
+                                      }
+                                      return { ...c, [key]: { value: cur.value } };
+                                    }
+                                    return {
+                                      ...c,
+                                      [key]: {
+                                        op: next as CmpOp,
+                                        value: c[key]?.value ?? "",
+                                      },
+                                    };
+                                  });
+                                }}
+                              >
+                                <SelectTrigger
+                                  size="sm"
+                                  className="w-36 shrink-0 focus-visible:border-gray-800 data-popup-open:border-gray-300 data-popup-open:focus-visible:border-gray-300 data-popup-open:[&_svg]:rotate-180"
+                                >
+                                  <SelectValue>
+                                    {(v: string) => CMP_LABEL[v] ?? CMP_LABEL.all}
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent
+                                  align="start"
+                                  alignItemWithTrigger={false}
+                                >
+                                  <SelectItem value="all">All Values</SelectItem>
+                                  {CMP_OPS.map(([op, label]) => (
+                                    <SelectItem key={op} value={op}>
+                                      {label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Input
+                                type="number"
+                                aria-label="Amount"
+                                className="h-control-sm w-20 shrink-0 px-2 text-right tabular-nums focus-visible:border-gray-800"
+                                value={cmp?.value ?? ""}
+                                onChange={(e) =>
+                                  setCompare((c) => ({
+                                    ...c,
+                                    [key]: {
+                                      op: c[key]?.op,
+                                      value: e.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </div>
+                          )}
                           <div className="h-px bg-gray-150" />
-                          <Input
-                            autoFocus
-                            className="h-control-sm"
-                            placeholder={`Filter ${col.label.toLowerCase()}`}
-                            value={filters[key] ?? ""}
-                            onChange={(e) =>
-                              setFilters((f) => ({ ...f, [key]: e.target.value }))
-                            }
-                          />
-                          {(isFiltered || isSorted) && (
-                            <MenuAction
-                              onClick={() => {
-                                setFilters((f) => ({ ...f, [key]: "" }));
-                                if (isSorted) setSort(null);
-                              }}
+                          <div className="flex items-center gap-1">
+                            <Input
+                              autoFocus
+                              className="h-control-sm min-w-0 flex-1"
+                              placeholder={`Filter ${col.label.toLowerCase()}`}
+                              value={filters[key] ?? ""}
+                              onChange={(e) =>
+                                setFilters((f) => ({
+                                  ...f,
+                                  [key]: e.target.value,
+                                }))
+                              }
+                            />
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant={exclude[key] ? "default" : "secondary"}
+                              aria-label={
+                                exclude[key]
+                                  ? "Show matching rows"
+                                  : "Hide matching rows"
+                              }
+                              aria-pressed={Boolean(exclude[key])}
+                              onClick={() =>
+                                setExclude((e) => ({
+                                  ...e,
+                                  [key]: !e[key],
+                                }))
+                              }
                             >
+                              {exclude[key] ? <EyeOff /> : <Eye />}
+                            </Button>
+                          </div>
+                          {(isFiltered || isSorted || exclude[key]) && (
+                            <MenuAction onClick={clearColumn}>
                               Clear sort and filter
                             </MenuAction>
                           )}
@@ -291,7 +433,11 @@ export function DataGrid<T extends object>({
                       action={
                         <Button
                           variant="secondary"
-                          onClick={() => setFilters({})}
+                          onClick={() => {
+                            setFilters({});
+                            setExclude({});
+                            setCompare({});
+                          }}
                         >
                           Clear filters
                         </Button>
@@ -338,7 +484,11 @@ export function DataGrid<T extends object>({
           <button
             type="button"
             className="text-gray-600 hover:text-gray-900"
-            onClick={() => setFilters({})}
+            onClick={() => {
+              setFilters({});
+              setExclude({});
+              setCompare({});
+            }}
           >
             Clear filters
           </button>
