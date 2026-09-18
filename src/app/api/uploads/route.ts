@@ -11,6 +11,8 @@ const EXTENSIONS: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/webp": ".webp",
   "image/gif": ".gif",
+  "application/pdf": ".pdf",
+  "text/plain": ".txt",
 };
 
 export async function POST(req: Request) {
@@ -21,8 +23,8 @@ export async function POST(req: Request) {
     if (!(file instanceof File)) return jsonError("No file uploaded");
 
     const ext = EXTENSIONS[file.type];
-    if (!ext) return jsonError("Use a PNG, JPEG, WebP or GIF image");
-    if (file.size > MAX_BYTES) return jsonError("Image must be 5 MB or smaller");
+    if (!ext) return jsonError("Use an image, PDF or text file");
+    if (file.size > MAX_BYTES) return jsonError("File must be 5 MB or smaller");
 
     const bytes = Buffer.from(await file.arrayBuffer());
     if (!process.env.VERCEL) {
@@ -31,7 +33,7 @@ export async function POST(req: Request) {
         await mkdir(dir, { recursive: true });
         const name = `${randomUUID()}${ext}`;
         await writeFile(path.join(dir, name), bytes);
-        return jsonOk({ url: `/uploads/${name}` });
+        return jsonOk({ url: `/uploads/${name}`, name: file.name, size: file.size });
       } catch {
         /* fall through to an inline URL */
       }
@@ -39,6 +41,8 @@ export async function POST(req: Request) {
     // ponytail: data URL on Vercel (read-only /var/task); Blob if images get large
     return jsonOk({
       url: `data:${file.type};base64,${bytes.toString("base64")}`,
+      name: file.name,
+      size: file.size,
     });
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Upload failed", 500);

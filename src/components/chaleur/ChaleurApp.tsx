@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { StorageTab } from "@/components/chaleur/StorageTab";
 import { ImportsTab, type ImportRow } from "@/components/chaleur/ImportsTab";
 import { ExitTab, type ExitRow } from "@/components/chaleur/ExitTab";
+import { TaskTab } from "@/components/chaleur/TaskTab";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import {
   Dialog,
@@ -78,6 +79,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
             <TabsTrigger value="storage">Storage</TabsTrigger>
             <TabsTrigger value="imports">Imports</TabsTrigger>
             <TabsTrigger value="exit">Exit</TabsTrigger>
+            <TabsTrigger value="task">Task</TabsTrigger>
           </TabsList>
         </Tabs>
 
@@ -149,6 +151,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
           />
         )}
         {tab === "exit" && <ExitTab exits={exits} onReload={() => void load()} />}
+        {tab === "task" && <TaskTab />}
       </main>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>

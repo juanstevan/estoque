@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Task" ADD COLUMN "priority" TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE "Task" ADD COLUMN "labels" TEXT NOT NULL DEFAULT '[]';
