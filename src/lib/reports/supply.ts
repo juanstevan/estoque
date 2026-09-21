@@ -1,10 +1,4 @@
-import { readFileSync, statSync } from "fs";
 import { addMonths, format, startOfMonth } from "date-fns";
-import * as xlsx from "xlsx";
-
-const ORDERS_PATH =
-  process.env.REPORTS_ORDERS_PATH ||
-  "/Users/juanstevan/Desktop/dash/data/retail/orders.xlsx";
 
 const SELLER_ALIAS: Record<string, string> = {
   fabio: "Fabio Sabino",
@@ -88,8 +82,7 @@ export type SupplyReport = {
   }[];
 };
 
-type Cache = {
-  mtimeMs: number;
+export type SalesCatalog = {
   updatedAt: string;
   rows: SaleRow[];
   products: CatalogProduct[];
@@ -98,16 +91,7 @@ type Cache = {
   clients: string[];
 };
 
-let cache: Cache | null = null;
-
-function clean(value: unknown) {
-  return String(value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function sellerName(value: string) {
+export function sellerName(value: string) {
   const key = value.toLowerCase();
   return SELLER_ALIAS[key] || value;
 }
@@ -124,46 +108,13 @@ function displayName(item: string) {
   return item.replace(/^\d+\s*-\s*/, "").replace(/\s+/g, " ").trim();
 }
 
-function isSellable(sku: string, item: string) {
+export function isSellable(sku: string, item: string) {
   const blob = `${sku} ${item}`.toLowerCase();
   if (!item.trim()) return false;
   return !/late fee|flat fee|freight|shipping|discount|sales tax/.test(blob);
 }
 
-function num(value: unknown) {
-  const n = Number(String(value ?? "").replace(/,/g, ""));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function loadRows(): Cache {
-  const st = statSync(ORDERS_PATH);
-  if (cache && cache.mtimeMs === st.mtimeMs) return cache;
-  const wb = xlsx.read(readFileSync(ORDERS_PATH), { cellDates: false });
-  const sheet = wb.Sheets.ORDERS ?? wb.Sheets[wb.SheetNames[0]];
-  const raw = xlsx.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    raw: false,
-    dateNF: "yyyy-mm-dd",
-    defval: "",
-  });
-  const rows: SaleRow[] = [];
-  for (const row of raw) {
-    const item = clean(row.ITEM);
-    const sku = clean(row.SKU);
-    const date = clean(row.DATA).slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isSellable(sku, item)) continue;
-    rows.push({
-      date,
-      invoice: clean(row.INVOICE),
-      client: clean(row.CLIENTE) || "Unknown",
-      seller: sellerName(clean(row.SELLER)) || "Unassigned",
-      sku,
-      item,
-      qty: num(row.QNT),
-      price: num(row.PRECO),
-      total: num(row.TOTAL),
-    });
-  }
-
+export function catalogFrom(rows: SaleRow[], updatedAt: string): SalesCatalog {
   const groups = new Map<string, SaleRow[]>();
   for (const row of rows) {
     const id = itemKey(row.item);
@@ -188,21 +139,17 @@ function loadRows(): Cache {
   }
   products.sort((a, b) => a.name.localeCompare(b.name));
 
-  cache = {
-    mtimeMs: st.mtimeMs,
-    updatedAt: st.mtime.toISOString(),
+  return {
+    updatedAt,
     rows,
     products,
     byId: groups,
     sellers: [...new Set(rows.map((r) => r.seller))].filter(Boolean).sort(),
     clients: [...new Set(rows.map((r) => r.client))].filter(Boolean).sort(),
   };
-  return cache;
 }
 
-export function reportsIndex(force = false) {
-  if (force) cache = null;
-  const data = loadRows();
+export function reportsIndex(data: SalesCatalog) {
   return {
     updatedAt: data.updatedAt,
     products: data.products.map((p) => ({
@@ -214,17 +161,18 @@ export function reportsIndex(force = false) {
     sellers: data.sellers,
     clients: data.clients,
     invoices: new Set(data.rows.map((r) => r.invoice)).size,
-    sourceNote:
-      "Sales history is the QuickBooks orders export. This app’s live sync only requests the last 7 days, so the export is the source. Historical monthly inventory is not in that file.",
+    sourceNote: data.rows.length
+      ? "Sales are stored in the database. Refresh pulls invoices from QuickBooks and replaces those invoices."
+      : "No sales in the database yet. Refresh to pull them from QuickBooks.",
   };
 }
 
-export function rowsFor(productId: string) {
-  return loadRows().byId.get(productId) ?? [];
+export function rowsFor(data: SalesCatalog, productId: string) {
+  return data.byId.get(productId) ?? [];
 }
 
-export function findProduct(productId: string) {
-  return loadRows().products.find((p) => p.id === productId) ?? null;
+export function findProduct(data: SalesCatalog, productId: string) {
+  return data.products.find((p) => p.id === productId) ?? null;
 }
 
 function monthKey(date: Date) {
@@ -512,10 +460,10 @@ export type AttentionRow = {
 };
 
 export function attentionRows(
+  data: SalesCatalog,
   stock: Map<string, { id: string; physical: number; available: number }>,
   incoming: Map<string, number>,
 ) {
-  const data = loadRows();
   const today = new Date();
   return data.products
     .map((product) => {

@@ -305,3 +305,20 @@ model TaskComment {
 
   @@index([taskId, createdAt])
 }
+
+model Sale {
+  id       String   @id @default(cuid())
+  date     String
+  invoice  String
+  client   String
+  seller   String
+  sku      String   @default("")
+  item     String
+  qty      Float
+  price    Float
+  total    Float
+  syncedAt DateTime @default(now())
+
+  @@unique([invoice, sku])
+  @@index([date])
+}

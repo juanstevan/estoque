@@ -220,9 +220,22 @@ function SupplyDash({
   const [hover, setHover] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [rev, setRev] = useState(0);
 
   async function loadIndex(refresh = false) {
-    const res = await fetch(`/api/reports/supply${refresh ? "?refresh=1" : ""}`);
+    if (refresh) {
+      setSyncing(true);
+      const synced = await fetch("/api/reports/supply", { method: "POST" });
+      const body = await synced.json().catch(() => ({}));
+      setSyncing(false);
+      if (!synced.ok) {
+        setError(body.error ?? "Could not refresh QuickBooks");
+        return;
+      }
+      setRev((n) => n + 1);
+    }
+    const res = await fetch("/api/reports/supply");
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setError(data.error ?? "Could not load reports");
@@ -259,7 +272,7 @@ function SupplyDash({
       });
     }, 200);
     return () => clearTimeout(handle);
-  }, [productId, period, from, to, seller, client]);
+  }, [productId, period, from, to, seller, client, rev]);
 
   function pick(product: CatalogProduct) {
     setProductId(product.id);
@@ -429,8 +442,8 @@ function SupplyDash({
         <Hint
           text={
             index
-              ? `${index.invoices} invoices in the QuickBooks export, updated ${when(index.updatedAt)}. Live sync covers 7 days.`
-              : "Loading the orders export."
+              ? `${index.invoices} invoices in the database, updated ${when(index.updatedAt)}. Refresh pulls QuickBooks.`
+              : "Loading sales."
           }
         />
         <Button
@@ -464,10 +477,11 @@ function SupplyDash({
         <Button
           size="icon-sm"
           variant="ghost"
-          aria-label="Refresh"
+          aria-label="Refresh from QuickBooks"
+          disabled={syncing}
           onClick={() => void loadIndex(true)}
         >
-          <RefreshCw />
+          <RefreshCw className={syncing ? "animate-spin" : undefined} />
         </Button>
       </div>
 

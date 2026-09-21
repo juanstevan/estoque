@@ -1,19 +1,25 @@
-import { supplySelfCheck, buildSupply, findProduct, reportsIndex, rowsFor } from "./supply";
+import path from "path";
+import { rowsFromFile } from "./sheet";
+import { supplySelfCheck, buildSupply, catalogFrom, findProduct, reportsIndex, rowsFor } from "./supply";
 
 const mark = supplySelfCheck();
 if (mark !== "ok") throw new Error(mark);
 
-const index = reportsIndex();
+const data = catalogFrom(
+  rowsFromFile(process.env.REPORTS_ORDERS_PATH || path.join(process.cwd(), "data", "orders.xlsx")),
+  new Date().toISOString(),
+);
+const index = reportsIndex(data);
 const names = ["36\" range hood bbq-02", "double door no. 835 (33\")", "single zone fridge (glass front)"];
 for (const name of names) {
-  const product = index.products.find((p) => p.name.toLowerCase() === name);
+  const product = findProduct(data, index.products.find((p) => p.name.toLowerCase() === name)?.id ?? "");
   if (!product) {
     console.log("missing", name);
     continue;
   }
   const report = buildSupply({
     product,
-    rows: rowsFor(product.id),
+    rows: rowsFor(data, product.id),
     period: "12",
     from: null,
     to: null,
