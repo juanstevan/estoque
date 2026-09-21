@@ -11,11 +11,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { StorageTab } from "@/components/chaleur/StorageTab";
 import { ImportsTab, type ImportRow } from "@/components/chaleur/ImportsTab";
 import { ExitTab, type ExitRow } from "@/components/chaleur/ExitTab";
 import { TaskTab } from "@/components/chaleur/TaskTab";
+import { ReportsTab } from "@/components/chaleur/ReportsTab";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import {
   Dialog,
@@ -41,6 +43,10 @@ export function ChaleurApp({ userName }: { userName: string }) {
   ]);
   const [company, setCompany] = useState("Chaleur Manufacturing Co.");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importSeed, setImportSeed] = useState<{
+    token: number;
+    lines: { productId: string | null; name: string; quantity: number }[];
+  } | null>(null);
 
   async function load() {
     const [p, i, o, s] = await Promise.all([
@@ -80,6 +86,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
             <TabsTrigger value="imports">Imports</TabsTrigger>
             <TabsTrigger value="exit">Exit</TabsTrigger>
             <TabsTrigger value="task">Task</TabsTrigger>
+            <TabsTrigger value="reports">Reports</TabsTrigger>
           </TabsList>
         </Tabs>
 
@@ -127,7 +134,12 @@ export function ChaleurApp({ userName }: { userName: string }) {
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 p-6">
+      <main
+        className={cn(
+          "min-h-0 flex-1 p-6",
+          tab === "reports" && "flex flex-col overflow-hidden",
+        )}
+      >
         {tab === "storage" && (
           <StorageTab
             products={products}
@@ -148,10 +160,20 @@ export function ChaleurApp({ userName }: { userName: string }) {
                 .then((r) => r.json())
                 .then(setProducts);
             }}
+            seed={importSeed}
+            onSeedDone={() => setImportSeed(null)}
           />
         )}
         {tab === "exit" && <ExitTab exits={exits} onReload={() => void load()} />}
         {tab === "task" && <TaskTab />}
+        {tab === "reports" && (
+          <ReportsTab
+            onCreateImport={(lines) => {
+              setImportSeed({ token: Date.now(), lines });
+              setTab("imports");
+            }}
+          />
+        )}
       </main>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>

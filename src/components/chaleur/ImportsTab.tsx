@@ -223,6 +223,8 @@ export function ImportsTab({
   reasons,
   onImportsChange,
   onProductsReload,
+  seed,
+  onSeedDone,
 }: {
   imports: ImportRow[];
   products: ProductRow[];
@@ -231,6 +233,11 @@ export function ImportsTab({
     next: ImportRow[] | ((prev: ImportRow[]) => ImportRow[]),
   ) => void;
   onProductsReload: () => void;
+  seed?: {
+    token: number;
+    lines: { productId: string | null; name: string; quantity: number }[];
+  } | null;
+  onSeedDone?: () => void;
 }) {
   const [kind, setKind] = useState<"ALL" | "DOMESTIC" | "INTERNATIONAL">("ALL");
   const [search, setSearch] = useState("");
@@ -241,6 +248,9 @@ export function ImportsTab({
   const [pendingDelete, setPendingDelete] = useState<ImportRow | null>(null);
   const [editing, setEditing] = useState<ImportRow | null>(null);
   const [addingImport, setAddingImport] = useState(false);
+  const [seedLines, setSeedLines] = useState<
+    { productId: string | null; name: string; quantity: number }[] | null
+  >(null);
   const [extras, setExtras] = useState<ExtraCol[]>([]);
   const [tableQuery, setTableQuery] = useState("");
   const [addingCol, setAddingCol] = useState(false);
@@ -277,6 +287,14 @@ export function ImportsTab({
     ],
     [extras],
   );
+
+  useEffect(() => {
+    if (!seed?.lines.length) return;
+    setSeedLines(seed.lines);
+    setEditing(null);
+    setAddingImport(true);
+    onSeedDone?.();
+  }, [seed?.token]);
 
   useEffect(() => {
     void fetch("/api/settings")
@@ -923,10 +941,13 @@ export function ImportsTab({
           onClose={() => {
             setEditing(null);
             setAddingImport(false);
+            setSeedLines(null);
           }}
+          seedLines={editing ? undefined : seedLines ?? undefined}
           onSaved={(row) => {
             setEditing(null);
             setAddingImport(false);
+            setSeedLines(null);
             onImportsChange((rows) => {
               const i = rows.findIndex((r) => r.id === row.id);
               if (i === -1) return [row, ...rows];
@@ -1341,6 +1362,7 @@ function ImportDialog({
   onClose,
   onSaved,
   onCatalogChange,
+  seedLines,
 }: {
   open: boolean;
   initial: ImportRow | null;
@@ -1351,6 +1373,7 @@ function ImportDialog({
   onClose: () => void;
   onSaved: (row: ImportRow) => void;
   onCatalogChange: () => void;
+  seedLines?: { productId: string | null; name: string; quantity: number }[];
 }) {
   const [form, setForm] = useState(() => ({
     reference: initial?.reference ?? "",
@@ -1362,12 +1385,19 @@ function ImportDialog({
     duties: initial?.duties ?? 0,
     customs: initial?.customs ?? 0,
     otherCosts: initial?.otherCosts ?? 0,
-    lines: (initial?.lines ?? []).map((l) => ({
-      productId: l.productId,
-      name: l.product?.name ?? l.draftName ?? "",
-      quantity: String(l.quantity),
-      purchaseUnitCost: String(l.purchaseUnitCost),
-    })),
+    lines: (initial?.lines?.length
+      ? initial.lines.map((l) => ({
+          productId: l.productId,
+          name: l.product?.name ?? l.draftName ?? "",
+          quantity: String(l.quantity),
+          purchaseUnitCost: String(l.purchaseUnitCost),
+        }))
+      : (seedLines ?? []).map((l) => ({
+          productId: l.productId,
+          name: l.name,
+          quantity: String(l.quantity),
+          purchaseUnitCost: "0",
+        }))),
   }));
   const [adding, setAdding] = useState(form.lines.length === 0);
   const [query, setQuery] = useState("");
