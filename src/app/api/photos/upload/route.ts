@@ -5,7 +5,7 @@ import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { jsonError, jsonOk } from "@/lib/api";
 import { currentUser } from "@/lib/auth";
 import { PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
-import { discardUploads, photoStorage } from "@/lib/photos/service";
+import { blobToken, discardUploads, photoStorage } from "@/lib/photos/service";
 
 export async function GET() {
   if (!(await currentUser())) return jsonError("Unauthorized", 401);
@@ -42,6 +42,7 @@ export async function POST(req: Request) {
       await handleUpload({
         body,
         request: req,
+        token: blobToken(),
         onBeforeGenerateToken: async (pathname) => {
           if (!pathname.startsWith("products/")) throw new Error("Invalid photo path");
           return {

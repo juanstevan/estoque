@@ -14,8 +14,15 @@ export type PhotoInput = {
   height?: number | null;
 };
 
+/** Vercel may prefix the variable when the store is connected (e.g. `photos_BLOB_READ_WRITE_TOKEN`). */
+export function blobToken() {
+  if (process.env.BLOB_READ_WRITE_TOKEN) return process.env.BLOB_READ_WRITE_TOKEN;
+  const key = Object.keys(process.env).find((k) => k.endsWith("BLOB_READ_WRITE_TOKEN"));
+  return key ? process.env[key] : undefined;
+}
+
 export function photoStorage() {
-  return process.env.BLOB_READ_WRITE_TOKEN ? "blob" : process.env.VERCEL ? "none" : "local";
+  return blobToken() ? "blob" : process.env.VERCEL ? "none" : "local";
 }
 
 const LOCAL_DIR = "/uploads/photos/";
@@ -35,7 +42,7 @@ async function deleteFiles(urls: string[]) {
   const blobs = owned.filter((u) => !u.startsWith(LOCAL_DIR));
   const local = owned.filter((u) => u.startsWith(LOCAL_DIR));
   await Promise.allSettled([
-    blobs.length ? del(blobs) : Promise.resolve(),
+    blobs.length ? del(blobs, { token: blobToken() }) : Promise.resolve(),
     ...local.map((u) => unlink(path.join(process.cwd(), "public", u))),
   ]);
 }
