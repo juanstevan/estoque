@@ -1,7 +1,13 @@
 import { randomUUID } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { issueSignedToken } from "@vercel/blob";
+import {
+  handleUpload,
+  handleUploadPresigned,
+  type HandleUploadBody,
+  type HandleUploadPresignedBody,
+} from "@vercel/blob/client";
 import { jsonError, jsonOk } from "@/lib/api";
 import { currentUser } from "@/lib/auth";
 import { PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
@@ -34,8 +40,28 @@ export async function POST(req: Request) {
       await discardUploads(raw.discard.filter((u): u is string => typeof u === "string"));
       return jsonOk({ ok: true });
     }
+    const storage = photoStorage();
+    if (storage === "oidc") {
+      return jsonOk(
+        await handleUploadPresigned({
+          body: raw as HandleUploadPresignedBody,
+          request: req,
+          getSignedToken: async (pathname) => {
+            if (!pathname.startsWith("products/")) throw new Error("Invalid photo path");
+            const limits = {
+              allowedContentTypes: Object.keys(PHOTO_TYPES),
+              maximumSizeInBytes: PHOTO_MAX_BYTES,
+            };
+            return {
+              token: await issueSignedToken({ pathname, operations: ["put"], ...limits }),
+              urlOptions: { ...limits, addRandomSuffix: true },
+            };
+          },
+        }),
+      );
+    }
     const body = raw as HandleUploadBody;
-    if (photoStorage() !== "blob") {
+    if (storage !== "blob") {
       return jsonError("Photo storage is not connected. Add a Vercel Blob store to the project.", 503);
     }
     return jsonOk(

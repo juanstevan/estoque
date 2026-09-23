@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { upload } from "@vercel/blob/client";
+import { upload, uploadPresigned } from "@vercel/blob/client";
 import {
   Check,
   ChevronLeft,
@@ -34,7 +34,7 @@ export type Photo = {
   pending?: number;
 };
 
-export type PhotoStorage = "blob" | "local" | "none";
+export type PhotoStorage = "blob" | "oidc" | "local" | "none";
 
 /** Long edge of the gallery / info-card copy. The original is never resized. */
 const THUMB_EDGE = 1200;
@@ -87,11 +87,13 @@ async function store(
     return data.url as string;
   }
   const ext = PHOTO_TYPES[file.type];
-  const blob = await upload(`products/${folder}/${crypto.randomUUID()}.${ext}`, file, {
+  const send = storage === "oidc" ? uploadPresigned : upload;
+  const blob = await send(`products/${folder}/${crypto.randomUUID()}.${ext}`, file, {
     access: "public",
     handleUploadUrl: "/api/photos/upload",
     contentType: file.type,
-    multipart: file.size > 20 * 1024 * 1024,
+    // Presigned multipart needs a separate /mpu route; single PUT covers our 100 MB cap.
+    multipart: storage === "blob" && file.size > 20 * 1024 * 1024,
     onUploadProgress: onProgress ? (e) => onProgress(e.percentage / 100) : undefined,
   });
   return blob.url;

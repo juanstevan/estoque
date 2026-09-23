@@ -21,8 +21,14 @@ export function blobToken() {
   return key ? process.env[key] : undefined;
 }
 
+/**
+ * "blob": classic read-write token. "oidc": newer stores connect with only
+ * BLOB_STORE_ID and authenticate through Vercel's OIDC token at runtime.
+ */
 export function photoStorage() {
-  return blobToken() ? "blob" : process.env.VERCEL ? "none" : "local";
+  if (blobToken()) return "blob";
+  if (process.env.BLOB_STORE_ID && process.env.VERCEL) return "oidc";
+  return process.env.VERCEL ? "none" : "local";
 }
 
 const LOCAL_DIR = "/uploads/photos/";
