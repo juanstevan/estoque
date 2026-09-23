@@ -4,10 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   ExternalLink,
-  ImagePlus,
   Pencil,
   Search,
-  Trash2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,6 +39,16 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DataGrid } from "@/components/chaleur/DataGrid";
+import {
+  PHOTO_ACCEPT,
+  PhotoGallery,
+  PhotoLightbox,
+  PhotoStage,
+  usePhotos,
+  type Photo,
+  type PhotoStorage,
+} from "@/components/chaleur/ProductPhotos";
+import { photoFileNames } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
 import { calcWeightedAverageCost } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
@@ -100,6 +108,8 @@ type Detail = ProductRow & {
     unitPrice: number;
     order: { externalRef: string; customerName: string | null };
   }>;
+  photos: Photo[];
+  photoStorage: PhotoStorage;
 };
 
 const LBS_PER_KG = 2.20462;
@@ -166,6 +176,8 @@ function blankDetail(): Detail {
     cutoutHeight: null,
     transactions: [],
     orderLines: [],
+    photos: [],
+    photoStorage: "blob",
   };
 }
 
@@ -201,7 +213,23 @@ export function ProductDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
-  const [dragOver, setDragOver] = useState(false);
+  const [photoIndex, setPhotoIndex] = useState(0);
+  const [viewer, setViewer] = useState<number | null>(null);
+
+  const photoList = useMemo(() => detail?.photos ?? [], [detail?.photos]);
+  const photoNames = useMemo(
+    () => photoFileNames({ type: detail?.type ?? null, name: detail?.name ?? "" }, photoList),
+    [detail?.type, detail?.name, photoList],
+  );
+  const photoActions = usePhotos({
+    productId: isCreate ? null : (detail?.id ?? null),
+    photos: photoList,
+    setPhotos: (update) =>
+      setDetail((d) => (d ? { ...d, photos: update(d.photos) } : d)),
+    storage: detail?.photoStorage ?? "blob",
+    onError: setError,
+  });
+  const stageIndex = Math.min(photoIndex, Math.max(0, photoList.length - 1));
 
   useEffect(() => {
     if (!open) return;
@@ -209,8 +237,16 @@ export function ProductDialog({
     setError(null);
     setEditingField(null);
     setConfirmDelete(false);
+    setPhotoIndex(0);
+    setViewer(null);
     if (isCreate) {
       setDetail(blankDetail());
+      fetch("/api/photos/upload")
+        .then((r) => r.json())
+        .then((data: { storage?: PhotoStorage }) => {
+          if (data.storage) patch({ photoStorage: data.storage });
+        })
+        .catch(() => {});
       return;
     }
     setDetail(null);
@@ -227,20 +263,15 @@ export function ProductDialog({
     setDetail((d) => (d ? { ...d, ...changes } : d));
   }
 
-  async function uploadImage(file: File) {
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch("/api/uploads", { method: "POST", body: form });
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error ?? "Couldn't upload that image");
-      return;
+  function close() {
+    if (isCreate && detail?.photos.length) {
+      void fetch("/api/photos/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ discard: detail.photos.flatMap((p) => [p.url, p.thumbUrl]) }),
+      });
     }
-    patch({ imageUrl: data.url });
-  }
-
-  function acceptImage(file?: File) {
-    if (file?.type.startsWith("image/")) void uploadImage(file);
+    onClose();
   }
 
   async function save() {
@@ -250,6 +281,10 @@ export function ProductDialog({
       setError("Name and SKU are required");
       return;
     }
+    if (detail.photos.some((p) => p.pending != null)) {
+      setError("Wait for the photos to finish uploading");
+      return;
+    }
     const payload = {
       code: detail.code.trim().toUpperCase().slice(0, 3) || undefined,
       name: detail.name,
@@ -257,7 +292,19 @@ export function ProductDialog({
       type: detail.type?.trim() || null,
       hsCode: detail.hsCode?.trim() || null,
       amazonUrl: detail.amazonUrl,
-      imageUrl: detail.imageUrl,
+      ...(isCreate
+        ? {
+            photos: detail.photos.map((p) => ({
+              url: p.url,
+              thumbUrl: p.thumbUrl,
+              tag: p.tag,
+              contentType: p.contentType,
+              size: p.size,
+              width: p.width,
+              height: p.height,
+            })),
+          }
+        : {}),
       b2bPrice: detail.b2bPrice,
       b2cPrice: detail.b2cPrice,
       notes: detail.notes,
@@ -323,13 +370,10 @@ export function ProductDialog({
   const openField = (field: string) => setEditingField(field);
   const closeField = () => !isCreate && setEditingField(null);
   const suppliers: string[] = parseSuppliers(detail?.suppliers);
-  const hasImage = Boolean(
-    detail?.imageUrl && detail.imageUrl !== "/file.svg",
-  );
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <Dialog open={open} onOpenChange={(v) => !v && viewer == null && close()}>
         <DialogContent
           showCloseButton={false}
           className="flex w-auto max-w-none flex-col items-center gap-0 overflow-visible border-0 bg-transparent p-0 shadow-none outline-none focus-visible:shadow-none sm:max-w-none"
@@ -360,7 +404,7 @@ export function ProductDialog({
                     }}
                     className="w-full gap-0"
                   >
-                    <TabsList className="mx-auto w-[208px] bg-[#f2f2f7]">
+                    <TabsList className="mx-auto w-[300px] bg-[#f2f2f7]">
                       <TabsTrigger
                         value="info"
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
@@ -373,6 +417,15 @@ export function ProductDialog({
                       >
                         Log
                       </TabsTrigger>
+                      <TabsTrigger
+                        value="photos"
+                        className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
+                      >
+                        Photos
+                        {photoList.length > 0 && (
+                          <span className="tabular-nums text-gray-400">{photoList.length}</span>
+                        )}
+                      </TabsTrigger>
                     </TabsList>
                   </Tabs>
                 )}
@@ -382,73 +435,13 @@ export function ProductDialog({
               {tab === "info" ? (
                 <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
                   <div className="flex min-h-0 w-[45%] shrink-0 flex-col">
-                    <div
-                      className={cn(
-                        "group relative mb-6 flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-[9px] border bg-sunken",
-                        dragOver ? "border-gray-900" : "border-border",
-                      )}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setDragOver(true);
-                      }}
-                      onDragLeave={() => setDragOver(false)}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        setDragOver(false);
-                        acceptImage(e.dataTransfer.files[0]);
-                      }}
-                    >
-                      {hasImage && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={detail.imageUrl!}
-                          alt=""
-                          className="h-full w-full object-contain"
-                          onError={() => patch({ imageUrl: null })}
-                        />
-                      )}
-                      <div
-                        className={cn(
-                          "absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/85 text-xs font-medium transition-opacity duration-[120ms]",
-                          dragOver
-                            ? "opacity-100"
-                            : "opacity-0 group-hover:opacity-100",
-                        )}
-                      >
-                        <button
-                          type="button"
-                          className="flex items-center gap-1.5 text-gray-700"
-                          onClick={() => fileRef.current?.click()}
-                        >
-                          <ImagePlus className="size-3.5" />
-                          {dragOver
-                            ? "Drop image"
-                            : hasImage
-                              ? "Change image"
-                              : "Upload image"}
-                        </button>
-                        {hasImage && !dragOver && (
-                          <button
-                            type="button"
-                            className="flex items-center gap-1.5 text-danger-text"
-                            onClick={() => patch({ imageUrl: null })}
-                          >
-                            <Trash2 className="size-3.5" />
-                            Delete image
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      accept="image/*"
-                      hidden
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) acceptImage(file);
-                        e.target.value = "";
-                      }}
+                    <PhotoStage
+                      photos={photoList}
+                      index={stageIndex}
+                      onIndex={setPhotoIndex}
+                      onOpen={setViewer}
+                      onPick={() => fileRef.current?.click()}
+                      onFiles={photoActions.add}
                     />
 
                     <div className="flex shrink-0 flex-col gap-4">
@@ -912,6 +905,23 @@ export function ProductDialog({
                     </div>
                   </div>
                 </div>
+              ) : tab === "photos" ? (
+                <PhotoGallery
+                  productId={detail.id || null}
+                  photos={photoList}
+                  names={photoNames}
+                  onError={setError}
+                  onPick={() => fileRef.current?.click()}
+                  onFiles={photoActions.add}
+                  onOpen={setViewer}
+                  onRetag={(id, tag) => void photoActions.retag(id, tag)}
+                  onCover={(id) => {
+                    setPhotoIndex(0);
+                    void photoActions.cover(id);
+                  }}
+                  onRemove={(id) => void photoActions.remove(id)}
+                  onDownload={(photo, name) => void photoActions.download(photo, name)}
+                />
               ) : (
                 <div className="flex min-h-0 flex-1 flex-col pb-3">
                   <DataGrid
@@ -1006,7 +1016,7 @@ export function ProductDialog({
                       Delete
                     </Button>
                   )}
-                  <Button variant="secondary" className="h-8" onClick={onClose}>
+                  <Button variant="secondary" className="h-8" onClick={close}>
                     Cancel
                   </Button>
                   <Button className="h-8" disabled={saving} onClick={() => void save()}>
@@ -1054,6 +1064,29 @@ export function ProductDialog({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept={PHOTO_ACCEPT}
+        multiple
+        hidden
+        onChange={(e) => {
+          photoActions.add([...(e.target.files ?? [])]);
+          e.target.value = "";
+        }}
+      />
+      <PhotoLightbox
+        photos={photoList}
+        names={photoNames}
+        index={viewer == null ? null : Math.min(viewer, photoList.length - 1)}
+        onIndex={(i) => {
+          setViewer(i);
+          setPhotoIndex(i);
+        }}
+        onClose={() => setViewer(null)}
+        onDownload={(photo, name) => void photoActions.download(photo, name)}
+      />
 
       {detail && !isCreate && (
         <QuantityDialog

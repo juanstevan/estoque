@@ -1,5 +1,6 @@
 import { createProduct, listProducts } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
+import { addPhotos, type PhotoInput } from "@/lib/photos/service";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -34,11 +35,15 @@ export async function POST(req: Request) {
       cutoutHeight?: number | null;
       initialQty?: number;
       initialUnitCost?: number;
+      photos?: PhotoInput[];
     }>(req);
     if (!body.name?.trim() || !body.sku?.trim()) {
       return jsonError("Name and SKU are required");
     }
-    return jsonOk(await createProduct(body), { status: 201 });
+    const { photos, ...fields } = body;
+    const product = await createProduct(fields);
+    if (photos?.length) await addPhotos(product.id, photos);
+    return jsonOk(product, { status: 201 });
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Could not create product", 500);
   }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Columns3, Download, Pencil, Plus, Search, Upload } from "lucide-react";
+import { Columns3, Download, Link2, Pencil, Plus, Search, Upload } from "lucide-react";
+import { copyShareLink } from "@/components/chaleur/ProductPhotos";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -25,6 +26,7 @@ import {
   type ProductRow,
 } from "@/components/chaleur/ProductDialog";
 import { formatMoney, formatQty } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 const COLUMNS_KEY = "chaleur.storage.columns";
 
@@ -165,6 +167,14 @@ export function StorageTab({
   const [creating, setCreating] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [shareNote, setShareNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const shareTimer = useRef<number | undefined>(undefined);
+
+  function flashShare(note: { ok: boolean; text: string }) {
+    setShareNote(note);
+    window.clearTimeout(shareTimer.current);
+    shareTimer.current = window.setTimeout(() => setShareNote(null), 2500);
+  }
   const gridIdsRef = useRef<string[] | null>(null);
 
   useEffect(() => {
@@ -282,6 +292,16 @@ export function StorageTab({
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {shareNote && (
+          <span
+            className={cn(
+              "shrink-0 text-xs",
+              shareNote.ok ? "text-gray-500" : "text-danger-text",
+            )}
+          >
+            {shareNote.text}
+          </span>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -324,6 +344,20 @@ export function StorageTab({
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => void exportSpreadsheet()}>
               <Download /> Export spreadsheet
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                copyShareLink(null)
+                  .then(() => flashShare({ ok: true, text: "Photos link copied" }))
+                  .catch((e) =>
+                    flashShare({
+                      ok: false,
+                      text: e instanceof Error ? e.message : "Couldn't copy the link",
+                    }),
+                  )
+              }
+            >
+              <Link2 /> Copy photos share link
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

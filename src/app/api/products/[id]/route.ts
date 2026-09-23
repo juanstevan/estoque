@@ -4,6 +4,7 @@ import {
   updateProduct,
 } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
+import { photoStorage } from "@/lib/photos/service";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -11,7 +12,7 @@ export async function GET(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   const product = await getProductDetail(id);
   if (!product) return jsonError("Product not found", 404);
-  return jsonOk(product);
+  return jsonOk({ ...product, photoStorage: photoStorage() });
 }
 
 export async function PATCH(req: Request, ctx: Ctx) {

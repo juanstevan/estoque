@@ -109,9 +109,35 @@ model Product {
   costHistory      CostHistory[]
   importationLines ImportationLine[]
   orderLines       OrderLine[]
+  photos           ProductPhoto[]
 
   @@index([name])
   @@index([ean])
+}
+
+/** Read-only photo link. productId null = every product. */
+model PhotoShare {
+  token     String   @id
+  productId String?  @unique
+  createdAt DateTime @default(now())
+}
+
+model ProductPhoto {
+  id          String   @id @default(cuid())
+  productId   String
+  url         String
+  thumbUrl    String
+  tag         String   @default("")
+  fileName    String   @default("")
+  contentType String   @default("image/jpeg")
+  size        Int      @default(0)
+  width       Int?
+  height      Int?
+  position    Float    @default(0)
+  createdAt   DateTime @default(now())
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
 }
 
 model InventoryTransaction {

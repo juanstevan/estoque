@@ -5,7 +5,9 @@ export function proxy(req: NextRequest) {
   const session = req.cookies.get("chaleur_session")?.value;
   const { pathname } = req.nextUrl;
   const publicPath =
-    pathname.startsWith("/login") || pathname.startsWith("/api/auth");
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/share/");
   if (!session && !publicPath) {
     return NextResponse.redirect(new URL("/login", req.url));
   }

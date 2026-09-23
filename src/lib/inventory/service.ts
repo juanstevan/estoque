@@ -8,6 +8,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
+import { adoptImage, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -282,7 +283,9 @@ export async function updateProduct(
     typeof data.code === "string"
       ? data.code.trim().toUpperCase().slice(0, 3)
       : data.code;
-  return prisma.product.update({ where: { id }, data: { ...data, code } });
+  const product = await prisma.product.update({ where: { id }, data: { ...data, code } });
+  if ("name" in data || "type" in data) await syncPhotos(id);
+  return product;
 }
 
 export async function deleteProduct(id: string) {
@@ -290,6 +293,7 @@ export async function deleteProduct(id: string) {
   if (onOrder) {
     throw new Error("This product is on an exit invoice and can't be deleted");
   }
+  const dropFiles = await deleteProductFiles(id);
   await prisma.$transaction(async (tx) => {
     const lines = await tx.importationLine.findMany({
       where: { productId: id },
@@ -309,6 +313,7 @@ export async function deleteProduct(id: string) {
     await tx.inventoryTransaction.deleteMany({ where: { productId: id } });
     await tx.product.delete({ where: { id } });
   });
+  await dropFiles();
 }
 
 export async function listProducts(search?: string) {
@@ -328,6 +333,11 @@ export async function listProducts(search?: string) {
 }
 
 export async function getProductDetail(id: string) {
+  const bare = await prisma.product.findUnique({
+    where: { id },
+    select: { imageUrl: true, _count: { select: { photos: true } } },
+  });
+  if (bare && !bare._count.photos) await adoptImage(id, bare.imageUrl);
   const [product, users] = await Promise.all([
     prisma.product.findUnique({
       where: { id },
@@ -341,6 +351,7 @@ export async function getProductDetail(id: string) {
           },
           include: { order: true },
         },
+        photos: { orderBy: [{ position: "asc" }, { createdAt: "asc" }] },
       },
     }),
     prisma.user.findMany({ select: { id: true, username: true, name: true } }),
