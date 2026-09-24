@@ -27,6 +27,7 @@ export type Photo = {
   tag: string;
   fileName: string;
   contentType: string;
+  kind?: string;
   size: number;
   width: number | null;
   height: number | null;
@@ -289,11 +290,11 @@ export function usePhotos({
  * Copies the read-only photo link (one product, or all when productId is null).
  * The ClipboardItem takes the pending fetch so Safari keeps the click's permission.
  */
-export async function copyShareLink(productId: string | null) {
+export async function copyShareLink(productId: string | null, groupId: string | null = null) {
   const link = fetch("/api/photos/share", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ productId }),
+    body: JSON.stringify({ productId, groupId }),
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error ?? "Couldn't create the link");
@@ -313,10 +314,14 @@ export async function copyShareLink(productId: string | null) {
 
 export function ShareButton({
   productId,
+  groupId = null,
+  label = "Copy share link",
   onError,
   className,
 }: {
   productId: string | null;
+  groupId?: string | null;
+  label?: string;
   onError: (message: string) => void;
   className?: string;
 }) {
@@ -332,13 +337,13 @@ export function ShareButton({
       size="sm"
       className={className}
       onClick={() =>
-        copyShareLink(productId)
+        copyShareLink(productId, groupId)
           .then(() => setCopied(true))
           .catch((e) => onError(e instanceof Error ? e.message : "Couldn't copy the link"))
       }
     >
       {copied ? <Check /> : <Link2 />}
-      {copied ? "Link copied" : "Copy share link"}
+      {copied ? "Copied" : label}
     </Button>
   );
 }
@@ -432,6 +437,7 @@ export function PhotoStage({
   onOpen,
   onPick,
   onFiles,
+  browse = false,
 }: {
   photos: Photo[];
   index: number;
@@ -439,8 +445,9 @@ export function PhotoStage({
   onOpen: (i: number) => void;
   onPick: () => void;
   onFiles: (files: File[]) => void;
+  browse?: boolean;
 }) {
-  const drop = useDrop(onFiles);
+  const drop = useDrop(browse ? () => {} : onFiles);
   const photo = photos[index];
   const many = photos.length > 1;
   const step = (d: number) => onIndex((index + d + photos.length) % photos.length);
@@ -470,14 +477,16 @@ export function PhotoStage({
             />
           </button>
           {photo.pending != null && <PendingBar share={photo.pending} />}
-          <div className="absolute top-3 right-3 flex gap-1.5 opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 focus-within:opacity-100">
-            <IconAction label="Add photos" onClick={onPick}>
-              <ImagePlus />
-            </IconAction>
-            <IconAction label="Open" onClick={() => onOpen(index)}>
-              <Maximize2 />
-            </IconAction>
-          </div>
+          {!browse && (
+            <div className="absolute top-3 right-3 flex gap-1.5 opacity-0 transition-opacity duration-[120ms] group-hover:opacity-100 focus-within:opacity-100">
+              <IconAction label="Add photos" onClick={onPick}>
+                <ImagePlus />
+              </IconAction>
+              <IconAction label="Open" onClick={() => onOpen(index)}>
+                <Maximize2 />
+              </IconAction>
+            </div>
+          )}
           {many && (
             <>
               <StageArrow side="left" onClick={() => step(-1)} />
@@ -500,10 +509,10 @@ export function PhotoStage({
         <button
           type="button"
           className="flex flex-col items-center gap-2 text-xs font-medium text-gray-500 hover:text-gray-900"
-          onClick={onPick}
+          onClick={browse ? undefined : onPick}
         >
           <ImagePlus className="size-5" />
-          {drop.over ? "Drop photos" : "Upload photos"}
+          {browse ? "Photos are shared from the folder" : drop.over ? "Drop photos" : "Upload photos"}
         </button>
       )}
       {drop.over && photo && (

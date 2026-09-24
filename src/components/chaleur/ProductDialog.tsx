@@ -41,14 +41,14 @@ import {
 import { DataGrid } from "@/components/chaleur/DataGrid";
 import {
   PHOTO_ACCEPT,
-  PhotoGallery,
   PhotoLightbox,
   PhotoStage,
   usePhotos,
   type Photo,
   type PhotoStorage,
 } from "@/components/chaleur/ProductPhotos";
-import { photoFileNames } from "@/lib/photos/name";
+import { MediaBrowser } from "@/components/chaleur/MediaBrowser";
+import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
 import { calcWeightedAverageCost } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
@@ -59,6 +59,8 @@ export type ProductRow = {
   name: string;
   sku: string;
   type: string | null;
+  category?: string | null;
+  model?: string | null;
   hsCode: string | null;
   physicalQty: number;
   availableQty: number;
@@ -110,6 +112,8 @@ type Detail = ProductRow & {
   }>;
   photos: Photo[];
   photoStorage: PhotoStorage;
+  groupId?: string | null;
+  inherited?: Photo[];
 };
 
 const LBS_PER_KG = 2.20462;
@@ -148,6 +152,8 @@ function blankDetail(): Detail {
     name: "",
     sku: "",
     type: null,
+    category: null,
+    model: null,
     hsCode: null,
     physicalQty: 0,
     availableQty: 0,
@@ -178,6 +184,8 @@ function blankDetail(): Detail {
     orderLines: [],
     photos: [],
     photoStorage: "blob",
+    groupId: null,
+    inherited: [],
   };
 }
 
@@ -191,6 +199,7 @@ export function ProductDialog({
   mode = "edit",
   reasons,
   types = [],
+  catalog = [],
   onClose,
   onSaved,
 }: {
@@ -199,6 +208,7 @@ export function ProductDialog({
   mode?: "edit" | "create";
   reasons: string[];
   types?: string[];
+  catalog?: { category?: string | null; model?: string | null }[];
   onClose: () => void;
   onSaved: (created?: { id: string; code: string; name: string }) => void;
 }) {
@@ -214,13 +224,33 @@ export function ProductDialog({
   const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
   const [photoIndex, setPhotoIndex] = useState(0);
+  const [nameOpen, setNameOpen] = useState(false);
+  const [parts, setParts] = useState({ category: "", model: "", variation: "" });
+  const nameRoot = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<number | null>(null);
 
-  const photoList = useMemo(() => detail?.photos ?? [], [detail?.photos]);
+  const photoList = useMemo(() => {
+    const shared = (detail?.inherited ?? []).filter((photo) => photo.kind !== "file");
+    return shared.length ? shared : (detail?.photos ?? []);
+  }, [detail?.inherited, detail?.photos]);
   const photoNames = useMemo(
     () => photoFileNames({ type: detail?.type ?? null, name: detail?.name ?? "" }, photoList),
     [detail?.type, detail?.name, photoList],
   );
+  const categories = useMemo(
+    () => [...new Set(catalog.flatMap((row) => (row.category ? [row.category] : [])))].sort(),
+    [catalog],
+  );
+  function modelsFor(category: string) {
+    const key = category.trim().toLowerCase();
+    return [
+      ...new Set(
+        catalog.flatMap((row) =>
+          row.model && row.category?.toLowerCase() === key ? [row.model] : [],
+        ),
+      ),
+    ].sort();
+  }
   const photoActions = usePhotos({
     productId: isCreate ? null : (detail?.id ?? null),
     photos: photoList,
@@ -239,6 +269,7 @@ export function ProductDialog({
     setConfirmDelete(false);
     setPhotoIndex(0);
     setViewer(null);
+    setNameOpen(false);
     if (isCreate) {
       setDetail(blankDetail());
       fetch("/api/photos/upload")
@@ -250,14 +281,44 @@ export function ProductDialog({
       return;
     }
     setDetail(null);
-    if (productId) {
-      fetch(`/api/products/${productId}`)
-        .then((r) => r.json())
-        .then((row: Detail) =>
-          setDetail({ ...row, code: (row.code ?? "").slice(0, 3) }),
-        );
-    }
+    if (!productId) return;
+    let full = false;
+    const apply = (row: Detail) => setDetail({ ...row, code: (row.code ?? "").slice(0, 3) });
+    const load = (view: "info" | "full") =>
+      fetch(`/api/products/${productId}${view === "info" ? "?view=info" : ""}`).then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error ?? "Could not load the product");
+        return data as Detail;
+      });
+    load("info")
+      .then((row) => {
+        if (!full) apply(row);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Could not load the product"));
+    load("full")
+      .then((row) => {
+        full = true;
+        apply(row);
+      })
+      .catch(() => {});
   }, [open, productId, isCreate]);
+
+  useEffect(() => {
+    if (!nameOpen) return;
+    function down(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (nameRoot.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-slot=popover-content]")) return;
+      patch({
+        category: parts.category.trim() || null,
+        model: parts.model.trim() || null,
+        name: composeName(parts.category, parts.model, parts.variation),
+      });
+      setNameOpen(false);
+    }
+    document.addEventListener("pointerdown", down);
+    return () => document.removeEventListener("pointerdown", down);
+  }, [nameOpen, parts]);
 
   function patch(changes: Partial<Detail>) {
     setDetail((d) => (d ? { ...d, ...changes } : d));
@@ -277,7 +338,16 @@ export function ProductDialog({
   async function save() {
     if (!detail) return;
     setError(null);
-    if (!detail.name.trim() || !detail.sku.trim()) {
+    const category = (nameOpen ? parts.category : detail.category)?.trim() || "";
+    const model = (nameOpen ? parts.model : detail.model)?.trim() || "";
+    const name = nameOpen
+      ? composeName(parts.category, parts.model, parts.variation)
+      : detail.name.trim();
+    if (!detail.type?.trim() || !category || !model) {
+      setError("Brand, category, and model are required");
+      return;
+    }
+    if (!name || !detail.sku.trim()) {
       setError("Name and SKU are required");
       return;
     }
@@ -287,9 +357,11 @@ export function ProductDialog({
     }
     const payload = {
       code: detail.code.trim().toUpperCase().slice(0, 3) || undefined,
-      name: detail.name,
+      name,
       sku: detail.sku,
       type: detail.type?.trim() || null,
+      category,
+      model,
       hsCode: detail.hsCode?.trim() || null,
       amazonUrl: detail.amazonUrl,
       ...(isCreate
@@ -385,7 +457,7 @@ export function ProductDialog({
 
           {!detail ? (
             <div className="flex aspect-[1.6] w-[1080px] min-w-[1080px] flex-col rounded-[9px] border border-border bg-surface p-6 shadow-md">
-              <ProductSkeleton />
+              {error ? <ErrorText>{error}</ErrorText> : <ProductSkeleton />}
             </div>
           ) : (
             <>
@@ -421,7 +493,7 @@ export function ProductDialog({
                         value="photos"
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
                       >
-                        Photos
+                        Media
                         {photoList.length > 0 && (
                           <span className="tabular-nums text-gray-400">{photoList.length}</span>
                         )}
@@ -432,8 +504,7 @@ export function ProductDialog({
               </div>
 
               <div className="flex aspect-[1.6] w-[1080px] min-w-[1080px] flex-col overflow-hidden rounded-[9px] border border-border bg-surface p-6 shadow-md">
-              {tab === "info" ? (
-                <div className="flex min-h-0 w-full flex-1 gap-8 overflow-hidden">
+              <div className={cn("min-h-0 w-full flex-1 gap-8 overflow-hidden", tab === "info" ? "flex" : "hidden")}>
                   <div className="flex min-h-0 w-[45%] shrink-0 flex-col">
                     <PhotoStage
                       photos={photoList}
@@ -442,6 +513,7 @@ export function ProductDialog({
                       onOpen={setViewer}
                       onPick={() => fileRef.current?.click()}
                       onFiles={photoActions.add}
+                      browse
                     />
 
                     <div className="flex shrink-0 flex-col gap-4">
@@ -498,7 +570,7 @@ export function ProductDialog({
                         </EditSlot>
                       </div>
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <FieldLabel className="shrink-0">Type</FieldLabel>
+                        <FieldLabel className="shrink-0">Brand</FieldLabel>
                         <TypePicker
                           value={detail.type}
                           options={types}
@@ -510,27 +582,67 @@ export function ProductDialog({
                       </div>
                     </div>
 
-                    <div className="grid gap-1.5">
-                      <FieldLabel>Name</FieldLabel>
-                      <EditSlot
-                        active={isOpen("name")}
-                        onActivate={() => openField("name")}
-                        onDone={closeField}
-                        className="min-h-[1.5rem] h-auto min-w-0 px-[9px] text-sm font-medium"
-                        read={
-                          <span className="truncate">
-                            {detail.name || <Null />}
-                          </span>
-                        }
-                      >
-                        <BareField
-                          autoFocus
-                          value={detail.name}
-                          placeholder="Complete product name"
-                          aria-label="Name"
-                          onChange={(e) => patch({ name: e.target.value })}
-                        />
-                      </EditSlot>
+                    <div className="grid gap-1.5" ref={nameRoot}>
+                      {nameOpen ? (
+                        <div className="flex items-end gap-2">
+                          <div className="grid w-[80px] shrink-0 gap-1.5">
+                            <FieldLabel>Category</FieldLabel>
+                            <TypePicker
+                              value={parts.category || null}
+                              options={categories}
+                              placeholder="Category"
+                              width={80}
+                              active={editingField === "category"}
+                              onActivate={() => openField("category")}
+                              onDone={() => setEditingField((field) => (field === "category" ? null : field))}
+                              onChange={(category) =>
+                                setParts((prev) => ({ ...prev, category: category ?? "" }))
+                              }
+                            />
+                          </div>
+                          <div className="grid w-[80px] shrink-0 gap-1.5">
+                            <FieldLabel>Model</FieldLabel>
+                            <TypePicker
+                              value={parts.model || null}
+                              options={modelsFor(parts.category)}
+                              placeholder="Model"
+                              width={80}
+                              active={editingField === "model"}
+                              onActivate={() => openField("model")}
+                              onDone={() => setEditingField((field) => (field === "model" ? null : field))}
+                              onChange={(model) => setParts((prev) => ({ ...prev, model: model ?? "" }))}
+                            />
+                          </div>
+                          <div className="grid min-w-0 flex-1 gap-1.5">
+                            <FieldLabel>Variation</FieldLabel>
+                            <BareField
+                              aria-label="Variation"
+                              placeholder="4, 32&quot; / NG"
+                              value={parts.variation}
+                              onChange={(e) => setParts((prev) => ({ ...prev, variation: e.target.value }))}
+                              className="h-6 w-full rounded-md border border-gray-400 bg-surface px-1.5 text-sm"
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <FieldLabel>Name</FieldLabel>
+                          <EditSlot
+                            active={false}
+                            onActivate={() => {
+                              setParts(splitName(detail.name, detail.category, detail.model));
+                              setNameOpen(true);
+                            }}
+                            onDone={() => {}}
+                            className="min-h-[1.5rem] h-auto min-w-0 px-[9px] text-sm font-medium"
+                            read={
+                              <span className="truncate">{detail.name || <Null />}</span>
+                            }
+                          >
+                            <span />
+                          </EditSlot>
+                        </>
+                      )}
                     </div>
 
                     <div className="flex h-[27px] items-center gap-3">
@@ -905,25 +1017,26 @@ export function ProductDialog({
                     </div>
                   </div>
                 </div>
-              ) : tab === "photos" ? (
-                <PhotoGallery
-                  productId={detail.id || null}
-                  photos={photoList}
-                  names={photoNames}
-                  onError={setError}
-                  onPick={() => fileRef.current?.click()}
-                  onFiles={photoActions.add}
-                  onOpen={setViewer}
-                  onRetag={(id, tag) => void photoActions.retag(id, tag)}
-                  onCover={(id) => {
-                    setPhotoIndex(0);
-                    void photoActions.cover(id);
-                  }}
-                  onRemove={(id) => void photoActions.remove(id)}
-                  onDownload={(photo, name) => void photoActions.download(photo, name)}
-                />
-              ) : (
-                <div className="flex min-h-0 flex-1 flex-col pb-3">
+              <div className={cn("min-h-0 flex-1 flex-col", tab === "photos" ? "flex" : "hidden")}>
+                {detail.id ? (
+                  <MediaBrowser
+                    productId={detail.id}
+                    groupId={detail.groupId ?? null}
+                    storage={detail.photoStorage}
+                    onError={setError}
+                    onMoved={() => {
+                      fetch(`/api/products/${detail.id}`)
+                        .then((r) => r.json())
+                        .then((row: Detail) =>
+                          setDetail({ ...row, code: (row.code ?? "").slice(0, 3) }),
+                        );
+                    }}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-500">Save the product before adding shared media.</p>
+                )}
+              </div>
+              <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "log" ? "flex" : "hidden")}>
                   <DataGrid
                     rows={detail.transactions}
                     getRowId={(t) => t.id}
@@ -1000,8 +1113,7 @@ export function ProductDialog({
                       },
                     ]}
                   />
-                </div>
-              )}
+              </div>
 
               <DialogFooter className="mx-0 mb-0 mt-0 h-8 shrink-0 border-0 bg-transparent px-0 py-0 sm:h-8 sm:justify-between">
                 <ErrorText>{error}</ErrorText>
@@ -1409,6 +1521,8 @@ function TypePicker({
   value,
   options,
   active,
+  placeholder = "Type",
+  width = 120,
   onActivate,
   onDone,
   onChange,
@@ -1416,6 +1530,8 @@ function TypePicker({
   value: string | null;
   options: string[];
   active: boolean;
+  placeholder?: string;
+  width?: number;
   onActivate: () => void;
   onDone: () => void;
   onChange: (value: string | null) => void;
@@ -1433,12 +1549,11 @@ function TypePicker({
       onOpenChange={(open) => (open ? onActivate() : onDone())}
     >
       <PopoverTrigger
+        style={{ width }}
         className={cn(
           SLOT,
-          "w-[120px] shrink-0 cursor-text text-xs font-medium outline-none",
-          active
-            ? "border-gray-400 bg-surface"
-            : "border-transparent hover:bg-gray-100",
+          "shrink-0 cursor-text text-xs font-medium outline-none",
+          active ? "border-gray-400 bg-surface" : "border-transparent hover:bg-gray-100",
         )}
       >
         <span className="truncate">{value || <Null />}</span>
@@ -1451,8 +1566,8 @@ function TypePicker({
           autoFocus
           className="h-7 px-2 text-xs"
           value={value ?? ""}
-          placeholder="Type"
-          aria-label="Type"
+          placeholder={placeholder}
+          aria-label={placeholder}
           onChange={(e) => onChange(e.target.value || null)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {

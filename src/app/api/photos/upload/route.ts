@@ -10,8 +10,23 @@ import {
 } from "@vercel/blob/client";
 import { jsonError, jsonOk } from "@/lib/api";
 import { currentUser } from "@/lib/auth";
-import { PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
+import { FILE_MAX_BYTES, PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
 import { blobToken, discardUploads, photoStorage } from "@/lib/photos/service";
+
+/**
+ * Upload paths are `products/<id>/…` or `groups/<id>/…`. Photos are images only;
+ * anything under `/files/` (manuals, videos, other attachments) takes any type.
+ */
+function limitsFor(pathname: string) {
+  if (!/^(products|groups)\/[^/]+\//.test(pathname)) throw new Error("Invalid upload path");
+  return pathname.includes("/files/")
+    ? { maximumSizeInBytes: FILE_MAX_BYTES }
+    : { allowedContentTypes: Object.keys(PHOTO_TYPES), maximumSizeInBytes: PHOTO_MAX_BYTES };
+}
+
+function extOf(name: string) {
+  return name.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toLowerCase() ?? "bin";
+}
 
 export async function GET() {
   if (!(await currentUser())) return jsonError("Unauthorized", 401);
@@ -22,12 +37,16 @@ export async function POST(req: Request) {
   if (!(await currentUser())) return jsonError("Unauthorized", 401);
   try {
     if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
-      if (photoStorage() !== "local") return jsonError("Local photo storage is only for development", 400);
-      const file = (await req.formData()).get("file");
+      if (photoStorage() !== "local") return jsonError("Local storage is only for development", 400);
+      const form = await req.formData();
+      const file = form.get("file");
       if (!(file instanceof File)) return jsonError("No file uploaded");
-      const ext = PHOTO_TYPES[file.type];
+      const isFile = form.get("kind") === "file";
+      const ext = isFile ? extOf(file.name) : PHOTO_TYPES[file.type];
       if (!ext) return jsonError("Use a JPG, PNG, WebP, AVIF or GIF photo");
-      if (file.size > PHOTO_MAX_BYTES) return jsonError("Photos must be 100 MB or smaller");
+      if (file.size > (isFile ? FILE_MAX_BYTES : PHOTO_MAX_BYTES)) {
+        return jsonError(isFile ? "Files must be 500 MB or smaller" : "Photos must be 100 MB or smaller");
+      }
       const dir = path.join(process.cwd(), "public", "uploads", "photos");
       await mkdir(dir, { recursive: true });
       const name = `${randomUUID()}.${ext}`;
@@ -47,11 +66,7 @@ export async function POST(req: Request) {
           body: raw as HandleUploadPresignedBody,
           request: req,
           getSignedToken: async (pathname) => {
-            if (!pathname.startsWith("products/")) throw new Error("Invalid photo path");
-            const limits = {
-              allowedContentTypes: Object.keys(PHOTO_TYPES),
-              maximumSizeInBytes: PHOTO_MAX_BYTES,
-            };
+            const limits = limitsFor(pathname);
             return {
               token: await issueSignedToken({ pathname, operations: ["put"], ...limits }),
               urlOptions: { ...limits, addRandomSuffix: true },
@@ -60,23 +75,15 @@ export async function POST(req: Request) {
         }),
       );
     }
-    const body = raw as HandleUploadBody;
     if (storage !== "blob") {
       return jsonError("Photo storage is not connected. Add a Vercel Blob store to the project.", 503);
     }
     return jsonOk(
       await handleUpload({
-        body,
+        body: raw as HandleUploadBody,
         request: req,
         token: blobToken(),
-        onBeforeGenerateToken: async (pathname) => {
-          if (!pathname.startsWith("products/")) throw new Error("Invalid photo path");
-          return {
-            allowedContentTypes: Object.keys(PHOTO_TYPES),
-            maximumSizeInBytes: PHOTO_MAX_BYTES,
-            addRandomSuffix: true,
-          };
-        },
+        onBeforeGenerateToken: async (pathname) => ({ ...limitsFor(pathname), addRandomSuffix: true }),
       }),
     );
   } catch (e) {

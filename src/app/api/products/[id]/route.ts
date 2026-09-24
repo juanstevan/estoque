@@ -1,5 +1,6 @@
 import {
   deleteProduct,
+  getProductCard,
   getProductDetail,
   updateProduct,
 } from "@/lib/inventory/service";
@@ -8,11 +9,16 @@ import { photoStorage } from "@/lib/photos/service";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_req: Request, ctx: Ctx) {
-  const { id } = await ctx.params;
-  const product = await getProductDetail(id);
-  if (!product) return jsonError("Product not found", 404);
-  return jsonOk({ ...product, photoStorage: photoStorage() });
+export async function GET(req: Request, ctx: Ctx) {
+  try {
+    const { id } = await ctx.params;
+    const view = new URL(req.url).searchParams.get("view");
+    const product = view === "info" ? await getProductCard(id) : await getProductDetail(id);
+    if (!product) return jsonError("Product not found", 404);
+    return jsonOk({ ...product, photoStorage: photoStorage() });
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : "Could not load the product", 500);
+  }
 }
 
 export async function PATCH(req: Request, ctx: Ctx) {

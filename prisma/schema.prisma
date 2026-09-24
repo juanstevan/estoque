@@ -71,6 +71,8 @@ model Product {
   name               String
   sku                String   @unique
   type               String?
+  category           String?
+  model              String?
   hsCode             String?
   secondarySku       String?
   ean                String?
@@ -110,34 +112,60 @@ model Product {
   importationLines ImportationLine[]
   orderLines       OrderLine[]
   photos           ProductPhoto[]
+  groupId          String?
+  group            MediaGroup?            @relation(fields: [groupId], references: [id], onDelete: SetNull)
 
   @@index([name])
   @@index([ean])
+  @@index([groupId])
 }
 
-/** Read-only photo link. productId null = every product. */
+/** Read-only media link. Neither id set = every product. */
 model PhotoShare {
   token     String   @id
   productId String?  @unique
+  groupId   String?  @unique
   createdAt DateTime @default(now())
 }
 
+/** Products in a group (and its subgroups) inherit its photos and files. */
+model MediaGroup {
+  id        String         @id @default(cuid())
+  name      String
+  brand     String?
+  parentId  String?
+  position  Float          @default(0)
+  createdAt DateTime       @default(now())
+  parent    MediaGroup?    @relation("MediaGroupTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  MediaGroup[]   @relation("MediaGroupTree")
+  products  Product[]
+  assets    ProductPhoto[]
+
+  @@index([parentId, position])
+}
+
+/** A photo or file owned by exactly one product or one group. */
 model ProductPhoto {
-  id          String   @id @default(cuid())
-  productId   String
-  url         String
-  thumbUrl    String
-  tag         String   @default("")
-  fileName    String   @default("")
-  contentType String   @default("image/jpeg")
-  size        Int      @default(0)
-  width       Int?
-  height      Int?
-  position    Float    @default(0)
-  createdAt   DateTime @default(now())
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id           String      @id @default(cuid())
+  productId    String?
+  groupId      String?
+  kind         String      @default("photo")
+  url          String
+  thumbUrl     String
+  tag          String      @default("")
+  fileName     String      @default("")
+  originalName String      @default("")
+  contentType  String      @default("image/jpeg")
+  size         Int         @default(0)
+  width        Int?
+  height       Int?
+  position     Float       @default(0)
+  createdAt    DateTime    @default(now())
+  product      Product?    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  group        MediaGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@index([productId, position])
+  @@index([groupId, position])
 }
 
 model InventoryTransaction {

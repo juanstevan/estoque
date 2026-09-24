@@ -421,6 +421,7 @@ export function StorageTab({
         productId={selected}
         reasons={reasons}
         types={uniqueProductTypes(products)}
+        catalog={products}
         onClose={() => setSelected(null)}
         onSaved={onReload}
       />
@@ -431,6 +432,7 @@ export function StorageTab({
         mode="create"
         reasons={reasons}
         types={uniqueProductTypes(products)}
+        catalog={products}
         onClose={() => setCreating(false)}
         onSaved={onReload}
       />

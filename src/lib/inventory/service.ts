@@ -9,6 +9,8 @@ import {
 import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
 import { adoptImage, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
+import { placeProduct } from "@/lib/photos/groups";
+import { groupPath, inheritedAssets } from "@/lib/photos/groups";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -184,6 +186,8 @@ export async function createProduct(input: {
   name: string;
   sku: string;
   type?: string | null;
+  category?: string | null;
+  model?: string | null;
   hsCode?: string | null;
   code?: string;
   secondarySku?: string | null;
@@ -215,6 +219,8 @@ export async function createProduct(input: {
         name: input.name,
         sku: input.sku,
         type: input.type?.trim() || null,
+        category: input.category?.trim() || null,
+        model: input.model?.trim() || null,
         hsCode: input.hsCode?.trim() || null,
         code:
           input.code?.trim().toUpperCase().slice(0, 3) || (await nextCode(tx)),
@@ -256,6 +262,9 @@ export async function createProduct(input: {
     }
 
     return tx.product.findUniqueOrThrow({ where: { id: product.id } });
+  }).then(async (created) => {
+    await placeProduct(created.id);
+    return created;
   });
 }
 
@@ -284,7 +293,8 @@ export async function updateProduct(
       ? data.code.trim().toUpperCase().slice(0, 3)
       : data.code;
   const product = await prisma.product.update({ where: { id }, data: { ...data, code } });
-  if ("name" in data || "type" in data) await syncPhotos(id);
+  if ("category" in data || "model" in data || "type" in data) await placeProduct(id);
+  if ("name" in data || "type" in data || "category" in data || "model" in data) await syncPhotos(id);
   return product;
 }
 
@@ -332,12 +342,40 @@ export async function listProducts(search?: string) {
   });
 }
 
+export async function getProductCard(id: string) {
+  const product = await prisma.product.findUnique({ where: { id } });
+  if (!product) return null;
+  const cover =
+    product.imageUrl && product.imageUrl !== "/file.svg"
+      ? [
+          {
+            id: "cover",
+            url: product.imageUrl,
+            thumbUrl: product.imageUrl,
+            tag: "",
+            fileName: "",
+            contentType: "image/jpeg",
+            kind: "photo" as const,
+          },
+        ]
+      : [];
+  return {
+    ...product,
+    transactions: [],
+    orderLines: [],
+    photos: cover,
+    inherited: [] as typeof cover,
+    groupPath: [] as { id: string; name: string }[],
+  };
+}
+
 export async function getProductDetail(id: string) {
   const bare = await prisma.product.findUnique({
     where: { id },
-    select: { imageUrl: true, _count: { select: { photos: true } } },
+    select: { imageUrl: true, groupId: true, _count: { select: { photos: true } } },
   });
-  if (bare && !bare._count.photos) await adoptImage(id, bare.imageUrl);
+  // A grouped product's imageUrl mirrors the group cover; adopting it would duplicate that file.
+  if (bare && !bare.groupId && !bare._count.photos) await adoptImage(id, bare.imageUrl);
   const [product, users] = await Promise.all([
     prisma.product.findUnique({
       where: { id },
@@ -365,8 +403,14 @@ export async function getProductDetail(id: string) {
     names.set(u.id, u.name);
     names.set(u.username, u.name);
   }
+  const [groupPathList, inherited] = await Promise.all([
+    groupPath(product.groupId),
+    inheritedAssets(product.groupId),
+  ]);
   return {
     ...product,
+    groupPath: groupPathList,
+    inherited,
     transactions: product.transactions.map((t) => ({
       ...t,
       userName: names.get(t.userId) ?? t.userId,

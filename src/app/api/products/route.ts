@@ -14,6 +14,8 @@ export async function POST(req: Request) {
       name: string;
       sku: string;
       type?: string | null;
+      category?: string | null;
+      model?: string | null;
       hsCode?: string | null;
       code?: string;
       amazonUrl?: string | null;
