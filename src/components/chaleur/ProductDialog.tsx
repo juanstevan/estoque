@@ -47,7 +47,6 @@ import {
   type Photo,
   type PhotoStorage,
 } from "@/components/chaleur/ProductPhotos";
-import { MediaBrowser } from "@/components/chaleur/MediaBrowser";
 import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
 import { calcWeightedAverageCost } from "@/lib/inventory/math";
@@ -61,6 +60,8 @@ export type ProductRow = {
   type: string | null;
   category?: string | null;
   model?: string | null;
+  tagId?: string | null;
+  tag?: { id: string; name: string; color: string } | null;
   hsCode: string | null;
   physicalQty: number;
   availableQty: number;
@@ -114,6 +115,7 @@ type Detail = ProductRow & {
   photoStorage: PhotoStorage;
   groupId?: string | null;
   inherited?: Photo[];
+  shown?: Array<Photo & { source: string; rank: number; name?: string }>;
 };
 
 const LBS_PER_KG = 2.20462;
@@ -154,6 +156,9 @@ function blankDetail(): Detail {
     type: null,
     category: null,
     model: null,
+    tagId: null,
+    tag: null,
+    shown: [],
     hsCode: null,
     physicalQty: 0,
     availableQty: 0,
@@ -228,11 +233,24 @@ export function ProductDialog({
   const [parts, setParts] = useState({ category: "", model: "", variation: "" });
   const nameRoot = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<number | null>(null);
+  const [tags, setTags] = useState<{ id: string; name: string; color: string }[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const tagDraftRef = useRef("");
 
   const photoList = useMemo(() => {
-    const shared = (detail?.inherited ?? []).filter((photo) => photo.kind !== "file");
-    return shared.length ? shared : (detail?.photos ?? []);
-  }, [detail?.inherited, detail?.photos]);
+    const shared = (detail?.shown ?? []).filter((photo) => photo.kind !== "file");
+    return shared.length ? shared : (detail?.photos ?? []).filter((photo) => photo.kind !== "file");
+  }, [detail?.shown, detail?.photos]);
+  const fileGroups = useMemo(() => {
+    const groups = new Map<string, Array<Photo & { source: string; name?: string }>>();
+    for (const file of detail?.shown ?? []) {
+      if (file.kind !== "file") continue;
+      const list = groups.get(file.source) ?? [];
+      list.push(file);
+      groups.set(file.source, list);
+    }
+    return [...groups];
+  }, [detail?.shown]);
   const photoNames = useMemo(
     () => photoFileNames({ type: detail?.type ?? null, name: detail?.name ?? "" }, photoList),
     [detail?.type, detail?.name, photoList],
@@ -269,6 +287,11 @@ export function ProductDialog({
     setConfirmDelete(false);
     setPhotoIndex(0);
     setViewer(null);
+    setTagDraft("");
+    fetch("/api/tags")
+      .then((r) => r.json())
+      .then((rows) => Array.isArray(rows) && setTags(rows))
+      .catch(() => {});
     setNameOpen(false);
     if (isCreate) {
       setDetail(blankDetail());
@@ -344,7 +367,7 @@ export function ProductDialog({
       ? composeName(parts.category, parts.model, parts.variation)
       : detail.name.trim();
     if (!detail.type?.trim() || !category || !model) {
-      setError("Brand, category, and model are required");
+      setError("Brand, category, and family are required");
       return;
     }
     if (!name || !detail.sku.trim()) {
@@ -362,6 +385,7 @@ export function ProductDialog({
       type: detail.type?.trim() || null,
       category,
       model,
+      tagId: detail.tagId || null,
       hsCode: detail.hsCode?.trim() || null,
       amazonUrl: detail.amazonUrl,
       ...(isCreate
@@ -494,8 +518,10 @@ export function ProductDialog({
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
                       >
                         Media
-                        {photoList.length > 0 && (
-                          <span className="tabular-nums text-gray-400">{photoList.length}</span>
+                        {fileGroups.reduce((n, [, files]) => n + files.length, 0) > 0 && (
+                          <span className="tabular-nums text-gray-400">
+                            {fileGroups.reduce((n, [, files]) => n + files.length, 0)}
+                          </span>
                         )}
                       </TabsTrigger>
                     </TabsList>
@@ -601,11 +627,11 @@ export function ProductDialog({
                             />
                           </div>
                           <div className="grid w-[80px] shrink-0 gap-1.5">
-                            <FieldLabel>Model</FieldLabel>
+                            <FieldLabel>Family</FieldLabel>
                             <TypePicker
                               value={parts.model || null}
                               options={modelsFor(parts.category)}
-                              placeholder="Model"
+                              placeholder="Family"
                               width={80}
                               active={editingField === "model"}
                               onActivate={() => openField("model")}
@@ -614,9 +640,9 @@ export function ProductDialog({
                             />
                           </div>
                           <div className="grid min-w-0 flex-1 gap-1.5">
-                            <FieldLabel>Variation</FieldLabel>
+                            <FieldLabel>Variant</FieldLabel>
                             <BareField
-                              aria-label="Variation"
+                              aria-label="Variant"
                               placeholder="4, 32&quot; / NG"
                               value={parts.variation}
                               onChange={(e) => setParts((prev) => ({ ...prev, variation: e.target.value }))}
@@ -624,7 +650,8 @@ export function ProductDialog({
                             />
                           </div>
                         </div>
-                      ) : (
+                      ) : null}
+                      {!nameOpen && (
                         <>
                           <FieldLabel>Name</FieldLabel>
                           <EditSlot
@@ -671,6 +698,54 @@ export function ProductDialog({
                             }
                           />
                         </EditSlot>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <FieldLabel className="shrink-0">Tag</FieldLabel>
+                        <TypePicker
+                          value={editingField === "tag" ? tagDraft || null : detail.tag?.name ?? null}
+                          options={tags.map((tag) => tag.name)}
+                          placeholder="Tag"
+                          width={117}
+                          mark={tags.find((tag) => tag.name.toLowerCase() === (editingField === "tag" ? tagDraft : detail.tag?.name ?? "").trim().toLowerCase())?.color}
+                          active={editingField === "tag"}
+                          onActivate={() => {
+                            tagDraftRef.current = detail.tag?.name ?? "";
+                            setTagDraft(detail.tag?.name ?? "");
+                            openField("tag");
+                          }}
+                          onDone={() => {
+                            const name = tagDraftRef.current.trim();
+                            closeField();
+                            if (!name) {
+                              patch({ tagId: null, tag: null });
+                              return;
+                            }
+                            const existing = tags.find((tag) => tag.name.toLowerCase() === name.toLowerCase());
+                            if (existing) {
+                              patch({ tagId: existing.id, tag: existing });
+                              return;
+                            }
+                            void fetch("/api/tags", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ name }),
+                            })
+                              .then((r) => r.json())
+                              .then((tag) => {
+                                if (!tag?.id) return;
+                                setTags((rows) =>
+                                  rows.some((row) => row.id === tag.id)
+                                    ? rows
+                                    : [...rows, tag].sort((a, b) => a.name.localeCompare(b.name)),
+                                );
+                                patch({ tagId: tag.id, tag });
+                              });
+                          }}
+                          onChange={(name) => {
+                            tagDraftRef.current = name ?? "";
+                            setTagDraft(name ?? "");
+                          }}
+                        />
                       </div>
                       {editingField === "amazonUrl" ? (
                         <div
@@ -1017,23 +1092,21 @@ export function ProductDialog({
                     </div>
                   </div>
                 </div>
-              <div className={cn("min-h-0 flex-1 flex-col", tab === "photos" ? "flex" : "hidden")}>
-                {detail.id ? (
-                  <MediaBrowser
-                    productId={detail.id}
-                    groupId={detail.groupId ?? null}
-                    storage={detail.photoStorage}
-                    onError={setError}
-                    onMoved={() => {
-                      fetch(`/api/products/${detail.id}`)
-                        .then((r) => r.json())
-                        .then((row: Detail) =>
-                          setDetail({ ...row, code: (row.code ?? "").slice(0, 3) }),
-                        );
-                    }}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-500">Save the product before adding shared media.</p>
+              <div className={cn("min-h-0 flex-1 flex-col gap-4 overflow-y-auto", tab === "photos" ? "flex" : "hidden")}>
+                {fileGroups.map(([source, files]) => (
+                  <section key={source} className="grid gap-2">
+                    <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">{source}</div>
+                    <div className="grid grid-cols-4 gap-3">
+                      {files.map((file) => (
+                        <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="truncate text-sm underline">
+                          {file.name || file.tag || file.fileName || "File"}
+                        </a>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+                {!fileGroups.length && (
+                  <p className="text-sm text-gray-500">No other files. Photos stay on Info. Upload and connect files from the Media tab.</p>
                 )}
               </div>
               <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "log" ? "flex" : "hidden")}>
@@ -1523,6 +1596,7 @@ function TypePicker({
   active,
   placeholder = "Type",
   width = 120,
+  mark,
   onActivate,
   onDone,
   onChange,
@@ -1532,6 +1606,7 @@ function TypePicker({
   active: boolean;
   placeholder?: string;
   width?: number;
+  mark?: string;
   onActivate: () => void;
   onDone: () => void;
   onChange: (value: string | null) => void;
@@ -1556,7 +1631,10 @@ function TypePicker({
           active ? "border-gray-400 bg-surface" : "border-transparent hover:bg-gray-100",
         )}
       >
-        <span className="truncate">{value || <Null />}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {mark && <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: mark }} />}
+          <span className="truncate">{value || <Null />}</span>
+        </span>
       </PopoverTrigger>
       <PopoverContent
         align="start"

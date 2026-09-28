@@ -512,7 +512,7 @@ export function PhotoStage({
           onClick={browse ? undefined : onPick}
         >
           <ImagePlus className="size-5" />
-          {browse ? "Photos are shared from the folder" : drop.over ? "Drop photos" : "Upload photos"}
+          {browse ? "No photos for this product yet" : drop.over ? "Drop photos" : "Upload photos"}
         </button>
       )}
       {drop.over && photo && (

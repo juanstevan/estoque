@@ -18,7 +18,7 @@ import { blobToken, discardUploads, photoStorage } from "@/lib/photos/service";
  * anything under `/files/` (manuals, videos, other attachments) takes any type.
  */
 function limitsFor(pathname: string) {
-  if (!/^(products|groups)\/[^/]+\//.test(pathname)) throw new Error("Invalid upload path");
+  if (!/^(products|groups|library)\/[^/]+\//.test(pathname)) throw new Error("Invalid upload path");
   return pathname.includes("/files/")
     ? { maximumSizeInBytes: FILE_MAX_BYTES }
     : { allowedContentTypes: Object.keys(PHOTO_TYPES), maximumSizeInBytes: PHOTO_MAX_BYTES };

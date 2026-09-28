@@ -24,6 +24,7 @@ export async function POST(req: Request) {
       b2bPrice?: number;
       b2cPrice?: number;
       notes?: string | null;
+      tagId?: string | null;
       weight?: number | null;
       length?: number | null;
       width?: number | null;

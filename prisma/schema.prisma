@@ -114,10 +114,14 @@ model Product {
   photos           ProductPhoto[]
   groupId          String?
   group            MediaGroup?            @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  tagId            String?
+  tag              Tag?                   @relation(fields: [tagId], references: [id], onDelete: SetNull)
+  mediaLinks       MediaLink[]
 
   @@index([name])
   @@index([ean])
   @@index([groupId])
+  @@index([tagId])
 }
 
 /** Read-only media link. Neither id set = every product. */
@@ -163,9 +167,36 @@ model ProductPhoto {
   createdAt    DateTime    @default(now())
   product      Product?    @relation(fields: [productId], references: [id], onDelete: Cascade)
   group        MediaGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  links        MediaLink[]
 
   @@index([productId, position])
   @@index([groupId, position])
+}
+
+model Tag {
+  id       String      @id @default(cuid())
+  name     String      @unique
+  color    String
+  products Product[]
+  links    MediaLink[]
+}
+
+/** One file, many connections. A product sees a file when any connection matches it. */
+model MediaLink {
+  id        String       @id @default(cuid())
+  photoId   String
+  productId String?
+  tagId     String?
+  brand     String?
+  category  String?
+  family    String?
+  photo     ProductPhoto @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  product   Product?     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tag       Tag?         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@index([photoId])
+  @@index([productId])
+  @@index([tagId])
 }
 
 model InventoryTransaction {

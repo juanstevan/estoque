@@ -9,8 +9,8 @@ import {
 import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
 import { adoptImage, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
-import { placeProduct } from "@/lib/photos/groups";
-import { groupPath, inheritedAssets } from "@/lib/photos/groups";
+import { mediaForProduct } from "@/lib/media/library";
+import { groupPath, inheritedAssets, placeProduct } from "@/lib/photos/groups";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -210,6 +210,7 @@ export async function createProduct(input: {
   cutoutWidth?: number | null;
   cutoutHeight?: number | null;
   notes?: string | null;
+  tagId?: string | null;
   initialQty?: number;
   initialUnitCost?: number;
 }) {
@@ -244,6 +245,7 @@ export async function createProduct(input: {
         cutoutWidth: input.cutoutWidth ?? null,
         cutoutHeight: input.cutoutHeight ?? null,
         notes: input.notes || null,
+        tagId: input.tagId || null,
       },
     });
 
@@ -343,8 +345,12 @@ export async function listProducts(search?: string) {
 }
 
 export async function getProductCard(id: string) {
-  const product = await prisma.product.findUnique({ where: { id } });
+  const product = await prisma.product.findUnique({
+    where: { id },
+    include: { tag: { select: { id: true, name: true, color: true } } },
+  });
   if (!product) return null;
+  const shown = await mediaForProduct(product);
   const cover =
     product.imageUrl && product.imageUrl !== "/file.svg"
       ? [
@@ -364,6 +370,7 @@ export async function getProductCard(id: string) {
     transactions: [],
     orderLines: [],
     photos: cover,
+    shown,
     inherited: [] as typeof cover,
     groupPath: [] as { id: string; name: string }[],
   };
@@ -390,6 +397,7 @@ export async function getProductDetail(id: string) {
           include: { order: true },
         },
         photos: { orderBy: [{ position: "asc" }, { createdAt: "asc" }] },
+        tag: { select: { id: true, name: true, color: true } },
       },
     }),
     prisma.user.findMany({ select: { id: true, username: true, name: true } }),
@@ -403,14 +411,16 @@ export async function getProductDetail(id: string) {
     names.set(u.id, u.name);
     names.set(u.username, u.name);
   }
-  const [groupPathList, inherited] = await Promise.all([
+  const [groupPathList, inherited, shown] = await Promise.all([
     groupPath(product.groupId),
     inheritedAssets(product.groupId),
+    mediaForProduct(product),
   ]);
   return {
     ...product,
     groupPath: groupPathList,
     inherited,
+    shown,
     transactions: product.transactions.map((t) => ({
       ...t,
       userName: names.get(t.userId) ?? t.userId,

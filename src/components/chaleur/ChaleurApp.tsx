@@ -18,6 +18,7 @@ import { ImportsTab, type ImportRow } from "@/components/chaleur/ImportsTab";
 import { ExitTab, type ExitRow } from "@/components/chaleur/ExitTab";
 import { TaskTab } from "@/components/chaleur/TaskTab";
 import { ReportsTab } from "@/components/chaleur/ReportsTab";
+import { MediaLibrary } from "@/components/chaleur/MediaLibrary";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import {
   Dialog,
@@ -83,6 +84,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
         <Tabs value={tab} onValueChange={setTab} className="self-stretch">
           <TabsList variant="line" className="h-full w-fit border-b-0">
             <TabsTrigger value="storage">Storage</TabsTrigger>
+            <TabsTrigger value="media">Media</TabsTrigger>
             <TabsTrigger value="imports">Imports</TabsTrigger>
             <TabsTrigger value="exit">Exit</TabsTrigger>
             <TabsTrigger value="task">Task</TabsTrigger>
@@ -137,7 +139,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
       <main
         className={cn(
           "min-h-0 flex-1 p-6",
-          tab === "reports" && "flex flex-col overflow-hidden",
+          (tab === "reports" || tab === "media") && "flex flex-col overflow-hidden",
         )}
       >
         {tab === "storage" && (
@@ -149,6 +151,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
             onReload={() => void load()}
           />
         )}
+        {tab === "media" && <MediaLibrary products={products} />}
         {tab === "imports" && (
           <ImportsTab
             imports={imports}
