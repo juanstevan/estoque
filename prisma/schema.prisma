@@ -212,7 +212,7 @@ model MediaGroup {
   @@index([parentId, position])
 }
 
-/** A photo or file owned by exactly one product or one group. */
+/** A photo or file. It can sit in the library with no owner, or belong to a product or group. */
 model ProductPhoto {
   id           String      @id @default(cuid())
   productId    String?
