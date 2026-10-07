@@ -9,16 +9,17 @@ import {
   type HandleUploadPresignedBody,
 } from "@vercel/blob/client";
 import { jsonError, jsonOk } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 import { FILE_MAX_BYTES, PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
 import { blobToken, discardUploads, photoStorage } from "@/lib/photos/service";
 
 /**
- * Upload paths are `products/<id>/…` or `groups/<id>/…`. Photos are images only;
+ * Upload paths are `products/<id>/…`, `groups/<id>/…`, `library/…` or `proofs/<delivery>/…`
+ * (delivery photos). Photos are images only;
  * anything under `/files/` (manuals, videos, other attachments) takes any type.
  */
 function limitsFor(pathname: string) {
-  if (!/^(products|groups|library)\/[^/]+\//.test(pathname)) throw new Error("Invalid upload path");
+  if (!/^(products|groups|library|proofs)\/[^/]+\//.test(pathname)) throw new Error("Invalid upload path");
   return pathname.includes("/files/")
     ? { maximumSizeInBytes: FILE_MAX_BYTES }
     : { allowedContentTypes: Object.keys(PHOTO_TYPES), maximumSizeInBytes: PHOTO_MAX_BYTES };
@@ -29,12 +30,14 @@ function extOf(name: string) {
 }
 
 export async function GET() {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(null, "view");
+  if (denied) return denied;
   return jsonOk({ storage: photoStorage() });
 }
 
 export async function POST(req: Request) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage", "imports", "delivery", "settings"], "edit");
+  if (denied) return denied;
   try {
     if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
       if (photoStorage() !== "local") return jsonError("Local storage is only for development", 400);

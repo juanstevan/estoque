@@ -1,0 +1,2 @@
+ALTER TABLE "AppSettings" ADD COLUMN IF NOT EXISTS "qbAccessToken" TEXT;
+ALTER TABLE "AppSettings" ADD COLUMN IF NOT EXISTS "qbAccessExpires" TIMESTAMP(3);

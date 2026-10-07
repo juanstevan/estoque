@@ -26,14 +26,21 @@ import {
   type ProductRow,
 } from "@/components/chaleur/ProductDialog";
 import { formatMoney, formatQty } from "@/lib/format";
+import { splitName } from "@/lib/photos/name";
 import { cn } from "@/lib/utils";
 
 const COLUMNS_KEY = "chaleur.storage.columns";
+const COLUMNS_MIGRATION_KEY = "chaleur.storage.columns.identity";
 
 const LOCKED = new Set(["code", "name"]);
+const IDENTITY = ["type", "category", "model", "variant"];
 const DEFAULT_VISIBLE = [
   "code",
   "name",
+  "type",
+  "category",
+  "model",
+  "variant",
   "sku",
   "physicalQty",
   "avgCost",
@@ -45,6 +52,38 @@ const DEFAULT_VISIBLE = [
 const money = (v: number) => formatMoney(v);
 const qty = (v: number) => `${formatQty(v)}un`;
 const value = { numeric: true, align: "center" as const };
+const dash = "—";
+
+function text(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : dash;
+}
+
+function measure(n: number | null | undefined) {
+  if (n == null) return null;
+  return String(n);
+}
+
+function size(w: number | null, l: number | null, h: number | null) {
+  const parts = [w, l, h].map(measure);
+  if (parts.every((part) => part == null)) return dash;
+  return `${parts.map((part) => part ?? dash).join(" × ")} in`;
+}
+
+function supplierNames(raw: string | null) {
+  if (!raw) return dash;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const names = parsed.map(String).filter(Boolean);
+      return names.length ? names.join(", ") : dash;
+    }
+  } catch {
+    /* older rows stored a plain list */
+  }
+  const names = raw.split(",").map((name) => name.trim()).filter(Boolean);
+  return names.length ? names.join(", ") : dash;
+}
 
 const ALL_COLUMNS: GridCol<ProductRow>[] = [
   { key: "code", label: "ID", mono: true, width: "96px" },
@@ -59,9 +98,37 @@ const ALL_COLUMNS: GridCol<ProductRow>[] = [
   },
   {
     key: "type",
-    label: "Type",
+    label: "Brand",
     width: "120px",
-    render: (p) => p.type || "—",
+    render: (p) => text(p.type),
+  },
+  {
+    key: "category",
+    label: "Category",
+    width: "120px",
+    render: (p) => text(p.category),
+  },
+  {
+    key: "model",
+    label: "Family",
+    width: "120px",
+    render: (p) => text(p.model),
+  },
+  {
+    key: "variant",
+    label: "Variant",
+    width: "140px",
+    sortValue: (p) => splitName(p.name, p.category, p.model).variation,
+    filterValue: (p) => splitName(p.name, p.category, p.model).variation,
+    render: (p) => text(splitName(p.name, p.category, p.model).variation),
+  },
+  {
+    key: "tag",
+    label: "Tag",
+    width: "120px",
+    sortValue: (p) => p.tag?.name ?? "",
+    filterValue: (p) => p.tag?.name ?? "",
+    render: (p) => text(p.tag?.name),
   },
   { key: "sku", label: "SKU", mono: true, width: "120px" },
   {
@@ -69,7 +136,7 @@ const ALL_COLUMNS: GridCol<ProductRow>[] = [
     label: "HS code",
     mono: true,
     width: "120px",
-    render: (p) => p.hsCode || "—",
+    render: (p) => text(p.hsCode),
   },
   {
     key: "physicalQty",
@@ -146,7 +213,51 @@ const ALL_COLUMNS: GridCol<ProductRow>[] = [
     label: "Weight",
     width: "108px",
     align: "center",
-    render: (p) => (p.weight == null ? "—" : `${p.weight} kg`),
+    render: (p) => (p.weight == null ? dash : `${p.weight} kg`),
+  },
+  {
+    key: "packageWeight",
+    label: "Package weight",
+    width: "140px",
+    align: "center",
+    render: (p) => (p.packageWeight == null ? dash : `${p.packageWeight} kg`),
+  },
+  {
+    key: "dimensions",
+    label: "Product size",
+    width: "160px",
+    sortValue: (p) => p.length ?? 0,
+    render: (p) => size(p.width, p.length, p.height),
+  },
+  {
+    key: "packageSize",
+    label: "Package size",
+    width: "160px",
+    sortValue: (p) => p.packageLength ?? 0,
+    render: (p) => size(p.packageWidth, p.packageLength, p.packageHeight),
+  },
+  {
+    key: "cutoutSize",
+    label: "Cut-out size",
+    width: "160px",
+    sortValue: (p) => p.cutoutLength ?? 0,
+    render: (p) => size(p.cutoutWidth, p.cutoutLength, p.cutoutHeight),
+  },
+  {
+    key: "notes",
+    label: "Notes",
+    width: "180px",
+    render: (p) => (
+      <span className="block truncate" title={p.notes ?? undefined}>
+        {text(p.notes)}
+      </span>
+    ),
+  },
+  {
+    key: "suppliers",
+    label: "Suppliers",
+    width: "160px",
+    render: (p) => supplierNames(p.suppliers),
   },
 ];
 
@@ -180,10 +291,19 @@ export function StorageTab({
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLUMNS_KEY);
-      if (!raw) return;
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed) || !parsed.includes("code")) return;
-      setVisibleKeys(parsed.map(String));
+      let keys = DEFAULT_VISIBLE;
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.includes("code")) keys = parsed.map(String);
+      }
+      if (!localStorage.getItem(COLUMNS_MIGRATION_KEY)) {
+        const at = Math.max(keys.indexOf("name") + 1, 1);
+        const missing = IDENTITY.filter((key) => !keys.includes(key));
+        keys = [...keys.slice(0, at), ...missing, ...keys.slice(at)];
+        localStorage.setItem(COLUMNS_KEY, JSON.stringify(keys));
+        localStorage.setItem(COLUMNS_MIGRATION_KEY, "1");
+      }
+      setVisibleKeys(keys);
     } catch {
       /* keep defaults */
     }
@@ -223,7 +343,20 @@ export function StorageTab({
     const rank = (p: ProductRow) =>
       hit(p.code) ? 0 : hit(p.name) ? 1 : hit(p.sku) ? 2 : 3;
     return products
-      .filter((p) => hit(p.code) || hit(p.name) || hit(p.sku) || hit(p.type))
+      .filter((p) => {
+        const parts = splitName(p.name, p.category, p.model);
+        return (
+          hit(p.code) ||
+          hit(p.name) ||
+          hit(p.sku) ||
+          hit(p.type) ||
+          hit(p.category) ||
+          hit(p.model) ||
+          hit(parts.variation) ||
+          hit(p.tag?.name) ||
+          hit(p.hsCode)
+        );
+      })
       .sort((a, b) => rank(a) - rank(b));
   }, [products, search]);
 
@@ -257,7 +390,7 @@ export function StorageTab({
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-500" />
           <Input
             className="pl-9"
-            placeholder="Search products by name, ID, SKU or type"
+            placeholder="Search products by name, ID, SKU or brand"
             value={search}
             onChange={(e) => onSearch(e.target.value)}
           />

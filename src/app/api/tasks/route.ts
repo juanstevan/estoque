@@ -1,5 +1,6 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 import {
   addAttachment,
   addComment,
@@ -27,6 +28,8 @@ async function pack(data: Awaited<ReturnType<typeof getTaskWorkspace>>) {
 }
 
 export async function GET(req: Request) {
+  const denied = await deny("tasks", "view");
+  if (denied) return denied;
   try {
     const { searchParams } = new URL(req.url);
     return jsonOk(await pack(await getTaskWorkspace(searchParams.get("boardId"))));
@@ -39,6 +42,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const denied = await deny("tasks", "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{
       action:

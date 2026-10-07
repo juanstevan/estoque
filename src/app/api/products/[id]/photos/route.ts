@@ -1,5 +1,5 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 import { assetAction, type AssetBody } from "@/lib/photos/actions";
 import { assignProducts, groupPath, inheritedAssets } from "@/lib/photos/groups";
 import { listPhotos, shareAssetWithGroup } from "@/lib/photos/service";
@@ -8,7 +8,8 @@ import { prisma } from "@/lib/db";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: Ctx) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "view");
+  if (denied) return denied;
   const { id } = await ctx.params;
   return jsonOk({ photos: await listPhotos(id) });
 }
@@ -20,7 +21,8 @@ async function groupState(productId: string) {
 }
 
 export async function POST(req: Request, ctx: Ctx) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "edit");
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const body = await readJson<AssetBody & { groupId?: string | null }>(req);

@@ -1,14 +1,19 @@
 import { createProduct, listProducts } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { addPhotos, type PhotoInput } from "@/lib/photos/service";
+import { deny } from "@/lib/guard";
 
 export async function GET(req: Request) {
+  const denied = await deny(["storage", "media", "imports", "settings"], "view");
+  if (denied) return denied;
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q") ?? undefined;
   return jsonOk(await listProducts(q));
 }
 
 export async function POST(req: Request) {
+  const denied = await deny(["storage", "imports"], "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{
       name: string;

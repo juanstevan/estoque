@@ -60,6 +60,11 @@ export function composeName(category: string, model: string, variation: string) 
   return [category, model, variation].map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
+/** QuickBooks item title. The app name stays category + family + variant. */
+export function quickBooksName(code: string, name: string) {
+  return `${code.trim()} - ${name.trim()}`.slice(0, 100).trimEnd();
+}
+
 /** Stored category and model win. Otherwise the first two words are the guess. */
 export function splitName(name: string, category?: string | null, model?: string | null) {
   const cat = category?.trim() ?? "";

@@ -1,40 +1,39 @@
-import {
-  login,
-  logout,
-  currentUser,
-  SESSION_COOKIE,
-  sessionCookieOptions,
-} from "@/lib/auth";
+import { chooseOwnPassword, currentUser, signIn, signOut, updateProfile } from "@/lib/auth";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 
 export async function GET() {
-  const user = await currentUser();
-  if (!user) return jsonError("Unauthorized", 401);
-  return jsonOk({
-    id: user.id,
-    username: user.username,
-    name: user.name,
-    role: user.role,
-  });
+  const me = await currentUser();
+  if (!me) return jsonError("Sign in first", 401);
+  return jsonOk(me);
 }
 
 export async function POST(req: Request) {
+  const body = await readJson<{
+    action?: "login" | "logout" | "profile" | "password";
+    name?: string;
+    username?: string;
+    password?: string;
+    currentPassword?: string;
+    remember?: boolean;
+  }>(req).catch(() => ({}) as Record<string, never>);
   try {
-    const body = await readJson<{
-      action?: "login" | "logout";
-      username?: string;
-      password?: string;
-    }>(req);
     if (body.action === "logout") {
-      const res = jsonOk({ ok: true });
-      res.cookies.delete(SESSION_COOKIE);
-      return res;
+      await signOut();
+      return jsonOk({ ok: true });
     }
-    const user = await login(body.username ?? "", body.password ?? "");
-    const res = jsonOk(user);
-    res.cookies.set(SESSION_COOKIE, user.id, sessionCookieOptions());
-    return res;
+    if (body.action === "profile" || body.action === "password") {
+      const me = await currentUser();
+      if (!me) return jsonError("Sign in first", 401);
+      if (body.action === "password") {
+        if (!me.mustChangePassword) return jsonError("Change your password in Settings › Profile.", 400);
+        return jsonOk(await chooseOwnPassword(me.id, body.password ?? ""));
+      }
+      if (me.mustChangePassword) return jsonError("Choose your own password first", 403);
+      return jsonOk(await updateProfile(me.id, body));
+    }
+    return jsonOk(await signIn(body.username ?? "", body.password ?? "", Boolean(body.remember)));
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : "Auth error", 401);
+    const message = e instanceof Error ? e.message : "Couldn't sign in";
+    return jsonError(message, body.action === "profile" || body.action === "password" ? 400 : 401);
   }
 }

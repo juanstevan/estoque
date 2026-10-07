@@ -108,7 +108,10 @@ export function additionalImportCosts(c: {
   );
 }
 
+const M_PER_IN = 0.0254;
+
+/** Package and product sizes are inches. CBM is cubic metres. */
 export function packageCbmM3(l?: number | null, w?: number | null, h?: number | null) {
   if (!l || !w || !h) return 0;
-  return roundMoney((l * w * h) / 1_000_000, 6);
+  return roundMoney(l * w * h * M_PER_IN ** 3, 6);
 }

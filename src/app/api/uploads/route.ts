@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { jsonError, jsonOk } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -16,7 +16,8 @@ const EXTENSIONS: Record<string, string> = {
 };
 
 export async function POST(req: Request) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny("tasks", "edit");
+  if (denied) return denied;
   try {
     const form = await req.formData();
     const file = form.get("file");

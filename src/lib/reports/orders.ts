@@ -1,9 +1,9 @@
 import { prisma } from "@/lib/db";
-import { qboAccessToken, qboQuery } from "@/lib/quickbooks/qbo";
+import { qboQuery } from "@/lib/quickbooks/qbo";
 import { dedupeSales } from "./sheet";
 import { isSellable, sellerName, type SaleRow } from "./supply";
 
-const ORDERS_START = "2023-01-01";
+const ORDERS_START = "2000-01-01";
 
 function clean(value: unknown) {
   return String(value ?? "")
@@ -126,15 +126,12 @@ export async function replaceAllSales(rows: SaleRow[]) {
 }
 
 export async function syncSales() {
-  const token = await qboAccessToken();
-  const active = await qboQuery(token, "Item", "Active = true", "Name");
-  const inactive = await qboQuery(token, "Item", "Active = false", "Name");
+  const active = await qboQuery("Item", "Active = true", "Name");
+  const inactive = await qboQuery("Item", "Active = false", "Name");
   const start = process.env.QB_ORDERS_START?.trim() || ORDERS_START;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) throw new Error("QB_ORDERS_START must be YYYY-MM-DD");
   const end = new Date().toISOString().slice(0, 10);
-  const invoices = await qboQuery(
-    token,
-    "Invoice",
+  const invoices = await qboQuery("Invoice",
     `TxnDate >= '${start}' AND TxnDate <= '${end}'`,
     "TxnDate DESC",
   );

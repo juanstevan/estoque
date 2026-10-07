@@ -7,7 +7,8 @@ export function proxy(req: NextRequest) {
   const publicPath =
     pathname.startsWith("/login") ||
     pathname.startsWith("/api/auth") ||
-    pathname.startsWith("/share/");
+    pathname.startsWith("/share/") ||
+    pathname.startsWith("/track/");
   if (!session && !publicPath) {
     return NextResponse.redirect(new URL("/login", req.url));
   }

@@ -1,5 +1,5 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 import {
   assignProducts,
   createGroup,
@@ -10,12 +10,14 @@ import {
 } from "@/lib/photos/groups";
 
 export async function GET() {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "view");
+  if (denied) return denied;
   return jsonOk(await listGroups());
 }
 
 export async function POST(req: Request) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{
       action?: "create" | "rename" | "move" | "delete" | "assign";

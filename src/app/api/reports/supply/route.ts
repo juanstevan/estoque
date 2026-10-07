@@ -9,6 +9,7 @@ import {
   reportsIndex,
   rowsFor,
 } from "@/lib/reports/supply";
+import { deny } from "@/lib/guard";
 
 export const maxDuration = 120;
 
@@ -68,6 +69,8 @@ async function payload(req: Request) {
 }
 
 export async function GET(req: Request) {
+  const denied = await deny("reports", "view");
+  if (denied) return denied;
   try {
     return await payload(req);
   } catch (e) {
@@ -76,6 +79,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST() {
+  const denied = await deny("reports", "edit");
+  if (denied) return denied;
   try {
     const result = await syncSales();
     return jsonOk(result);

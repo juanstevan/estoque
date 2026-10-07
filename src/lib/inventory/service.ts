@@ -10,6 +10,7 @@ import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
 import { adoptImage, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
 import { mediaForProduct } from "@/lib/media/library";
+import { roundMeasure } from "@/lib/measure";
 import { groupPath, inheritedAssets, placeProduct } from "@/lib/photos/groups";
 import {
   additionalImportCosts,
@@ -77,6 +78,7 @@ export async function appendTransaction(
     clientName?: string | null;
     occurredAt?: Date;
     metadata?: Record<string, unknown> | null;
+    userId?: string;
     affectsPhysical?: boolean;
     affectsCost?: boolean;
     reason?: string | null;
@@ -135,7 +137,7 @@ export async function appendTransaction(
       reference: input.reference ?? null,
       notes: input.notes ?? input.reason ?? null,
       clientName: input.clientName ?? null,
-      userId: currentUserId(),
+      userId: input.userId ?? currentUserId(),
       occurredAt: input.occurredAt ?? new Date(),
       metadata: input.metadata ? JSON.stringify(input.metadata) : null,
     },
@@ -233,17 +235,17 @@ export async function createProduct(input: {
         b2cPrice: input.b2cPrice ?? 0,
         fobCost: input.fobCost ?? input.initialUnitCost ?? 0,
         suppliers: input.suppliers || null,
-        weight: input.weight ?? null,
-        length: input.length ?? null,
-        width: input.width ?? null,
-        height: input.height ?? null,
-        packageLength: input.packageLength ?? null,
-        packageWidth: input.packageWidth ?? null,
-        packageHeight: input.packageHeight ?? null,
+        weight: roundMeasure(input.weight),
+        length: roundMeasure(input.length),
+        width: roundMeasure(input.width),
+        height: roundMeasure(input.height),
+        packageLength: roundMeasure(input.packageLength),
+        packageWidth: roundMeasure(input.packageWidth),
+        packageHeight: roundMeasure(input.packageHeight),
         packageWeight: input.packageWeight ?? null,
-        cutoutLength: input.cutoutLength ?? null,
-        cutoutWidth: input.cutoutWidth ?? null,
-        cutoutHeight: input.cutoutHeight ?? null,
+        cutoutLength: roundMeasure(input.cutoutLength),
+        cutoutWidth: roundMeasure(input.cutoutWidth),
+        cutoutHeight: roundMeasure(input.cutoutHeight),
         notes: input.notes || null,
         tagId: input.tagId || null,
       },
@@ -270,9 +272,11 @@ export async function createProduct(input: {
   });
 }
 
+/** `fromQuickBooks`: the change came from QuickBooks, so it is not pushed back. */
 export async function updateProduct(
   id: string,
   input: Prisma.ProductUpdateInput,
+  opts: { fromQuickBooks?: boolean } = {},
 ) {
   const data = { ...input };
   for (const key of [
@@ -287,6 +291,8 @@ export async function updateProduct(
     "cifCost",
     "fobCost",
     "lastSoldPrice",
+    "qbUpdatedAt",
+    "qbSeen",
   ] as const) {
     delete data[key];
   }
@@ -294,9 +300,38 @@ export async function updateProduct(
     typeof data.code === "string"
       ? data.code.trim().toUpperCase().slice(0, 3)
       : data.code;
+  for (const key of [
+    "weight",
+    "length",
+    "width",
+    "height",
+    "packageLength",
+    "packageWidth",
+    "packageHeight",
+    "packageWeight",
+    "cutoutLength",
+    "cutoutWidth",
+    "cutoutHeight",
+  ] as const) {
+    if (key in data && typeof data[key] === "number") data[key] = roundMeasure(data[key]);
+  }
+  const before = await prisma.product.findUnique({
+    where: { id },
+    select: { name: true, code: true, sku: true, b2bPrice: true },
+  });
   const product = await prisma.product.update({ where: { id }, data: { ...data, code } });
   if ("category" in data || "model" in data || "type" in data) await placeProduct(id);
   if ("name" in data || "type" in data || "category" in data || "model" in data) await syncPhotos(id);
+  const pushed = ["name", "code", "sku", "b2bPrice"] as const;
+  if (!opts.fromQuickBooks && before && pushed.some((key) => before[key] !== product[key])) {
+    try {
+      const { pushQuickBooksItem } = await import("@/lib/quickbooks/qbo");
+      await pushQuickBooksItem(product);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "name update failed";
+      throw new Error(`Saved here. QuickBooks was not updated: ${message}`);
+    }
+  }
   return product;
 }
 
@@ -328,10 +363,13 @@ export async function deleteProduct(id: string) {
   await dropFiles();
 }
 
+const productListInclude = { tag: { select: { id: true, name: true, color: true } } } as const;
+
 export async function listProducts(search?: string) {
   const q = search?.trim();
-  if (!q) return prisma.product.findMany({ orderBy: { name: "asc" } });
+  if (!q) return prisma.product.findMany({ include: productListInclude, orderBy: { name: "asc" } });
   return prisma.product.findMany({
+    include: productListInclude,
     where: {
       OR: [
         { name: { contains: q } },

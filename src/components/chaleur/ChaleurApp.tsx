@@ -1,147 +1,169 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Flame, LogOut, Settings } from "lucide-react";
+import { Eye, Flame, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { accentVars, brandVars } from "@/lib/theme";
+import { AREA_LABELS, TABS, can, type Tab } from "@/lib/access";
+import type { Me } from "@/lib/auth";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { StorageTab } from "@/components/chaleur/StorageTab";
 import { ImportsTab, type ImportRow } from "@/components/chaleur/ImportsTab";
-import { ExitTab, type ExitRow } from "@/components/chaleur/ExitTab";
+import { DeliveryTab } from "@/components/chaleur/delivery/DeliveryTab";
 import { TaskTab } from "@/components/chaleur/TaskTab";
 import { ReportsTab } from "@/components/chaleur/ReportsTab";
 import { MediaLibrary } from "@/components/chaleur/MediaLibrary";
+import { SettingsDialog, parseReasons, type SettingsData } from "@/components/chaleur/SettingsDialog";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
-export function ChaleurApp({ userName }: { userName: string }) {
-  const [tab, setTab] = useState("storage");
+const PRODUCT_AREAS = ["storage", "media", "imports", "settings"] as const;
+
+export function ChaleurApp({ me }: { me: Me }) {
+  const [data, setData] = useState<SettingsData>({ settings: null, qb: null, prefs: null });
+  const hidden = data.prefs?.hiddenTabs ?? ["tasks", "reports"];
+  const tabs = TABS.filter((t) => !hidden.includes(t) && can(me.access, t, "view"));
+  const [picked, setPicked] = useState<Tab | null>(null);
+  const tab = picked && tabs.includes(picked) ? picked : tabs[0] ?? null;
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [imports, setImports] = useState<ImportRow[]>([]);
-  const [exits, setExits] = useState<ExitRow[]>([]);
   const [search, setSearch] = useState("");
-  const [reasons, setReasons] = useState([
-    "Correction",
-    "Adjust",
-    "Return",
-    "Warranty",
-  ]);
-  const [company, setCompany] = useState("Chaleur Manufacturing Co.");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [synced, setSynced] = useState(0);
   const [importSeed, setImportSeed] = useState<{
     token: number;
     lines: { productId: string | null; name: string; quantity: number }[];
   } | null>(null);
+  const reasons = parseReasons(data.settings?.adjustmentReasons);
+  const accent = data.settings?.accentColor;
+  const brand = data.settings?.brandColor;
+  const viewOnly = tab ? !can(me.access, tab, "edit") : false;
+
+  async function loadSettings() {
+    const s = await fetch("/api/settings").then((r) => r.json());
+    setData({ settings: s.settings, qb: s.qb, prefs: s.prefs });
+  }
 
   async function load() {
-    const [p, i, o, s] = await Promise.all([
-      fetch("/api/products").then((r) => r.json()),
-      fetch("/api/importations").then((r) => r.json()),
-      fetch("/api/orders").then((r) => r.json()),
-      fetch("/api/settings").then((r) => r.json()),
+    const json = (url: string) => fetch(url).then((r) => (r.ok ? r.json() : []));
+    const [p, i] = await Promise.all([
+      can(me.access, [...PRODUCT_AREAS], "view") ? json("/api/products") : [],
+      can(me.access, "imports", "view") ? json("/api/importations") : [],
+      loadSettings(),
     ]);
     setProducts(p);
     setImports(i);
-    setExits(o);
-    if (s.settings?.companyName) setCompany(s.settings.companyName);
-    if (s.settings?.adjustmentReasons) {
-      try {
-        setReasons(JSON.parse(s.settings.adjustmentReasons));
-      } catch {
-        /* keep defaults */
-      }
-    }
   }
 
   useEffect(() => {
     void load();
+    // Loads once per person; `me` comes from the server and doesn't change in this page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The accent re-tints every blue element. Unset, the stylesheet colors come back.
+  useEffect(() => {
+    if (!accent) return;
+    const vars = accentVars(accent);
+    const root = document.documentElement.style;
+    for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
+    return () => {
+      for (const name of Object.keys(vars)) root.removeProperty(name);
+    };
+  }, [accent]);
+
+  // QuickBooks both ways, once a minute while this tab is visible. The server runs one sync
+  // per minute however many browsers ask, and stays quiet while QuickBooks isn't connected.
+  useEffect(() => {
+    function tick() {
+      if (document.visibilityState !== "visible") return;
+      void fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sync", auto: true }),
+      })
+        .then((res) => res.json())
+        .then((result) => {
+          if (!result?.changed) return;
+          void load();
+          setSynced((n) => n + 1);
+        })
+        .catch(() => undefined);
+    }
+    tick();
+    const timer = setInterval(tick, 60_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div className="flex h-screen flex-col bg-canvas">
-      <header className="flex h-topbar shrink-0 items-stretch justify-between border-b border-border bg-surface px-4">
-        <div className="flex items-center gap-2">
-          <Flame className="size-5 text-gray-900" />
-          <span className="text-sm font-semibold text-gray-900">Chaleur</span>
+      <header
+        className="flex h-topbar shrink-0 items-stretch justify-between border-b border-border bg-surface px-4"
+        style={brand ? (brandVars(brand) as React.CSSProperties) : undefined}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {data.settings?.logoUrl ? (
+            <img src={data.settings.logoUrl} alt={data.settings.companyName} className="h-7 w-auto max-w-40 object-contain" />
+          ) : (
+            <>
+              <Flame className="size-5 shrink-0 text-gray-900" />
+              <span className="truncate text-sm font-semibold text-gray-900">
+                {data.settings?.companyName ?? "Chaleur"}
+              </span>
+            </>
+          )}
         </div>
 
-        <Tabs value={tab} onValueChange={setTab} className="self-stretch">
-          <TabsList variant="line" className="h-full w-fit border-b-0">
-            <TabsTrigger value="storage">Storage</TabsTrigger>
-            <TabsTrigger value="media">Media</TabsTrigger>
-            <TabsTrigger value="imports">Imports</TabsTrigger>
-            <TabsTrigger value="exit">Exit</TabsTrigger>
-            <TabsTrigger value="task">Task</TabsTrigger>
-            <TabsTrigger value="reports">Reports</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {tab && (
+          <Tabs value={tab} onValueChange={(value) => setPicked(value as Tab)} className="self-stretch">
+            <TabsList variant="line" className="h-full w-fit border-b-0">
+              {tabs.map((t) => (
+                <TabsTrigger key={t} value={t}>
+                  {AREA_LABELS[t]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        )}
 
-        <div className="flex items-center">
-          <DropdownMenu>
+        <div className="flex flex-1 items-center justify-end gap-2">
+          {viewOnly && (
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label="Settings"
-                      />
-                    }
-                  />
+                  <span className="inline-flex h-6 items-center gap-1 rounded-sm border border-gray-200 bg-gray-50 px-2 text-xs text-gray-600" />
                 }
               >
-                <Settings />
+                <Eye className="size-3" /> View only
               </TooltipTrigger>
-              <TooltipContent>Settings</TooltipContent>
+              <TooltipContent>Your role can look around this tab but not change it.</TooltipContent>
             </Tooltip>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
-                Account
-              </DropdownMenuItem>
-              <DropdownMenuItem>API config</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={async () => {
-                  await fetch("/api/auth", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "logout" }),
-                  });
-                  window.location.href = "/login";
-                }}
-              >
-                <LogOut /> Log out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          )}
+          <Tooltip>
+            <TooltipTrigger
+              render={<Button size="icon" variant="ghost" aria-label="Settings" onClick={() => setSettingsOpen(true)} />}
+            >
+              <Settings />
+            </TooltipTrigger>
+            <TooltipContent>Settings</TooltipContent>
+          </Tooltip>
         </div>
       </header>
 
       <main
         className={cn(
           "min-h-0 flex-1 p-6",
-          (tab === "reports" || tab === "media") && "flex flex-col overflow-hidden",
+          (tab === "reports" || tab === "media" || tab === "delivery") && "flex flex-col overflow-hidden",
         )}
       >
+        {!tab && (
+          <div className="mx-auto mt-24 max-w-sm text-center">
+            <p className="text-md font-semibold text-gray-900">No tabs for your role yet</p>
+            <p className="mt-1 text-sm text-gray-600">Ask your main user to give your role access in Settings › Users › Roles.</p>
+          </div>
+        )}
         {tab === "storage" && (
           <StorageTab
             products={products}
@@ -151,7 +173,7 @@ export function ChaleurApp({ userName }: { userName: string }) {
             onReload={() => void load()}
           />
         )}
-        {tab === "media" && <MediaLibrary products={products} />}
+        {tab === "media" && <MediaLibrary products={products} onChanged={() => void load()} />}
         {tab === "imports" && (
           <ImportsTab
             imports={imports}
@@ -167,92 +189,29 @@ export function ChaleurApp({ userName }: { userName: string }) {
             onSeedDone={() => setImportSeed(null)}
           />
         )}
-        {tab === "exit" && <ExitTab exits={exits} onReload={() => void load()} />}
-        {tab === "task" && <TaskTab />}
+        {tab === "delivery" && (
+          <DeliveryTab canEdit={can(me.access, "delivery", "edit")} prefs={data.prefs} refreshKey={synced} />
+        )}
+        {tab === "tasks" && <TaskTab />}
         {tab === "reports" && (
           <ReportsTab
             onCreateImport={(lines) => {
               setImportSeed({ token: Date.now(), lines });
-              setTab("imports");
+              setPicked("imports");
             }}
           />
         )}
       </main>
 
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Account settings</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-5">
-            <Field label="Company">
-              <Input
-                className="max-w-120"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-              />
-            </Field>
-            <Field label="Signed in as">
-              <Input className="max-w-120" value={userName} disabled />
-            </Field>
-            <Field
-              label="Adjustment reasons"
-              hint="Comma separated. These are the options offered when stock is corrected."
-            >
-              <Input
-                className="max-w-120"
-                value={reasons.join(", ")}
-                onChange={(e) =>
-                  setReasons(
-                    e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  )
-                }
-              />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setSettingsOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={async () => {
-                await fetch("/api/settings", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    companyName: company,
-                    adjustmentReasons: reasons,
-                  }),
-                });
-                setSettingsOpen(false);
-              }}
-            >
-              Save changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="grid gap-1">
-      <Label>{label}</Label>
-      {children}
-      {hint && <p className="text-xs text-gray-500">{hint}</p>}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        me={me}
+        data={data}
+        products={products}
+        onData={setData}
+        onProductsChanged={load}
+      />
     </div>
   );
 }

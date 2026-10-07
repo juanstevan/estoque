@@ -1,18 +1,23 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
-import { addLibraryFile, addLink, listLibrary, removeConnection } from "@/lib/media/library";
+import { deny } from "@/lib/guard";
+import { addLibraryFile, addLink, deleteLibraryFiles, listLibrary, removeConnection, renameScope } from "@/lib/media/library";
 
 export async function GET() {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "view");
+  if (denied) return denied;
   return jsonOk(await listLibrary());
 }
 
 export async function POST(req: Request) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{
-      action?: "add" | "link" | "unlink";
+      action?: "add" | "link" | "unlink" | "rename" | "delete";
       id?: string;
+      ids?: string[];
+      key?: string;
+      name?: string;
       file?: {
         url: string;
         thumbUrl: string;
@@ -33,6 +38,15 @@ export async function POST(req: Request) {
     if (body.action === "link" && body.photoId && body.scope) {
       return jsonOk(await addLink({ ...body, photoId: body.photoId, scope: body.scope }));
     }
+    if (body.action === "rename") {
+      if (body.scope === "product") return jsonError("Rename a product from its card");
+      if (!body.scope || !body.key || !body.name?.trim()) return jsonError("Enter a name");
+      return jsonOk(await renameScope(body.scope, body.key, body.name));
+    }
+    if (body.action === "delete") {
+      await deleteLibraryFiles(body.ids ?? []);
+      return jsonOk({ ok: true });
+    }
     if (body.action === "unlink" && body.id) {
       await removeConnection(body.id);
       return jsonOk({ ok: true });
@@ -40,5 +54,17 @@ export async function POST(req: Request) {
     return jsonError("Unknown action");
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Couldn't update media");
+  }
+}
+
+export async function DELETE(req: Request) {
+  const denied = await deny(["media", "storage"], "edit");
+  if (denied) return denied;
+  try {
+    const body = await readJson<{ ids?: string[] }>(req);
+    await deleteLibraryFiles(body.ids ?? []);
+    return jsonOk({ ok: true });
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : "Couldn't delete the files");
   }
 }

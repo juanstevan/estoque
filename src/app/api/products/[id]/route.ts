@@ -6,10 +6,13 @@ import {
 } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { photoStorage } from "@/lib/photos/service";
+import { deny } from "@/lib/guard";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, ctx: Ctx) {
+  const denied = await deny(["storage", "media", "imports", "settings"], "view");
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const view = new URL(req.url).searchParams.get("view");
@@ -22,6 +25,8 @@ export async function GET(req: Request, ctx: Ctx) {
 }
 
 export async function PATCH(req: Request, ctx: Ctx) {
+  const denied = await deny(["storage", "imports", "settings"], "edit");
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     const body = await readJson<Record<string, unknown>>(req);
@@ -32,6 +37,8 @@ export async function PATCH(req: Request, ctx: Ctx) {
 }
 
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const denied = await deny("storage", "edit");
+  if (denied) return denied;
   try {
     const { id } = await ctx.params;
     await deleteProduct(id);

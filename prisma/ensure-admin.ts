@@ -1,25 +1,29 @@
 import "dotenv/config";
-import { createHash } from "crypto";
 import { prisma } from "../src/lib/db";
+import { FULL_ACCESS } from "../src/lib/access";
+import { hashPassword } from "../src/lib/password";
 
-function hashPassword(password: string) {
-  return createHash("sha256").update(password).digest("hex");
-}
-
+/** Runs on every build: the settings row, the main role, and a first account on an empty install. */
 async function main() {
   await prisma.appSettings.upsert({
     where: { id: "default" },
     create: { id: "default" },
     update: {},
   });
-  await prisma.user.upsert({
-    where: { username: "admin" },
+  await prisma.role.upsert({
+    where: { id: "main" },
+    create: { id: "main", name: "Main user", description: "Full access, always", main: true, access: JSON.stringify(FULL_ACCESS) },
     update: {},
-    create: {
+  });
+  if (await prisma.user.count()) return;
+  // Only on an empty install. The temporary password must be replaced at the first sign-in.
+  await prisma.user.create({
+    data: {
       username: "admin",
-      name: "Juan Souza",
-      passwordHash: hashPassword("chaleur"),
-      role: "admin",
+      name: "Admin",
+      passwordHash: await hashPassword("chaleur"),
+      roleId: "main",
+      mustChangePassword: true,
     },
   });
 }

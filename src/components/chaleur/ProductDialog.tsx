@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   ExternalLink,
+  Link2,
   Pencil,
   Search,
   X,
@@ -39,6 +40,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { DataGrid } from "@/components/chaleur/DataGrid";
+import { QuickBooksPicker, linkQuickBooks, linkedItemId } from "@/components/chaleur/QuickBooksPicker";
 import {
   PHOTO_ACCEPT,
   PhotoLightbox,
@@ -49,6 +51,7 @@ import {
 } from "@/components/chaleur/ProductPhotos";
 import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
+import { commitMeasure } from "@/lib/measure";
 import { calcWeightedAverageCost } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +80,8 @@ export type ProductRow = {
   imageUrl: string | null;
   notes: string | null;
   suppliers: string | null;
+  /** "qb:<item id>" when linked to a QuickBooks item. */
+  secondarySku?: string | null;
   weight: number | null;
   length: number | null;
   width: number | null;
@@ -213,7 +218,14 @@ export function ProductDialog({
   mode?: "edit" | "create";
   reasons: string[];
   types?: string[];
-  catalog?: { category?: string | null; model?: string | null }[];
+  catalog?: {
+    id?: string;
+    code?: string;
+    secondarySku?: string | null;
+    type?: string | null;
+    category?: string | null;
+    model?: string | null;
+  }[];
   onClose: () => void;
   onSaved: (created?: { id: string; code: string; name: string }) => void;
 }) {
@@ -226,7 +238,6 @@ export function ProductDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [unit, setUnit] = useState<Unit>("in");
   const fileRef = useRef<HTMLInputElement>(null);
   const [photoIndex, setPhotoIndex] = useState(0);
   const [nameOpen, setNameOpen] = useState(false);
@@ -255,6 +266,17 @@ export function ProductDialog({
     () => photoFileNames({ type: detail?.type ?? null, name: detail?.name ?? "" }, photoList),
     [detail?.type, detail?.name, photoList],
   );
+  /** QuickBooks items already linked to another product, by that product's ID. */
+  const takenBy = useMemo(
+    () =>
+      new Map(
+        catalog.flatMap((p) => {
+          const item = linkedItemId(p.secondarySku);
+          return item && p.code && p.id !== productId ? [[item, p.code] as const] : [];
+        }),
+      ),
+    [catalog, productId],
+  );
   const categories = useMemo(
     () => [...new Set(catalog.flatMap((row) => (row.category ? [row.category] : [])))].sort(),
     [catalog],
@@ -269,6 +291,10 @@ export function ProductDialog({
       ),
     ].sort();
   }
+  const familyTaken =
+    nameOpen && detail
+      ? existingFamily(detail.type, parts.category, parts.model, catalog)
+      : null;
   const photoActions = usePhotos({
     productId: isCreate ? null : (detail?.id ?? null),
     photos: photoList,
@@ -332,6 +358,7 @@ export function ProductDialog({
       const target = event.target as Node | null;
       if (nameRoot.current?.contains(target)) return;
       if (target instanceof Element && target.closest("[data-slot=popover-content]")) return;
+      if (existingFamily(detail?.type, parts.category, parts.model, catalog)) return;
       patch({
         category: parts.category.trim() || null,
         model: parts.model.trim() || null,
@@ -341,7 +368,7 @@ export function ProductDialog({
     }
     document.addEventListener("pointerdown", down);
     return () => document.removeEventListener("pointerdown", down);
-  }, [nameOpen, parts]);
+  }, [nameOpen, parts, catalog, detail?.type]);
 
   function patch(changes: Partial<Detail>) {
     setDetail((d) => (d ? { ...d, ...changes } : d));
@@ -366,6 +393,11 @@ export function ProductDialog({
     const name = nameOpen
       ? composeName(parts.category, parts.model, parts.variation)
       : detail.name.trim();
+    const taken = nameOpen ? existingFamily(detail.type, category, model, catalog) : null;
+    if (taken) {
+      setError(`${taken} already exists for this brand and category.`);
+      return;
+    }
     if (!detail.type?.trim() || !category || !model) {
       setError("Brand, category, and family are required");
       return;
@@ -605,6 +637,41 @@ export function ProductDialog({
                           onDone={closeField}
                           onChange={(type) => patch({ type })}
                         />
+                        {!isCreate && (
+                          <QuickBooksPicker
+                            itemId={linkedItemId(detail.secondarySku)}
+                            takenBy={takenBy}
+                            onPick={async (itemId) => {
+                              patch({ secondarySku: await linkQuickBooks(detail.id, itemId) });
+                              onSaved();
+                            }}
+                          >
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <PopoverTrigger
+                                    render={
+                                      <Button
+                                        size="icon-xs"
+                                        variant="ghost"
+                                        aria-label="QuickBooks link"
+                                        className={cn(
+                                          "shrink-0",
+                                          linkedItemId(detail.secondarySku) ? "text-success-text" : "text-gray-500",
+                                        )}
+                                      />
+                                    }
+                                  />
+                                }
+                              >
+                                <Link2 className="size-3.5" />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {linkedItemId(detail.secondarySku) ? "Linked to QuickBooks" : "Link to QuickBooks"}
+                              </TooltipContent>
+                            </Tooltip>
+                          </QuickBooksPicker>
+                        )}
                       </div>
                     </div>
 
@@ -633,11 +700,24 @@ export function ProductDialog({
                               options={modelsFor(parts.category)}
                               placeholder="Family"
                               width={80}
+                              invalid={Boolean(familyTaken)}
                               active={editingField === "model"}
                               onActivate={() => openField("model")}
                               onDone={() => setEditingField((field) => (field === "model" ? null : field))}
                               onChange={(model) => setParts((prev) => ({ ...prev, model: model ?? "" }))}
                             />
+                            {familyTaken && (
+                              <p className="text-2xs text-danger-text">
+                                {familyTaken} already exists.{" "}
+                                <button
+                                  type="button"
+                                  className="underline"
+                                  onClick={() => setParts((prev) => ({ ...prev, model: familyTaken }))}
+                                >
+                                  Use {familyTaken}
+                                </button>
+                              </p>
+                            )}
                           </div>
                           <div className="grid min-w-0 flex-1 gap-1.5">
                             <FieldLabel>Variant</FieldLabel>
@@ -953,8 +1033,6 @@ export function ProductDialog({
                             patch({ width: w, length: d, height: h })
                           }
                           isCreate={isCreate}
-                          unit={unit}
-                          onUnitChange={setUnit}
                         />
                         <SpecRow
                           label="Package"
@@ -975,8 +1053,6 @@ export function ProductDialog({
                             })
                           }
                           isCreate={isCreate}
-                          unit={unit}
-                          onUnitChange={setUnit}
                         />
                         <SpecRow
                           label="Cut-Out"
@@ -997,8 +1073,6 @@ export function ProductDialog({
                             })
                           }
                           isCreate={isCreate}
-                          unit={unit}
-                          onUnitChange={setUnit}
                         />
                         <div className="flex items-center gap-1.5">
                           <FieldLabel className="shrink-0">Weight</FieldLabel>
@@ -1022,15 +1096,11 @@ export function ProductDialog({
                               )
                             }
                           >
-                            <BareField
-                              autoFocus
+                            <MeasureField
+                              value={detail.weight}
+                              ariaLabel="Weight in kg"
                               className="w-[5ch] shrink-0 text-xs tabular-nums"
-                              inputMode="decimal"
-                              aria-label="Weight in kg"
-                              value={detail.weight ?? ""}
-                              onChange={(e) =>
-                                patch({ weight: numOrNull(e.target.value) })
-                              }
+                              onChange={(weight) => patch({ weight })}
                             />
                             <span className="text-xs text-gray-500">kg</span>
                           </EditSlot>
@@ -1445,9 +1515,23 @@ function QuantityDialog({
   );
 }
 
-function numOrNull(v: string) {
-  const n = Number(v);
-  return v.trim() === "" || Number.isNaN(n) ? null : n;
+function existingFamily(
+  brand: string | null | undefined,
+  category: string,
+  family: string,
+  catalog: { type?: string | null; category?: string | null; model?: string | null }[],
+) {
+  const want = family.trim();
+  if (!want || !brand?.trim() || !category.trim()) return null;
+  const matches = catalog.filter(
+    (row) =>
+      Boolean(row.model) &&
+      (row.type ?? "").trim().toLowerCase() === brand.trim().toLowerCase() &&
+      (row.category ?? "").trim().toLowerCase() === category.trim().toLowerCase() &&
+      (row.model ?? "").trim().toLowerCase() === want.toLowerCase(),
+  );
+  if (!matches.length || matches.some((row) => row.model?.trim() === want)) return null;
+  return matches[0]?.model?.trim() || null;
 }
 
 function formatMeasure(n: number | null) {
@@ -1597,6 +1681,7 @@ function TypePicker({
   placeholder = "Type",
   width = 120,
   mark,
+  invalid = false,
   onActivate,
   onDone,
   onChange,
@@ -1607,6 +1692,7 @@ function TypePicker({
   placeholder?: string;
   width?: number;
   mark?: string;
+  invalid?: boolean;
   onActivate: () => void;
   onDone: () => void;
   onChange: (value: string | null) => void;
@@ -1629,6 +1715,7 @@ function TypePicker({
           SLOT,
           "shrink-0 cursor-text text-xs font-medium outline-none",
           active ? "border-gray-400 bg-surface" : "border-transparent hover:bg-gray-100",
+          invalid && "border-danger-text",
         )}
       >
         <span className="flex min-w-0 items-center gap-1.5">
@@ -1680,26 +1767,41 @@ function TypePicker({
 }
 
 const DIM_AXES = ["W", "D", "H"] as const;
-const UNITS = ["in", "cm"] as const;
-type Unit = (typeof UNITS)[number];
 
-function UnitToggle({
+function MeasureField({
   value,
   onChange,
+  ariaLabel,
+  className,
 }: {
-  value: Unit;
-  onChange: (v: Unit) => void;
+  value: number | null;
+  onChange: (value: number | null) => void;
+  ariaLabel: string;
+  className?: string;
 }) {
+  const [text, setText] = useState(() => (value == null ? "" : formatMeasure(value)));
   return (
-    <button
-      type="button"
-      aria-label="Dimension unit"
-      title="Click to switch unit"
-      onClick={() => onChange(value === "in" ? "cm" : "in")}
-      className="h-[1.5rem] rounded-md px-1 text-xs text-gray-500 outline-none hover:bg-gray-100 focus-visible:bg-gray-100"
-    >
-      {value}
-    </button>
+    <BareField
+      autoFocus
+      className={className}
+      inputMode="decimal"
+      aria-label={ariaLabel}
+      value={text}
+      onChange={(e) => {
+        const raw = e.target.value;
+        const parsed = commitMeasure(raw);
+        if (parsed === "invalid") return;
+        setText(raw);
+        if (parsed === "draft") return;
+        onChange(parsed);
+      }}
+      onBlur={() => {
+        const parsed = commitMeasure(text.endsWith(".") ? text.slice(0, -1) : text);
+        if (parsed === "draft" || parsed === "invalid") return;
+        onChange(parsed);
+        if (text.endsWith(".")) setText(text.slice(0, -1));
+      }}
+    />
   );
 }
 
@@ -1724,17 +1826,10 @@ function DimAxis({
       active={active}
       onActivate={onActivate}
       onDone={onDone}
-      className="w-12 justify-center px-1 text-xs font-mono tabular-nums"
+      className="w-14 justify-center px-1 text-xs font-mono tabular-nums"
       read={formatMeasure(value)}
     >
-      <BareField
-        autoFocus
-        className="text-center font-mono text-xs tabular-nums"
-        inputMode="decimal"
-        aria-label={ariaLabel}
-        value={value ?? ""}
-        onChange={(e) => onChange(numOrNull(e.target.value))}
-      />
+      <MeasureField value={value} onChange={onChange} ariaLabel={ariaLabel} className="text-center font-mono text-xs tabular-nums" />
     </EditSlot>
   );
 }
@@ -1748,8 +1843,6 @@ function SpecRow({
   onDone,
   onChange,
   isCreate,
-  unit,
-  onUnitChange,
 }: {
   label: string;
   values: [number | null, number | null, number | null];
@@ -1759,8 +1852,6 @@ function SpecRow({
   onDone: () => void;
   onChange: (v: [number | null, number | null, number | null]) => void;
   isCreate: boolean;
-  unit: Unit;
-  onUnitChange: (v: Unit) => void;
 }) {
   return (
     <div className="flex items-center gap-[3px]">
@@ -1791,7 +1882,6 @@ function SpecRow({
             </div>
           );
         })}
-        <UnitToggle value={unit} onChange={onUnitChange} />
       </div>
     </div>
   );

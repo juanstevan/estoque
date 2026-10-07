@@ -1,7 +1,10 @@
 import * as XLSX from "xlsx";
 import { jsonError, readJson } from "@/lib/api";
+import { deny } from "@/lib/guard";
 
 export async function POST(req: Request) {
+  const denied = await deny("reports", "view");
+  if (denied) return denied;
   try {
     const body = await readJson<{
       lines?: { name?: string; sku?: string; qty?: number }[];

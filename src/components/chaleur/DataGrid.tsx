@@ -83,6 +83,7 @@ export function DataGrid<T extends object>({
   checkedIds,
   onCheckedIdsChange,
   visibleIdsRef,
+  rowClassName,
 }: {
   rows: T[];
   columns: GridCol<T>[];
@@ -98,6 +99,8 @@ export function DataGrid<T extends object>({
   checkedIds?: ReadonlySet<string>;
   onCheckedIdsChange?: (ids: Set<string>) => void;
   visibleIdsRef?: { current: string[] | null };
+  /** Extra classes per row, e.g. a tint for paid invoices. */
+  rowClassName?: (row: T) => string | undefined;
 }) {
   const [sort, setSort] = useState<Sort | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -469,6 +472,7 @@ export function DataGrid<T extends object>({
                     onToggleChecked={fireToggle}
                     draggable={draggable}
                     dragged={dragged}
+                    className={rowClassName?.(row)}
                   />
                 );
               })
@@ -510,6 +514,7 @@ type GridRowProps<T extends object> = {
   onToggleChecked: (id: string) => void;
   draggable?: boolean;
   dragged: { current: boolean };
+  className?: string;
 };
 
 function GridRowInner<T extends object>({
@@ -524,6 +529,7 @@ function GridRowInner<T extends object>({
   onToggleChecked,
   draggable,
   dragged,
+  className,
 }: GridRowProps<T>) {
   return (
     <tr
@@ -532,6 +538,7 @@ function GridRowInner<T extends object>({
         "group h-10 transition-colors duration-[80ms]",
         clickable && "cursor-pointer",
         isSelected ? "bg-selected" : clickable && "hover:bg-gray-50",
+        className,
       )}
       onClick={() => {
         if (dragged.current) {

@@ -1,14 +1,16 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { currentUser } from "@/lib/auth";
+import { deny } from "@/lib/guard";
 import { createTag, listTags } from "@/lib/media/library";
 
 export async function GET() {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "view");
+  if (denied) return denied;
   return jsonOk(await listTags());
 }
 
 export async function POST(req: Request) {
-  if (!(await currentUser())) return jsonError("Unauthorized", 401);
+  const denied = await deny(["media", "storage"], "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{ name?: string }>(req);
     return jsonOk(await createTag(body.name ?? ""));

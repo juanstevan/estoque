@@ -6,6 +6,8 @@ import {
 import { listQbSyncEvents } from "@/lib/quickbooks/adapter";
 import { assertQbSecret } from "@/lib/quickbooks/secret";
 
+export const maxDuration = 300;
+
 export async function GET(req: Request) {
   try {
     assertQbSecret(req);

@@ -42,13 +42,49 @@ enum ExitStatus {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
-  name         String
-  passwordHash String
-  role         String   @default("admin")
-  createdAt    DateTime @default(now())
-  assignedTasks Task[]
+  id                 String     @id @default(cuid())
+  username           String     @unique
+  name               String
+  passwordHash       String
+  /// Legacy label from before roles. Access comes from roleId.
+  role               String     @default("admin")
+  roleId             String?
+  /// Set for a temporary password: they choose their own on the next sign-in.
+  mustChangePassword Boolean    @default(false)
+  deactivatedAt      DateTime?
+  lastSignInAt       DateTime?
+  /// Wrong passwords in a row; the account pauses for a few minutes after 5.
+  failedSignIns      Int        @default(0)
+  lockedUntil        DateTime?
+  createdAt          DateTime   @default(now())
+  access             Role?      @relation(fields: [roleId], references: [id])
+  assignedTasks      Task[]
+  sessions           Session[]
+  deliveries         Delivery[]
+}
+
+/** What a role can open. The main role always has full access and manages people, roles and hidden tabs. */
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String   @default("")
+  /// JSON { storage, media, imports, delivery, tasks, reports, settings: "none" | "view" | "edit" }
+  access      String   @default("{}")
+  main        Boolean  @default(false)
+  position    Float    @default(0)
+  createdAt   DateTime @default(now())
+  users       User[]
+}
+
+/** The cookie holds a random token; only its SHA-256 is stored. */
+model Session {
+  id        String   @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model AppSettings {
@@ -58,6 +94,31 @@ model AppSettings {
   adjustmentReasons  String @default("[\"Correction\",\"Adjust\",\"Return\",\"Warranty\"]")
   yearColors         String @default("{\"2024\":\"#22c55e\",\"2025\":\"#3b82f6\",\"2026\":\"#ef4444\",\"2027\":\"#a855f7\"}")
   importColumns      String @default("[]")
+  brandColor         String?
+  accentColor        String?
+  qbClientId         String?
+  qbClientSecret     String?
+  qbRealmId          String?
+  qbRedirectUri      String?
+  qbRefreshToken     String?
+  qbAccessToken      String?
+  qbAccessExpires    DateTime?
+  qbSyncAt           DateTime?
+  qbSyncedAt         DateTime?
+  qbSyncError        String?
+  companyPhone       String?
+  /// JSON array of tab ids hidden for everyone. Storage can't be hidden.
+  hiddenTabs         String @default("[\"tasks\",\"reports\"]")
+  /// When a delivery's units leave stock: ready | out | completed
+  stockStage         String @default("completed")
+  allowPaid          Boolean @default(true)
+  allowUnpaid        Boolean @default(true)
+  /// Unpaid invoices may still go out as collections (paid at pickup).
+  collectUnpaid      Boolean @default(true)
+  /// How preparation is checked: manual (type quantities) | scan
+  prepMethod         String @default("manual")
+  /// A tracking link stops working this many days after the last delivery.
+  trackingDays       Int    @default(7)
 }
 
 model Supplier {
@@ -104,6 +165,9 @@ model Product {
   unavailableQty     Float    @default(0)
   avgCost            Float    @default(0)
   inventoryValue     Float    @default(0)
+  qbUpdatedAt        DateTime?
+  /// QuickBooks name, SKU and price as last seen or pushed (JSON)
+  qbSeen             String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -284,11 +348,17 @@ model ImportationLine {
   @@index([importationId])
 }
 
+/**
+ * A QuickBooks invoice. Its deliveries carry the workflow; status and completedAt here sum
+ * them up (COMPLETED once every delivery is). onKanban means it was added to the workflow.
+ */
 model Order {
   id           String     @id @default(cuid())
   externalRef  String     @unique
   customerName String?
   seller       String?
+  /// Legacy (before deliveries): assignedTo, deliverBy, mode, priorStatus, completedBy,
+  /// delayReason, customerNote, revisedDate, dispatchedAt, windowNote. Deliveries own these now.
   assignedTo   String?
   address      String?
   deliverBy    DateTime?
@@ -298,10 +368,85 @@ model Order {
   notes        String?
   photos       String?
   totalAmount  Float      @default(0)
+  amountPaid   Float      @default(0)
+  taxAmount    Float      @default(0)
+  customerPhone String?
+  qbCustomerId String?
+  invoiceDate  DateTime?
+  mode         String     @default("DELIVERY")
+  qbRealmId    String?
+  qbInvoiceId  String?
+  qbUpdatedAt  DateTime?
+  qbAddress    String?
+  priorStatus  ExitStatus?
+  completedAt  DateTime?
+  completedBy  String?
+  delayReason  String?
+  customerNote String?
+  revisedDate  DateTime?
+  trackingToken String?   @unique
+  trackingExpiresAt DateTime?
+  voided       Boolean    @default(false)
+  issues       String?
+  paymentStatus String?
+  dispatchedAt DateTime?
+  windowNote   String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  lines OrderLine[]
+  lines      OrderLine[]
+  events     OrderEvent[]
+  proofs     OrderProof[]
+  deliveries Delivery[]
+
+  @@unique([qbRealmId, qbInvoiceId])
+}
+
+/** One trip (or pickup) for part or all of an invoice. Most invoices have exactly one. */
+model Delivery {
+  id           String      @id @default(cuid())
+  orderId      String
+  number       Int         @default(1)
+  status       ExitStatus  @default(PENDING)
+  /// DELIVERY | PICKUP (shown as Collect)
+  mode         String      @default("DELIVERY")
+  assigneeId   String?
+  deliverBy    DateTime?
+  /// "HH:MM", New York time
+  windowStart  String?
+  windowEnd    String?
+  priorStatus  ExitStatus?
+  delayReason  String?
+  dispatchedAt DateTime?
+  /// When this delivery's units left stock (at the stage set in Preferences).
+  stockOutAt   DateTime?
+  completedAt  DateTime?
+  completedBy  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  order    Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignee User?          @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  lines    DeliveryLine[]
+  proofs   OrderProof[]
+
+  @@unique([orderId, number])
+  @@index([deliverBy])
+  @@index([assigneeId])
+}
+
+model DeliveryLine {
+  id          String    @id @default(cuid())
+  deliveryId  String
+  orderLineId String
+  qty         Float
+  /// Scanned or typed during preparation.
+  preparedQty Float     @default(0)
+  delivery    Delivery  @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  orderLine   OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryId, orderLineId])
+  @@index([orderLineId])
 }
 
 model OrderLine {
@@ -315,12 +460,45 @@ model OrderLine {
   deliveredQty     Float  @default(0)
   remainingQty     Float  @default(0)
   unitPrice        Float  @default(0)
+  scannedQty       Float  @default(0)
+  physical         Boolean @default(true)
 
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  order      Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product    Product        @relation(fields: [productId], references: [id])
+  deliveries DeliveryLine[]
 
   @@index([orderId])
   @@index([productId])
+}
+
+model OrderEvent {
+  id        String   @id @default(cuid())
+  orderId   String
+  kind      String
+  message   String
+  actor     String
+  public    Boolean  @default(false)
+  meta      String?
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+model OrderProof {
+  id         String    @id @default(cuid())
+  orderId    String
+  deliveryId String?
+  url        String
+  kind       String
+  public     Boolean   @default(false)
+  actor      String
+  createdAt  DateTime  @default(now())
+  order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  delivery   Delivery? @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([deliveryId])
 }
 
 model QbSyncEvent {

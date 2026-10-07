@@ -5,6 +5,7 @@ import {
   previewImport,
 } from "@/lib/import-export/spreadsheet";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
+import { deny } from "@/lib/guard";
 
 function xlsxFile(buffer: Buffer) {
   return new Response(new Uint8Array(buffer), {
@@ -17,10 +18,14 @@ function xlsxFile(buffer: Buffer) {
 }
 
 export async function GET() {
+  const denied = await deny("storage", "view");
+  if (denied) return denied;
   return xlsxFile(await exportInventoryWorkbook());
 }
 
 export async function POST(req: Request) {
+  const denied = await deny("storage", "edit");
+  if (denied) return denied;
   try {
     const contentType = req.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {

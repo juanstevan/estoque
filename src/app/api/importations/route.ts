@@ -6,8 +6,11 @@ import {
   upsertImportation,
 } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
+import { deny } from "@/lib/guard";
 
 export async function GET() {
+  const denied = await deny("imports", "view");
+  if (denied) return denied;
   try {
     return jsonOk(await listImportations());
   } catch (e) {
@@ -19,6 +22,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const denied = await deny("imports", "edit");
+  if (denied) return denied;
   try {
     const body = await readJson<{
       id?: string;
