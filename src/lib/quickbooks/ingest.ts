@@ -332,15 +332,23 @@ export async function ingestInvoice(raw: unknown) {
     const linesChanged =
       matched.length !== existing.lines.length ||
       matched.some((line) => existing.lines.find((row) => row.productId === line.productId)?.orderedQty !== line.quantity);
+    // Prices don't move stock, so they always follow QuickBooks. So does the product's last
+    // sold price when this invoice set it.
+    for (const line of matched) {
+      const current = existing.lines.find((row) => row.productId === line.productId);
+      if (!current || current.unitPrice === line.unitPrice) continue;
+      await prisma.orderLine.update({ where: { id: current.id }, data: { unitPrice: line.unitPrice } });
+      if (current.deliveredQty > 0 && line.unitPrice) {
+        await prisma.product.updateMany({
+          where: { id: line.productId, lastSoldPrice: current.unitPrice },
+          data: { lastSoldPrice: line.unitPrice },
+        });
+      }
+    }
     const order = await prisma.order.update({
       where: { id: existing.id },
       data: {
-        customerName: header.customerName,
-        paymentStatus: header.paymentStatus,
-        amountPaid: header.amountPaid,
-        taxAmount: header.taxAmount,
-        qbCustomerId: header.qbCustomerId,
-        qbUpdatedAt: header.qbUpdatedAt,
+        ...header,
         ...(linesChanged
           ? { issues: "QuickBooks changed this invoice after it left the warehouse. Stock and proof were left as recorded." }
           : {}),
