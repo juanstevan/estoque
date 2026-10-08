@@ -173,15 +173,30 @@ export async function appendTransaction(
   return txn;
 }
 
-/** Codes are the three characters people read off a shelf, so they count up in
- *  base 36 — 001 through ZZZ — rather than encoding a timestamp. */
+/** IDs the app picks itself belong to the secondary line: three base-36 characters with at
+ *  least one letter (23A, 24C…). Plain numbers are the main line, numbered in QuickBooks. */
 async function nextCode(tx: Tx) {
-  const rows = await tx.product.findMany({ select: { code: true } });
-  const highest = rows.reduce((max, { code }) => {
-    if (!/^[0-9A-Z]{3}$/.test(code)) return max;
-    return Math.max(max, Number.parseInt(code, 36));
-  }, 0);
-  return (highest + 1).toString(36).toUpperCase().padStart(3, "0");
+  const used = new Set((await tx.product.findMany({ select: { code: true } })).map((row) => row.code));
+  const lettered = (code: string) => /^[0-9A-Z]{3}$/.test(code) && /[A-Z]/.test(code);
+  let n = Math.max(0, ...[...used].filter(lettered).map((code) => Number.parseInt(code, 36)));
+  let code: string;
+  do code = (++n).toString(36).toUpperCase().padStart(3, "0");
+  while (!lettered(code) || used.has(code));
+  return code;
+}
+
+/** The next main-line number, for a QuickBooks item whose own number another product has. */
+export async function nextNumber() {
+  const rows = await prisma.product.findMany({ select: { code: true } });
+  // ponytail: IDs are 3 characters, so this stops at 999.
+  return String(Math.max(0, ...rows.flatMap(({ code }) => (/^\d+$/.test(code) ? [Number(code)] : []))) + 1);
+}
+
+/** "ID 13 is already used by Grill Concept 3 (NG)" instead of a database error. */
+async function assertCodeFree(code: string | undefined, selfId?: string) {
+  if (!code) return;
+  const holder = await prisma.product.findUnique({ where: { code }, select: { id: true, name: true } });
+  if (holder && holder.id !== selfId) throw new Error(`ID ${code} is already used by ${holder.name}. Change that product's ID first.`);
 }
 
 export async function createProduct(input: {
@@ -216,6 +231,7 @@ export async function createProduct(input: {
   initialQty?: number;
   initialUnitCost?: number;
 }) {
+  await assertCodeFree(input.code?.trim().toUpperCase().slice(0, 3));
   return prisma.$transaction(async (tx) => {
     const product = await tx.product.create({
       data: {
@@ -300,6 +316,7 @@ export async function updateProduct(
     typeof data.code === "string"
       ? data.code.trim().toUpperCase().slice(0, 3)
       : data.code;
+  if (typeof code === "string") await assertCodeFree(code, id);
   for (const key of [
     "weight",
     "length",

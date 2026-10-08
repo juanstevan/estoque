@@ -1,11 +1,11 @@
 import { ExitStatus, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { createProduct } from "@/lib/inventory/service";
+import { createProduct, nextNumber } from "@/lib/inventory/service";
 import { isPhysicalLine } from "@/lib/inventory/delivery-rules";
 import { fitDeliveries } from "@/lib/inventory/orders";
 import { recomputeAvailable, roundMoney } from "@/lib/inventory/math";
 import { storeQbSyncEvent } from "@/lib/quickbooks/adapter";
-import { qbSettings } from "@/lib/quickbooks/qbo";
+import { pushQuickBooksItem, qbSettings } from "@/lib/quickbooks/qbo";
 
 /** Invoices dated before this never become orders. Stock counting starts here. */
 export const INVOICES_FROM = "2026-10-01";
@@ -504,18 +504,21 @@ export async function ingestItems(raw: unknown) {
     // "240 - Door…": the ID lives in its own field here and goes back into the name on push.
     const parts = name.match(/^(\w{1,3}) ?- (.+)$/);
     const preferred = parts?.[1].toUpperCase();
+    // A number another product has gets the next free one, written back so QuickBooks shows it.
+    // Without a number it joins the secondary line (23A…), which never touches plain numbers.
     const codeTaken = preferred
       ? await prisma.product.findUnique({ where: { code: preferred } })
       : null;
     try {
-      await createProduct({
+      const product = await createProduct({
         name: parts ? parts[2].trim() : name,
         sku,
-        code: preferred && !codeTaken ? preferred : undefined,
+        code: codeTaken ? await nextNumber() : preferred,
         secondarySku: `qb:${id}`,
         initialQty: Math.max(0, num(item.QtyOnHand ?? item.qtyOnHand)),
         notes: "Imported from QuickBooks (qty is owned here after this)",
       });
+      if (codeTaken) await pushQuickBooksItem(product).catch(() => undefined);
       created.push(sku);
     } catch {
       skipped.push(sku);

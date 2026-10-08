@@ -169,7 +169,7 @@ export async function qboAccessToken(refused?: string) {
  * get a fresh one and retry once. Refused again means the connection itself is bad
  * (revoked, or a different company), so it's cleared and the message says what to do.
  */
-async function qboFetch(path: string, params: Record<string, string> = {}, body?: unknown) {
+export async function qboFetch(path: string, params: Record<string, string> = {}, body?: unknown) {
   const url = await qboUrl(path);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   let token = await qboAccessToken();
