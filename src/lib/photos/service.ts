@@ -2,7 +2,7 @@ import { unlink } from "fs/promises";
 import path from "path";
 import { del } from "@vercel/blob";
 import { prisma } from "@/lib/db";
-import { FILE_MAX_BYTES, PHOTO_TYPES, groupBase, mediaFileNames, photoBase } from "./name";
+import { FILE_MAX_BYTES, PHOTO_TYPES, mediaFileNames, photoBase } from "./name";
 
 export type AssetInput = {
   url: string;
@@ -18,10 +18,10 @@ export type AssetInput = {
 /** @deprecated kept for callers that only upload photos */
 export type PhotoInput = AssetInput;
 
-export type Owner = { productId: string } | { groupId: string };
+export type Owner = { productId: string };
 
 function ownerWhere(owner: Owner) {
-  return "productId" in owner ? { productId: owner.productId } : { groupId: owner.groupId };
+  return { productId: owner.productId };
 }
 
 /** Vercel may prefix the variable when the store is connected (e.g. `photos_BLOB_READ_WRITE_TOKEN`). */
@@ -88,79 +88,24 @@ export async function listAssets(owner: Owner) {
 
 export const listPhotos = (productId: string) => listAssets({ productId });
 
-// ── Group tree ────────────────────────────────────────────────────────
-
-export type GroupNode = {
-  id: string;
-  name: string;
-  brand: string | null;
-  parentId: string | null;
-  position: number;
-};
-
-export async function allGroups(): Promise<GroupNode[]> {
-  return prisma.mediaGroup.findMany({
-    select: { id: true, name: true, brand: true, parentId: true, position: true },
-    orderBy: [{ position: "asc" }, { createdAt: "asc" }],
-  });
-}
-
-/** Nearest first: [group, parent, grandparent, …]. Stops on a cycle rather than looping. */
-export function chainOf(groups: GroupNode[], id: string | null) {
-  const byId = new Map(groups.map((g) => [g.id, g]));
-  const out: GroupNode[] = [];
-  const seen = new Set<string>();
-  for (let g = id ? byId.get(id) : undefined; g && !seen.has(g.id); g = g.parentId ? byId.get(g.parentId) : undefined) {
-    seen.add(g.id);
-    out.push(g);
-  }
-  return out;
-}
-
-export function pathOf(groups: GroupNode[], id: string | null) {
-  return chainOf(groups, id).reverse();
-}
-
-export function subtreeOf(groups: GroupNode[], id: string) {
-  const out = [id];
-  for (let i = 0; i < out.length; i++) {
-    for (const g of groups) if (g.parentId === out[i] && !out.includes(g.id)) out.push(g.id);
-  }
-  return out;
-}
-
 // ── Sync: file names and the cover mirrored to Product.imageUrl ──────
-
-/** Photos a product shows: nearest group first, then its ancestors, then its own. */
-async function effectivePhotos(productId: string, groupId: string | null, groups: GroupNode[]) {
-  const chain = chainOf(groups, groupId).map((g) => g.id);
-  const [inherited, own] = await Promise.all([
-    chain.length
-      ? prisma.productPhoto.findMany({ where: { groupId: { in: chain }, kind: "photo" }, orderBy: ORDER })
-      : Promise.resolve([]),
-    prisma.productPhoto.findMany({ where: { productId, kind: "photo" }, orderBy: ORDER }),
-  ]);
-  inherited.sort((a, b) => chain.indexOf(a.groupId!) - chain.indexOf(b.groupId!));
-  return [...inherited, ...own];
-}
 
 /**
  * Rewrites the product's own file names from its saved fields and mirrors its
  * cover to imageUrl. A product with no photos at all keeps whatever imageUrl it
  * had (spreadsheet imports set it), unless that image was the one just deleted.
  */
-export async function syncPhotos(productId: string, removedUrl?: string, groups?: GroupNode[]) {
-  const tree = groups ?? (await allGroups());
+export async function syncPhotos(productId: string, removedUrl?: string) {
   const [product, assets] = await Promise.all([
     prisma.product.findUnique({
       where: { id: productId },
-      select: { name: true, type: true, imageUrl: true, groupId: true },
+      select: { name: true, type: true, imageUrl: true },
     }),
     listAssets({ productId }),
   ]);
   if (!product) throw new Error("Product not found");
   const names = mediaFileNames(photoBase(product), assets);
-  const photos = await effectivePhotos(productId, product.groupId, tree);
+  const photos = assets.filter((asset) => asset.kind === "photo");
   // With nothing to show, keep only an imageUrl this feature didn't set (a spreadsheet import).
   const mirrored =
     !!product.imageUrl &&
@@ -182,39 +127,8 @@ export async function syncPhotos(productId: string, removedUrl?: string, groups?
   return assets.map((asset, i) => ({ ...asset, fileName: names[i] }));
 }
 
-/**
- * Renames assets in the group (and, when `deep`, every subgroup — used after a
- * rename or move) and refreshes the cover of every product underneath.
- */
-export async function syncGroup(groupId: string, opts: { deep?: boolean; removedUrl?: string } = {}) {
-  const groups = await allGroups();
-  if (!groups.some((g) => g.id === groupId)) return [];
-  const subtree = subtreeOf(groups, groupId);
-  const renamed = opts.deep ? subtree : [groupId];
-  for (const id of renamed) {
-    const assets = await listAssets({ groupId: id });
-    const names = mediaFileNames(groupBase(pathOf(groups, id).map((g) => g.name)), assets);
-    await prisma.$transaction(
-      assets
-        .map((asset, i) => ({ asset, name: names[i] }))
-        .filter(({ asset, name }) => asset.fileName !== name)
-        .map(({ asset, name }) =>
-          prisma.productPhoto.update({ where: { id: asset.id }, data: { fileName: name } }),
-        ),
-    );
-  }
-  const products = await prisma.product.findMany({
-    where: { groupId: { in: subtree } },
-    select: { id: true },
-  });
-  for (const p of products) await syncPhotos(p.id, opts.removedUrl, groups);
-  return listAssets({ groupId });
-}
-
 function sync(owner: Owner, removedUrl?: string) {
-  return "productId" in owner
-    ? syncPhotos(owner.productId, removedUrl)
-    : syncGroup(owner.groupId, { removedUrl });
+  return syncPhotos(owner.productId, removedUrl);
 }
 
 // ── Asset actions ─────────────────────────────────────────────────────
@@ -253,9 +167,7 @@ export const addPhotos = (productId: string, inputs: AssetInput[]) => addAssets(
 
 async function ownedAsset(owner: Owner, id: string) {
   const asset = await prisma.productPhoto.findUnique({ where: { id } });
-  const mine =
-    asset && ("productId" in owner ? asset.productId === owner.productId : asset.groupId === owner.groupId);
-  if (!asset || !mine) throw new Error("File not found");
+  if (!asset || asset.productId !== owner.productId) throw new Error("File not found");
   return asset;
 }
 
@@ -283,38 +195,6 @@ export async function removeAsset(owner: Owner, id: string) {
   return sync(owner, asset.url);
 }
 
-/** Moves a product's own asset up to its group, so every sibling SKU gets it. */
-export async function shareAssetWithGroup(productId: string, id: string) {
-  const asset = await ownedAsset({ productId }, id);
-  const product = await prisma.product.findUnique({ where: { id: productId }, select: { groupId: true } });
-  if (!product?.groupId) throw new Error("This product has no group");
-  const last = await prisma.productPhoto.findFirst({
-    where: { groupId: product.groupId },
-    orderBy: { position: "desc" },
-    select: { position: true },
-  });
-  await prisma.productPhoto.update({
-    where: { id: asset.id },
-    data: { productId: null, groupId: product.groupId, position: (last?.position ?? -1) + 1 },
-  });
-  await syncGroup(product.groupId);
-  return syncPhotos(productId);
-}
-
-/** A product whose imageUrl predates the gallery gets it as its first photo. */
-export async function adoptImage(productId: string, imageUrl: string | null) {
-  if (!imageUrl || imageUrl === "/file.svg") return;
-  const type = /\.png(\?|$)/i.test(imageUrl)
-    ? "image/png"
-    : /\.webp(\?|$)/i.test(imageUrl)
-      ? "image/webp"
-      : "image/jpeg";
-  await prisma.productPhoto.create({
-    data: { productId, url: imageUrl, thumbUrl: imageUrl, tag: "main", contentType: type },
-  });
-  await syncPhotos(productId);
-}
-
 /** Uploads the app made but never saved (create cancelled, or add failed). */
 export async function discardUploads(urls: string[]) {
   const used = await prisma.productPhoto.findMany({
@@ -327,10 +207,5 @@ export async function discardUploads(urls: string[]) {
 
 export async function deleteProductFiles(productId: string) {
   const assets = await listAssets({ productId });
-  return () => deleteFiles(assets.flatMap((p) => [p.url, p.thumbUrl]));
-}
-
-export async function deleteGroupFiles(groupId: string) {
-  const assets = await listAssets({ groupId });
   return () => deleteFiles(assets.flatMap((p) => [p.url, p.thumbUrl]));
 }

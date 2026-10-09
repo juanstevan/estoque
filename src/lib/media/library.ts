@@ -1,9 +1,7 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { composeName, groupBase, mediaFileNames, photoBase, splitName } from "@/lib/photos/name";
-import { placeProduct } from "@/lib/photos/groups";
 import { pushQuickBooksItem } from "@/lib/quickbooks/qbo";
-import { allGroups, pathOf, syncGroup, syncPhotos } from "@/lib/photos/service";
+import { syncPhotos } from "@/lib/photos/service";
 
 const COLORS = ["#e11d48", "#ea580c", "#ca8a04", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#db2777", "#475569", "#b45309"];
 
@@ -29,31 +27,6 @@ export async function createTag(name: string) {
 }
 
 type Scope = { rank: number; source: string };
-
-function folderConnection(path: { name: string }[]) {
-  if (!path.length) return null;
-  if (path.length === 1) {
-    return { scope: "brand" as const, key: path[0]!.name, name: path[0]!.name, label: `${path[0]!.name} · Brand` };
-  }
-  if (path.length === 2) {
-    return {
-      scope: "category" as const,
-      key: path[1]!.name,
-      name: path[1]!.name,
-      context: path[0]!.name,
-      label: `${path[1]!.name} · Category`,
-    };
-  }
-  const name = path.length > 3 ? path.at(-1)!.name : path[2]!.name;
-  const key = `${path[0]!.name}\0${path[1]!.name}\0${name}`;
-  return {
-    scope: "family" as const,
-    key,
-    name,
-    context: `${path[0]!.name} · ${path[1]!.name}`,
-    label: `${name} · Family`,
-  };
-}
 
 function linkConnection(link: {
   productId: string | null;
@@ -90,14 +63,6 @@ function linkConnection(link: {
   return null;
 }
 
-function placed(path: { name: string }[]): Scope {
-  const name = path.at(-1)?.name ?? "Folder";
-  if (path.length <= 1) return { rank: 5, source: `Brand · ${name}` };
-  if (path.length === 2) return { rank: 4, source: `Category · ${name}` };
-  if (path.length === 3) return { rank: 3, source: `Family · ${name}` };
-  return { rank: 1, source: `Folder · ${name}` };
-}
-
 function linked(link: {
   productId: string | null;
   tagId: string | null;
@@ -128,6 +93,7 @@ export type ShownFile = {
   height: number | null;
   tag: string;
   fileName: string;
+  visibility: string;
 };
 
 type PhotoRow = {
@@ -142,6 +108,7 @@ type PhotoRow = {
   width: number | null;
   height: number | null;
   fileName: string;
+  visibility: string;
 };
 
 function shown(photo: PhotoRow, scope: Scope): ShownFile {
@@ -159,6 +126,7 @@ function shown(photo: PhotoRow, scope: Scope): ShownFile {
     height: photo.height,
     tag: photo.tag,
     fileName: photo.fileName,
+    visibility: photo.visibility,
   };
 }
 
@@ -168,14 +136,9 @@ export async function mediaForProduct(product: {
   type: string | null;
   category: string | null;
   model: string | null;
-  groupId: string | null;
 }) {
-  const groups = await allGroups();
-  const chain = product.groupId ? pathOf(groups, product.groupId) : [];
-  const groupIds = chain.map((group) => group.id);
-  const [own, grouped, links] = await Promise.all([
+  const [own, links] = await Promise.all([
     prisma.productPhoto.findMany({ where: { productId: product.id } }),
-    groupIds.length ? prisma.productPhoto.findMany({ where: { groupId: { in: groupIds } } }) : Promise.resolve([]),
     prisma.mediaLink.findMany({
       where: {
         OR: [
@@ -191,17 +154,12 @@ export async function mediaForProduct(product: {
       include: { photo: true, tag: { select: { name: true } }, product: { select: { name: true } } },
     }),
   ]);
-  const byGroup = new Map(chain.map((group) => [group.id, pathOf(groups, group.id)]));
   const best = new Map<string, ShownFile>();
   const keep = (item: ShownFile) => {
     const prev = best.get(item.id);
     if (!prev || item.rank < prev.rank) best.set(item.id, item);
   };
   for (const photo of own) keep(shown(photo, { rank: 0, source: "This product" }));
-  for (const photo of grouped) {
-    if (!photo.groupId) continue;
-    keep(shown(photo, placed(byGroup.get(photo.groupId) ?? [])));
-  }
   for (const link of links) keep(shown(link.photo, linked(link)));
   return [...best.values()].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 }
@@ -211,15 +169,14 @@ const CONTEXT_ORDER = ["product", "family", "category", "brand", "tag"] as const
 
 /**
  * The name a download (or an AI tool) gets: product context + the file's own name, e.g.
- * grill_legend_5_liquid_propane_front.jpg. A file kept by a product or folder already has it
- * stored (syncPhotos/syncGroup keep it current). A linked one takes its closest connection.
+ * grill_legend_5_liquid_propane_front.jpg. A file kept by a product already has it
+ * stored (syncPhotos keeps it current). A linked one takes its closest connection.
  */
 function downloadName(
-  photo: { fileName: string; productId: string | null; groupId: string | null; tag: string; kind: string; contentType: string; originalName: string; product?: { name: string; type: string | null } | null; links: { productId: string | null; product?: { name: string; type: string | null } | null }[] },
+  photo: { fileName: string; productId: string | null; tag: string; kind: string; contentType: string; originalName: string; product?: { name: string; type: string | null } | null; links: { productId: string | null; product?: { name: string; type: string | null } | null }[] },
   connections: Connected[],
-  groups: Awaited<ReturnType<typeof allGroups>>,
 ) {
-  if (photo.fileName && (photo.productId || photo.groupId)) return photo.fileName;
+  if (photo.fileName && photo.productId) return photo.fileName;
   const closest = CONTEXT_ORDER.flatMap((scope) => connections.filter((c) => c.scope === scope))[0];
   let base = "";
   if (closest?.scope === "product") {
@@ -227,20 +184,42 @@ function downloadName(
     base = product ? photoBase(product) : "";
   } else if (closest?.scope === "family") base = groupBase(closest.key.split("\0"));
   else if (closest) base = groupBase([closest.name]);
-  else if (photo.groupId) base = groupBase(pathOf(groups, photo.groupId).map((g) => g.name));
   return mediaFileNames(base, [photo])[0]!.replace(/^_/, "");
+}
+
+export const VISIBILITY = ["internal", "partners", "public"] as const;
+export type Visibility = (typeof VISIBILITY)[number];
+
+/** Internal: only the app. Partners: partner links. Public: catalog and share links. */
+export async function setVisibility(ids: string[], visibility: string) {
+  if (!VISIBILITY.includes(visibility as Visibility)) throw new Error("Choose Internal, Partners or Public");
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return;
+  await prisma.productPhoto.updateMany({ where: { id: { in: unique } }, data: { visibility } });
+}
+
+/** One cover per brand, category, family or tag: setting one clears the one before. */
+export async function setCover(linkId: string, on: boolean) {
+  const link = await prisma.mediaLink.findUnique({ where: { id: linkId }, include: { photo: { select: { kind: true, contentType: true } } } });
+  if (!link) throw new Error("Connection not found");
+  if (link.productId) throw new Error("Covers are for a brand, category, family or tag");
+  if (link.photo.kind === "file" || !link.photo.contentType.startsWith("image/")) throw new Error("A cover must be a photo");
+  const same = { productId: null, tagId: link.tagId, brand: link.brand, category: link.category, family: link.family, role: "cover" };
+  await prisma.$transaction([
+    ...(on ? [prisma.mediaLink.updateMany({ where: same, data: { role: null } })] : []),
+    prisma.mediaLink.update({ where: { id: linkId }, data: { role: on ? "cover" : null } }),
+  ]);
 }
 
 /** Renames one file. The name shows in the app; downloads get it after the product context. */
 export async function renameFile(id: string, raw: string) {
   const photo = await prisma.productPhoto.update({ where: { id }, data: { tag: raw.trim().slice(0, 80) } });
   if (photo.productId) await syncPhotos(photo.productId);
-  else if (photo.groupId) await syncGroup(photo.groupId);
   return photo;
 }
 
 export async function listLibrary() {
-  const [photos, groups, tags] = await Promise.all([
+  const [photos, tags] = await Promise.all([
     prisma.productPhoto.findMany({
       include: {
         product: { select: { name: true, type: true } },
@@ -248,13 +227,12 @@ export async function listLibrary() {
       },
       orderBy: { createdAt: "desc" },
     }),
-    allGroups(),
     listTags(),
   ]);
   return {
     tags,
     files: photos.map((photo) => {
-      const connections: { id: string; scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string; label: string }[] = [];
+      const connections: { id: string; scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string; label: string; cover?: boolean }[] = [];
       if (photo.product) {
         connections.push({
           id: `owner:${photo.id}`,
@@ -264,14 +242,9 @@ export async function listLibrary() {
           label: `${photo.product.name} · Product`,
         });
       }
-      if (photo.groupId) {
-        const path = pathOf(groups, photo.groupId);
-        const place = folderConnection(path);
-        if (place) connections.push({ id: `group:${photo.id}`, ...place });
-      }
       for (const link of photo.links) {
         const place = linkConnection(link);
-        if (place) connections.push({ id: link.id, ...place });
+        if (place) connections.push({ id: link.id, ...place, cover: link.role === "cover" });
       }
       return {
         id: photo.id,
@@ -280,7 +253,8 @@ export async function listLibrary() {
         name: photo.tag || photo.originalName || "File",
         originalName: photo.originalName,
         tag: photo.tag,
-        fileName: downloadName(photo, connections, groups),
+        fileName: downloadName(photo, connections),
+        visibility: photo.visibility,
         kind: photo.kind,
         contentType: photo.contentType,
         size: photo.size,
@@ -342,10 +316,6 @@ export async function removeConnection(id: string) {
     await prisma.productPhoto.update({ where: { id: id.slice(6) }, data: { productId: null } });
     return;
   }
-  if (id.startsWith("group:")) {
-    await prisma.productPhoto.update({ where: { id: id.slice(6) }, data: { groupId: null } });
-    return;
-  }
   await prisma.mediaLink.delete({ where: { id } });
 }
 
@@ -353,15 +323,6 @@ export async function deleteLibraryFiles(ids: string[]) {
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return;
   await prisma.productPhoto.deleteMany({ where: { id: { in: unique } } });
-}
-
-async function retitleFolder(tx: Prisma.TransactionClient, parentId: string | null, from: string, to: string) {
-  const taken = await tx.mediaGroup.findFirst({
-    where: { parentId, name: to },
-    select: { id: true },
-  });
-  if (taken) return;
-  await tx.mediaGroup.updateMany({ where: { parentId, name: from }, data: { name: to } });
 }
 
 /** Renames a tag, brand, category, or family everywhere it is used, including product names built from category and family. */
@@ -399,11 +360,9 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
     if (scope === "brand") {
       await tx.product.updateMany({ where: { type: key }, data: { type: name } });
       await tx.mediaLink.updateMany({ where: { brand: key }, data: { brand: name } });
-      await retitleFolder(tx, null, key, name);
       return;
     }
     if (scope === "category") {
-      const roots = await tx.mediaGroup.findMany({ where: { parentId: null }, select: { id: true } });
       for (const product of products) {
         const parts = splitName(product.name, product.category, product.model);
         const next = composeName(name, product.model ?? "", parts.variation);
@@ -411,15 +370,10 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
         if (next !== product.name) renamed.push({ ...product, name: next, category: name });
       }
       await tx.mediaLink.updateMany({ where: { category: key }, data: { category: name } });
-      for (const root of roots) await retitleFolder(tx, root.id, key, name);
       return;
     }
     const [brand, category, family] = key.split("\0");
     if (!brand || !category || !family) throw new Error("That family could not be renamed");
-    const brandFolder = await tx.mediaGroup.findFirst({ where: { parentId: null, name: brand }, select: { id: true } });
-    const categoryFolder = brandFolder
-      ? await tx.mediaGroup.findFirst({ where: { parentId: brandFolder.id, name: category }, select: { id: true } })
-      : null;
     for (const product of products) {
       const parts = splitName(product.name, product.category, product.model);
       const next = composeName(product.category ?? "", name, parts.variation);
@@ -430,13 +384,10 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
       where: { brand, category, family },
       data: { family: name },
     });
-    if (categoryFolder) await retitleFolder(tx, categoryFolder.id, family, name);
   }, { timeout: 30_000 });
 
-  const moved = scope === "brand" ? products.map((product) => product.id) : renamed.map((product) => product.id);
-  for (const id of scope === "brand" ? moved : products.map((product) => product.id)) {
-    await placeProduct(id);
-  }
+  // Download names start with the brand and product name.
+  for (const product of scope === "brand" ? products : renamed) await syncPhotos(product.id);
   let qbFailed = 0;
   for (const product of renamed) {
     try {

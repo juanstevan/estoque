@@ -228,6 +228,8 @@ model ProductPhoto {
   width        Int?
   height       Int?
   position     Float       @default(0)
+  /// Who may see it outside the app: internal | partners | public
+  visibility   String      @default("internal")
   createdAt    DateTime    @default(now())
   product      Product?    @relation(fields: [productId], references: [id], onDelete: Cascade)
   group        MediaGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -254,6 +256,8 @@ model MediaLink {
   brand     String?
   category  String?
   family    String?
+  /// "cover": the cover of the brand, category, family or tag it links to
+  role      String?
   photo     ProductPhoto @relation(fields: [photoId], references: [id], onDelete: Cascade)
   product   Product?     @relation(fields: [productId], references: [id], onDelete: Cascade)
   tag       Tag?         @relation(fields: [tagId], references: [id], onDelete: Cascade)

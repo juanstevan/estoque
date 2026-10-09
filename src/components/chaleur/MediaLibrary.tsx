@@ -23,7 +23,8 @@ import { cn } from "@/lib/utils";
 
 type Scope = "brand" | "category" | "family" | "tag" | "product";
 type Kind = "photo" | "pdf" | "document" | "video" | "other";
-type Connection = { id: string; scope: Scope; key: string; name: string; context?: string; label: string };
+type Connection = { id: string; scope: Scope; key: string; name: string; context?: string; label: string; cover?: boolean };
+type Visibility = "internal" | "partners" | "public";
 type FileRow = {
   id: string;
   url: string;
@@ -32,6 +33,7 @@ type FileRow = {
   originalName: string;
   tag: string;
   fileName: string;
+  visibility: Visibility;
   kind: string;
   contentType: string;
   size: number;
@@ -52,6 +54,13 @@ type SavedView = {
 };
 
 const VIEWS_KEY = "chaleur.media.views";
+
+/** Who sees a file outside the app. Internal is the default, so nothing goes out by accident. */
+const VISIBILITY: Record<Visibility, { label: string; hint: string }> = {
+  internal: { label: "Internal", hint: "Only people signed in to this app." },
+  partners: { label: "Partners", hint: "Also builders and dealers with a partner link." },
+  public: { label: "Public", hint: "Anyone with a catalog or share link." },
+};
 
 const SCOPE_RANK: Record<Scope, number> = { brand: 0, category: 1, family: 2, product: 3, tag: 4 };
 const SCOPE_NAME: Record<Scope, string> = {
@@ -251,6 +260,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
   const [suggesting, setSuggesting] = useState(false);
   const [scopeFilter, setScopeFilter] = useState<Scope | "all">("all");
   const [typeFilter, setTypeFilter] = useState<Kind | "all">("all");
+  const [seenBy, setSeenBy] = useState<Visibility | "all">("all");
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
   const [folders, setFolders] = useState(false);
   const [filtersHidden, setFiltersHidden] = useState(false);
@@ -311,6 +321,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
     const q = query.trim().toLowerCase();
     return files.flatMap((file) => {
       if (typeFilter !== "all" && fileKind(file) !== typeFilter) return [];
+      if (seenBy !== "all" && file.visibility !== seenBy) return [];
       if (scopeFilter !== "all" && !file.connections.some((link) => link.scope === scopeFilter)) return [];
       const relation = picked ? relationOf(file, picked, products) : null;
       if (picked && !relation) return [];
@@ -320,7 +331,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
       }
       return [{ file, relation }];
     });
-  }, [files, typeFilter, scopeFilter, picked, products, query]);
+  }, [files, typeFilter, seenBy, scopeFilter, picked, products, query]);
 
   const groups = useMemo(() => {
     if (groupBy === "none") return [{ key: "all", label: "All", items: visible }];
@@ -377,6 +388,25 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
       renameLock.current = false;
       setRenaming(null);
     }
+  }
+
+  async function post(body: object, fallback: string) {
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) setError((await res.json().catch(() => ({}))).error ?? fallback);
+    await reload();
+  }
+
+  function setVisibility(ids: string[], visibility: Visibility) {
+    setFiles((current) => current.map((file) => (ids.includes(file.id) ? { ...file, visibility } : file)));
+    return post({ action: "visibility", ids, visibility }, "Couldn't change who sees it");
+  }
+
+  function setCover(linkId: string, on: boolean) {
+    return post({ action: "cover", id: linkId, on }, "Couldn't set the cover");
   }
 
   async function renameFile(id: string, name: string) {
@@ -609,6 +639,16 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                       ? file.connections[0]!.label
                       : `${file.connections[0]!.name} +${file.connections.length - 1}`}
                 </span>
+                {(file.visibility !== "internal" || file.connections.some((link) => link.cover)) && (
+                  <span className="pointer-events-none absolute bottom-1.5 left-2 flex gap-1">
+                    {file.connections.some((link) => link.cover) && (
+                      <span className="rounded-sm bg-surface/90 px-1.5 py-0.5 text-2xs font-medium text-gray-700">Cover</span>
+                    )}
+                    {file.visibility !== "internal" && (
+                      <span className="rounded-sm bg-surface/90 px-1.5 py-0.5 text-2xs font-medium text-gray-700">{VISIBILITY[file.visibility].label}</span>
+                    )}
+                  </span>
+                )}
                 <Checkbox
                   className="absolute top-1.5 right-1.5 z-10 bg-surface"
                   checked={selected.has(file.id)}
@@ -786,6 +826,15 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           ]}
         />
         <FilterSelect
+          label="Seen by"
+          value={seenBy}
+          onChange={(value) => setSeenBy(value as Visibility | "all")}
+          options={[
+            { value: "all", label: "Anyone" },
+            ...(Object.keys(VISIBILITY) as Visibility[]).map((value) => ({ value, label: VISIBILITY[value].label })),
+          ]}
+        />
+        <FilterSelect
           label="Group"
           value={groupBy}
           onChange={(value) => {
@@ -837,6 +886,18 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           </div>
         )}
         <div className="ml-auto flex items-center gap-3">
+          {selected.size > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<Button variant="secondary" size="sm" />}>Seen by</DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {(Object.keys(VISIBILITY) as Visibility[]).map((value) => (
+                  <DropdownMenuItem key={value} onClick={() => void setVisibility([...selected], value)}>
+                    {VISIBILITY[value].label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           {selected.size > 0 && (
             <button type="button" className="text-sm text-danger-text" onClick={() => void deleteSelected()}>
               Delete
@@ -951,6 +1012,23 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                 <FileNameField key={openFile.id} file={openFile} onRename={(name) => void renameFile(openFile.id, name)} />
               </DialogHeader>
               <div className="grid gap-4">
+                <div className="grid gap-1.5">
+                  <div className="flex gap-1" role="radiogroup" aria-label="Who can see it">
+                    {(Object.keys(VISIBILITY) as Visibility[]).map((value) => (
+                      <Button
+                        key={value}
+                        size="sm"
+                        role="radio"
+                        aria-checked={openFile.visibility === value}
+                        variant={openFile.visibility === value ? "default" : "secondary"}
+                        onClick={() => openFile.visibility !== value && void setVisibility([openFile.id], value)}
+                      >
+                        {VISIBILITY[value].label}
+                      </Button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">{VISIBILITY[openFile.visibility].hint}</p>
+                </div>
                 {fileKind(openFile) === "photo" ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={openFile.url} alt="" className="max-h-64 w-full rounded-md object-contain" />
@@ -983,19 +1061,31 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                         <span className="text-gray-500"> · {SCOPE_NAME[link.scope]}</span>
                         {link.context && <span className="text-gray-400"> · {link.context}</span>}
                       </span>
-                      <button
-                        type="button"
-                        className="shrink-0 text-xs text-gray-500"
-                        onClick={() =>
-                          void fetch("/api/media", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ action: "unlink", id: link.id }),
-                          }).then(() => reload())
-                        }
-                      >
-                        Remove
-                      </button>
+                      <span className="flex shrink-0 items-center gap-3">
+                        {link.scope !== "product" && !link.id.startsWith("owner:") && fileKind(openFile) === "photo" && (
+                          <button
+                            type="button"
+                            aria-pressed={Boolean(link.cover)}
+                            className={cn("shrink-0 text-xs", link.cover ? "font-medium text-gray-900" : "text-gray-500")}
+                            onClick={() => void setCover(link.id, !link.cover)}
+                          >
+                            {link.cover ? "Cover ✓" : "Make cover"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="shrink-0 text-xs text-gray-500"
+                          onClick={() =>
+                            void fetch("/api/media", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "unlink", id: link.id }),
+                            }).then(() => reload())
+                          }
+                        >
+                          Remove
+                        </button>
+                      </span>
                     </div>
                   ))}
                   {!openFile.connections.length && <p className="text-sm text-gray-500">Not linked yet. The file stays here until you connect it.</p>}

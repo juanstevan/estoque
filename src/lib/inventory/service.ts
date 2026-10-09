@@ -8,10 +8,9 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
-import { adoptImage, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
+import { deleteProductFiles, syncPhotos } from "@/lib/photos/service";
 import { mediaForProduct } from "@/lib/media/library";
 import { roundMeasure } from "@/lib/measure";
-import { groupPath, inheritedAssets, placeProduct } from "@/lib/photos/groups";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -282,9 +281,6 @@ export async function createProduct(input: {
     }
 
     return tx.product.findUniqueOrThrow({ where: { id: product.id } });
-  }).then(async (created) => {
-    await placeProduct(created.id);
-    return created;
   });
 }
 
@@ -337,7 +333,6 @@ export async function updateProduct(
     select: { name: true, code: true, sku: true, b2bPrice: true },
   });
   const product = await prisma.product.update({ where: { id }, data: { ...data, code } });
-  if ("category" in data || "model" in data || "type" in data) await placeProduct(id);
   if ("name" in data || "type" in data || "category" in data || "model" in data) await syncPhotos(id);
   const pushed = ["name", "code", "sku", "b2bPrice"] as const;
   if (!opts.fromQuickBooks && before && pushed.some((key) => before[key] !== product[key])) {
@@ -426,18 +421,10 @@ export async function getProductCard(id: string) {
     orderLines: [],
     photos: cover,
     shown,
-    inherited: [] as typeof cover,
-    groupPath: [] as { id: string; name: string }[],
   };
 }
 
 export async function getProductDetail(id: string) {
-  const bare = await prisma.product.findUnique({
-    where: { id },
-    select: { imageUrl: true, groupId: true, _count: { select: { photos: true } } },
-  });
-  // A grouped product's imageUrl mirrors the group cover; adopting it would duplicate that file.
-  if (bare && !bare.groupId && !bare._count.photos) await adoptImage(id, bare.imageUrl);
   const [product, users] = await Promise.all([
     prisma.product.findUnique({
       where: { id },
@@ -466,15 +453,9 @@ export async function getProductDetail(id: string) {
     names.set(u.id, u.name);
     names.set(u.username, u.name);
   }
-  const [groupPathList, inherited, shown] = await Promise.all([
-    groupPath(product.groupId),
-    inheritedAssets(product.groupId),
-    mediaForProduct(product),
-  ]);
+  const shown = await mediaForProduct(product);
   return {
     ...product,
-    groupPath: groupPathList,
-    inherited,
     shown,
     transactions: product.transactions.map((t) => ({
       ...t,

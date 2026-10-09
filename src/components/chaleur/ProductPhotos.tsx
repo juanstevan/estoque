@@ -293,11 +293,11 @@ export async function downloadAs(url: string, fileName: string) {
  * Copies the read-only photo link (one product, or all when productId is null).
  * The ClipboardItem takes the pending fetch so Safari keeps the click's permission.
  */
-export async function copyShareLink(productId: string | null, groupId: string | null = null) {
+export async function copyShareLink(productId: string | null) {
   const link = fetch("/api/photos/share", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ productId, groupId }),
+    body: JSON.stringify({ productId }),
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error ?? "Couldn't create the link");
@@ -317,13 +317,11 @@ export async function copyShareLink(productId: string | null, groupId: string | 
 
 export function ShareButton({
   productId,
-  groupId = null,
   label = "Copy share link",
   onError,
   className,
 }: {
   productId: string | null;
-  groupId?: string | null;
   label?: string;
   onError: (message: string) => void;
   className?: string;
@@ -340,7 +338,7 @@ export function ShareButton({
       size="sm"
       className={className}
       onClick={() =>
-        copyShareLink(productId, groupId)
+        copyShareLink(productId)
           .then(() => setCopied(true))
           .catch((e) => onError(e instanceof Error ? e.message : "Couldn't copy the link"))
       }

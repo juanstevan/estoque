@@ -118,8 +118,6 @@ type Detail = ProductRow & {
   }>;
   photos: Photo[];
   photoStorage: PhotoStorage;
-  groupId?: string | null;
-  inherited?: Photo[];
   shown?: Array<Photo & { source: string; rank: number; name?: string }>;
 };
 
@@ -194,8 +192,6 @@ function blankDetail(): Detail {
     orderLines: [],
     photos: [],
     photoStorage: "blob",
-    groupId: null,
-    inherited: [],
   };
 }
 
