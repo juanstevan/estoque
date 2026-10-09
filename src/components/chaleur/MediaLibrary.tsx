@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { type PhotoStorage } from "@/components/chaleur/ProductPhotos";
+import { downloadAs, type PhotoStorage } from "@/components/chaleur/ProductPhotos";
 import { FILE_MAX_BYTES, PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,9 @@ type FileRow = {
   url: string;
   thumbUrl: string;
   name: string;
+  originalName: string;
+  tag: string;
+  fileName: string;
   kind: string;
   contentType: string;
   size: number;
@@ -67,9 +70,9 @@ const KIND_META: Record<Kind, { label: string; accent: string; badge: string; ic
   other: { label: "File", accent: "border-l-gray-500", badge: "bg-gray-500/15 text-gray-700", icon: File },
 };
 
-function fileKind(file: { kind: string; contentType: string; name: string }): Kind {
+function fileKind(file: { kind: string; contentType: string; name: string; originalName?: string }): Kind {
   const type = file.contentType.toLowerCase();
-  const name = file.name.toLowerCase();
+  const name = (file.originalName || file.name).toLowerCase();
   if (file.kind !== "file" && (type.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif)$/.test(name))) return "photo";
   if (type === "application/pdf" || name.endsWith(".pdf")) return "pdf";
   if (type.startsWith("video/") || /\.(mp4|mov|webm)$/.test(name)) return "video";
@@ -374,6 +377,17 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
       renameLock.current = false;
       setRenaming(null);
     }
+  }
+
+  async function renameFile(id: string, name: string) {
+    setFiles((current) => current.map((file) => (file.id === id ? { ...file, tag: name, name: name || file.originalName || "File" } : file)));
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rename-file", id, name }),
+    });
+    if (!res.ok) setError((await res.json().catch(() => ({}))).error ?? "Couldn't rename the file");
+    await reload();
   }
 
   async function reload() {
@@ -932,8 +946,9 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           {openFile && (
             <>
-              <DialogHeader>
-                <DialogTitle className="pr-6 break-all">{openFile.name}</DialogTitle>
+              <DialogHeader className="pr-6">
+                <DialogTitle className="sr-only">{openFile.name}</DialogTitle>
+                <FileNameField key={openFile.id} file={openFile} onRename={(name) => void renameFile(openFile.id, name)} />
               </DialogHeader>
               <div className="grid gap-4">
                 {fileKind(openFile) === "photo" ? (
@@ -955,7 +970,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                   <Button variant="secondary" size="sm" nativeButton={false} render={<a href={openFile.url} target="_blank" rel="noreferrer" />}>
                     Open
                   </Button>
-                  <Button variant="secondary" size="sm" nativeButton={false} render={<a href={openFile.url} download />}>
+                  <Button variant="secondary" size="sm" onClick={() => void downloadAs(openFile.url, openFile.fileName)}>
                     Download
                   </Button>
                 </div>
@@ -1001,6 +1016,45 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** The file's own name, edited in place like the old photo tiles. Downloads put the product first. */
+function FileNameField({ file, onRename }: { file: FileRow; onRename: (name: string) => void }) {
+  const [draft, setDraft] = useState(file.tag);
+  const cancelled = useRef(false);
+  const commit = () => {
+    const name = draft.trim();
+    if (name !== file.tag) onRename(name);
+  };
+  return (
+    <div className="grid gap-1">
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (cancelled.current) cancelled.current = false;
+          else commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setDraft(file.tag);
+            cancelled.current = true;
+            e.currentTarget.blur();
+          }
+        }}
+        placeholder={file.originalName || "Name it, e.g. front"}
+        aria-label="File name"
+        maxLength={80}
+        style={{ boxShadow: "none" }}
+        className="h-8 w-full min-w-0 rounded-md border border-transparent bg-transparent px-1.5 -mx-1.5 text-lg font-semibold text-gray-900 outline-none placeholder:font-normal placeholder:text-gray-400 hover:bg-gray-100 focus:border-gray-400 focus:bg-surface"
+      />
+      <p className="text-xs break-all text-gray-500">
+        Downloads as <span className="font-mono">{file.fileName}</span>
+      </p>
     </div>
   );
 }

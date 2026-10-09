@@ -268,22 +268,25 @@ export function usePhotos({
     }
   }
 
-  async function download(photo: Photo, fileName: string) {
-    try {
-      const res = await fetch(photo.url);
-      if (!res.ok) throw new Error();
-      const href = URL.createObjectURL(await res.blob());
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = fileName;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(href), 1000);
-    } catch {
-      window.open(photo.url, "_blank", "noopener");
-    }
-  }
+  const download = (photo: Photo, fileName: string) => downloadAs(photo.url, fileName);
 
   return { add, retag, cover, remove, download };
+}
+
+/** Cross-origin <a download> ignores the name, so fetch the file and save it under ours. */
+export async function downloadAs(url: string, fileName: string) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error();
+    const href = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = fileName;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  } catch {
+    window.open(url, "_blank", "noopener");
+  }
 }
 
 /**

@@ -1,6 +1,6 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny } from "@/lib/guard";
-import { addLibraryFile, addLink, deleteLibraryFiles, listLibrary, removeConnection, renameScope } from "@/lib/media/library";
+import { addLibraryFile, addLink, deleteLibraryFiles, listLibrary, removeConnection, renameFile, renameScope } from "@/lib/media/library";
 
 export async function GET() {
   const denied = await deny(["media", "storage"], "view");
@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   if (denied) return denied;
   try {
     const body = await readJson<{
-      action?: "add" | "link" | "unlink" | "rename" | "delete";
+      action?: "add" | "link" | "unlink" | "rename" | "rename-file" | "delete";
       id?: string;
       ids?: string[];
       key?: string;
@@ -38,6 +38,7 @@ export async function POST(req: Request) {
     if (body.action === "link" && body.photoId && body.scope) {
       return jsonOk(await addLink({ ...body, photoId: body.photoId, scope: body.scope }));
     }
+    if (body.action === "rename-file" && body.id) return jsonOk(await renameFile(body.id, body.name ?? ""));
     if (body.action === "rename") {
       if (body.scope === "product") return jsonError("Rename a product from its card");
       if (!body.scope || !body.key || !body.name?.trim()) return jsonError("Enter a name");

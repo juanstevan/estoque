@@ -1,9 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { composeName, splitName } from "@/lib/photos/name";
+import { composeName, groupBase, mediaFileNames, photoBase, splitName } from "@/lib/photos/name";
 import { placeProduct } from "@/lib/photos/groups";
 import { pushQuickBooksItem } from "@/lib/quickbooks/qbo";
-import { allGroups, pathOf } from "@/lib/photos/service";
+import { allGroups, pathOf, syncGroup, syncPhotos } from "@/lib/photos/service";
 
 const COLORS = ["#e11d48", "#ea580c", "#ca8a04", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#db2777", "#475569", "#b45309"];
 
@@ -149,7 +149,7 @@ function shown(photo: PhotoRow, scope: Scope): ShownFile {
     id: photo.id,
     url: photo.url,
     thumbUrl: photo.thumbUrl || photo.url,
-    name: photo.originalName || photo.tag || "File",
+    name: photo.tag || photo.originalName || "File",
     kind: photo.kind,
     contentType: photo.contentType,
     source: scope.source,
@@ -206,12 +206,45 @@ export async function mediaForProduct(product: {
   return [...best.values()].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 }
 
+type Connected = { scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string };
+const CONTEXT_ORDER = ["product", "family", "category", "brand", "tag"] as const;
+
+/**
+ * The name a download (or an AI tool) gets: product context + the file's own name, e.g.
+ * grill_legend_5_liquid_propane_front.jpg. A file kept by a product or folder already has it
+ * stored (syncPhotos/syncGroup keep it current). A linked one takes its closest connection.
+ */
+function downloadName(
+  photo: { fileName: string; productId: string | null; groupId: string | null; tag: string; kind: string; contentType: string; originalName: string; product?: { name: string; type: string | null } | null; links: { productId: string | null; product?: { name: string; type: string | null } | null }[] },
+  connections: Connected[],
+  groups: Awaited<ReturnType<typeof allGroups>>,
+) {
+  if (photo.fileName && (photo.productId || photo.groupId)) return photo.fileName;
+  const closest = CONTEXT_ORDER.flatMap((scope) => connections.filter((c) => c.scope === scope))[0];
+  let base = "";
+  if (closest?.scope === "product") {
+    const product = photo.productId === closest.key ? photo.product : photo.links.find((l) => l.productId === closest.key)?.product;
+    base = product ? photoBase(product) : "";
+  } else if (closest?.scope === "family") base = groupBase(closest.key.split("\0"));
+  else if (closest) base = groupBase([closest.name]);
+  else if (photo.groupId) base = groupBase(pathOf(groups, photo.groupId).map((g) => g.name));
+  return mediaFileNames(base, [photo])[0]!.replace(/^_/, "");
+}
+
+/** Renames one file. The name shows in the app; downloads get it after the product context. */
+export async function renameFile(id: string, raw: string) {
+  const photo = await prisma.productPhoto.update({ where: { id }, data: { tag: raw.trim().slice(0, 80) } });
+  if (photo.productId) await syncPhotos(photo.productId);
+  else if (photo.groupId) await syncGroup(photo.groupId);
+  return photo;
+}
+
 export async function listLibrary() {
   const [photos, groups, tags] = await Promise.all([
     prisma.productPhoto.findMany({
       include: {
-        product: { select: { name: true } },
-        links: { include: { tag: { select: { name: true } }, product: { select: { name: true } } } },
+        product: { select: { name: true, type: true } },
+        links: { include: { tag: { select: { name: true } }, product: { select: { name: true, type: true } } } },
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -244,7 +277,10 @@ export async function listLibrary() {
         id: photo.id,
         url: photo.url,
         thumbUrl: photo.thumbUrl || photo.url,
-        name: photo.originalName || photo.tag || "File",
+        name: photo.tag || photo.originalName || "File",
+        originalName: photo.originalName,
+        tag: photo.tag,
+        fileName: downloadName(photo, connections, groups),
         kind: photo.kind,
         contentType: photo.contentType,
         size: photo.size,
