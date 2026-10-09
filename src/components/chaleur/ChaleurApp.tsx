@@ -173,7 +173,7 @@ export function ChaleurApp({ me }: { me: Me }) {
             onReload={() => void load()}
           />
         )}
-        {tab === "media" && <MediaLibrary products={products} onChanged={() => void load()} />}
+        {tab === "media" && <MediaLibrary products={products} onChanged={load} />}
         {tab === "imports" && (
           <ImportsTab
             imports={imports}

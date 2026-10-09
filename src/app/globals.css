@@ -315,3 +315,32 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Media catalog: named blocks morph between the grid and the side strips; the rest of the page stays put. */
+::view-transition {
+  pointer-events: none;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-group(.mc-morph) {
+  animation-duration: 300ms;
+  animation-timing-function: var(--ease-emphasis);
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+}
+
+/* Scrolls without showing a bar (the Media catalog keeps its strips and panels quiet). */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

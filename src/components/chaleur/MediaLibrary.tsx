@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { downloadAs, type PhotoStorage } from "@/components/chaleur/ProductPhotos";
+import { MediaCatalog } from "@/components/chaleur/MediaCatalog";
 import { FILE_MAX_BYTES, PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import { cn } from "@/lib/utils";
@@ -25,7 +26,7 @@ type Scope = "brand" | "category" | "family" | "tag" | "product";
 type Kind = "photo" | "pdf" | "document" | "video" | "other";
 type Connection = { id: string; scope: Scope; key: string; name: string; context?: string; label: string; cover?: boolean };
 type Visibility = "internal" | "partners" | "public";
-type FileRow = {
+export type FileRow = {
   id: string;
   url: string;
   thumbUrl: string;
@@ -40,6 +41,16 @@ type FileRow = {
   connections: Connection[];
 };
 type Tag = { id: string; name: string; color: string };
+/** Where a file gets linked: the same scopes the Files view connects to. */
+export type LinkTarget = {
+  scope: Scope;
+  productId?: string;
+  tagId?: string;
+  brand?: string;
+  category?: string;
+  family?: string;
+};
+const MODE_KEY = "chaleur.media.mode";
 type Suggestion = { scope: Scope; key: string; name: string; extra?: string };
 type GroupBy = "none" | Scope | "type";
 type SavedView = {
@@ -247,7 +258,7 @@ function FilterSelect({
   );
 }
 
-export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; onChanged?: () => void }) {
+export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; onChanged?: () => void | Promise<void> }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const renameLock = useRef(false);
   const [files, setFiles] = useState<FileRow[]>([]);
@@ -264,6 +275,18 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
   const [folders, setFolders] = useState(false);
   const [filtersHidden, setFiltersHidden] = useState(false);
+  const [mode, setModeState] = useState<"catalog" | "files">("catalog");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(MODE_KEY) === "files") setModeState("files");
+    } catch {}
+  }, []);
+  function setMode(next: "catalog" | "files") {
+    setModeState(next);
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {}
+  }
   const [folderKey, setFolderKey] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -533,7 +556,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
     if (folderKey && !groups.some((group) => group.key === folderKey)) setFolderKey(null);
   }, [groups, folderKey]);
 
-  async function uploadFiles(list: File[]) {
+  async function uploadFiles(list: File[], target?: LinkTarget) {
     setError(null);
     try {
       for (const file of list) {
@@ -555,6 +578,14 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error ?? "Couldn't save the file");
+        if (target) {
+          const linked = await fetch("/api/media", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "link", photoId: data.id, ...target }),
+          });
+          if (!linked.ok) throw new Error((await linked.json().catch(() => ({}))).error ?? "Saved, but couldn't link it");
+        }
       }
       await reload();
     } catch (e) {
@@ -699,6 +730,8 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           ) : (
             <h1 className="text-lg font-medium text-gray-900">Media</h1>
           )}
+          {mode === "files" && (
+            <>
           <DropdownMenu>
             <DropdownMenuTrigger
               className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
@@ -739,8 +772,29 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           >
             {filtersHidden ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
           </button>
+            </>
+          )}
+        </div>
+        <div className="inline-flex shrink-0 rounded-md bg-sunken p-0.5" role="radiogroup" aria-label="Media view">
+          {(["catalog", "files"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={mode === value}
+              onClick={() => setMode(value)}
+              className={cn(
+                "h-7 rounded-[5px] px-3 text-xs font-medium transition-colors",
+                mode === value ? "bg-surface text-gray-900 shadow-xs" : "text-gray-600 hover:text-gray-900",
+              )}
+            >
+              {value === "catalog" ? "Catalog" : "Files"}
+            </button>
+          ))}
         </div>
       </div>
+      {mode === "files" && (
+        <>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex h-control-md items-center">
           <Checkbox
@@ -925,7 +979,10 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           <button type="button" className="ml-2 underline" onClick={() => { setPicked(null); setQuery(""); }}>Clear</button>
         </p>
       )}
+        </>
+      )}
       {error && <p className="text-sm text-danger-text">{error}</p>}
+      {mode === "files" ? (
       <div className="min-h-0 flex-1 overflow-y-auto">
         {folders && !openFolder && (
           <div className="grid content-start gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
@@ -1003,6 +1060,18 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
         {!loaded && <p className="text-sm text-gray-500">Loading media…</p>}
         {loaded && !visible.length && <p className="text-sm text-gray-500">No files match. Drop photos and files here to upload.</p>}
       </div>
+      ) : (
+        <MediaCatalog
+          products={products}
+          files={files}
+          onOpenFile={setOpenId}
+          onAddFiles={uploadFiles}
+          onChanged={async () => {
+            await Promise.all([onChanged?.(), reload()]);
+          }}
+          onError={setError}
+        />
+      )}
       <Dialog open={openFile != null} onOpenChange={(next) => !next && setOpenId(null)}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           {openFile && (

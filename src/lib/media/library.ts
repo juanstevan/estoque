@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { composeName, groupBase, mediaFileNames, photoBase, splitName } from "@/lib/photos/name";
 import { pushQuickBooksItem } from "@/lib/quickbooks/qbo";
 import { syncPhotos } from "@/lib/photos/service";
+import { VISIBILITY, type Visibility } from "@/lib/catalog/fields";
 
 const COLORS = ["#e11d48", "#ea580c", "#ca8a04", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#db2777", "#475569", "#b45309"];
 
@@ -55,7 +56,14 @@ function linkConnection(link: {
     };
   }
   if (link.category) {
-    return { scope: "category" as const, key: link.category, name: link.category, label: `${link.category} · Category` };
+    // A category link with a brand belongs to that brand's chapter; without one it applies in every brand.
+    return {
+      scope: "category" as const,
+      key: link.brand ? `${link.brand}\0${link.category}` : link.category,
+      name: link.category,
+      ...(link.brand ? { context: link.brand } : {}),
+      label: `${link.category} · Category`,
+    };
   }
   if (link.brand) {
     return { scope: "brand" as const, key: link.brand, name: link.brand, label: `${link.brand} · Brand` };
@@ -148,6 +156,9 @@ export async function mediaForProduct(product: {
             ? [{ brand: product.type, category: product.category, family: product.model }]
             : []),
           ...(product.category ? [{ category: product.category, family: null, brand: null, productId: null, tagId: null }] : []),
+          ...(product.type && product.category
+            ? [{ brand: product.type, category: product.category, family: null, productId: null, tagId: null }]
+            : []),
           ...(product.type ? [{ brand: product.type, category: null, family: null, productId: null, tagId: null }] : []),
         ],
       },
@@ -182,13 +193,12 @@ function downloadName(
   if (closest?.scope === "product") {
     const product = photo.productId === closest.key ? photo.product : photo.links.find((l) => l.productId === closest.key)?.product;
     base = product ? photoBase(product) : "";
-  } else if (closest?.scope === "family") base = groupBase(closest.key.split("\0"));
+  } else if (closest?.scope === "family" || closest?.scope === "category") base = groupBase(closest.key.split("\0"));
   else if (closest) base = groupBase([closest.name]);
   return mediaFileNames(base, [photo])[0]!.replace(/^_/, "");
 }
 
-export const VISIBILITY = ["internal", "partners", "public"] as const;
-export type Visibility = (typeof VISIBILITY)[number];
+export { VISIBILITY, type Visibility } from "@/lib/catalog/fields";
 
 /** Internal: only the app. Partners: partner links. Public: catalog and share links. */
 export async function setVisibility(ids: string[], visibility: string) {
@@ -198,13 +208,12 @@ export async function setVisibility(ids: string[], visibility: string) {
   await prisma.productPhoto.updateMany({ where: { id: { in: unique } }, data: { visibility } });
 }
 
-/** One cover per brand, category, family or tag: setting one clears the one before. */
+/** One cover per brand, category, family, tag or product: setting one clears the one before. */
 export async function setCover(linkId: string, on: boolean) {
   const link = await prisma.mediaLink.findUnique({ where: { id: linkId }, include: { photo: { select: { kind: true, contentType: true } } } });
   if (!link) throw new Error("Connection not found");
-  if (link.productId) throw new Error("Covers are for a brand, category, family or tag");
   if (link.photo.kind === "file" || !link.photo.contentType.startsWith("image/")) throw new Error("A cover must be a photo");
-  const same = { productId: null, tagId: link.tagId, brand: link.brand, category: link.category, family: link.family, role: "cover" };
+  const same = { productId: link.productId, tagId: link.tagId, brand: link.brand, category: link.category, family: link.family, role: "cover" };
   await prisma.$transaction([
     ...(on ? [prisma.mediaLink.updateMany({ where: same, data: { role: null } })] : []),
     prisma.mediaLink.update({ where: { id: linkId }, data: { role: on ? "cover" : null } }),
@@ -299,7 +308,7 @@ export async function addLink(input: {
     photoId: input.photoId,
     productId: input.scope === "product" ? input.productId || null : null,
     tagId: input.scope === "tag" ? input.tagId || null : null,
-    brand: input.scope === "brand" || input.scope === "family" ? input.brand || null : null,
+    brand: input.scope === "brand" || input.scope === "family" || input.scope === "category" ? input.brand || null : null,
     category: input.scope === "category" || input.scope === "family" ? input.category || null : null,
     family: input.scope === "family" ? input.family || null : null,
   };
@@ -342,12 +351,16 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
     return { qbFailed: 0 };
   }
 
+  // A category inside a brand ("brand\0category") renames only that brand's; a bare name renames it everywhere.
+  const [inBrand, categoryName] = scope === "category" && key.includes("\0") ? key.split("\0") : [null, key];
   const products = await prisma.product.findMany({
     where:
       scope === "brand"
         ? { type: key }
         : scope === "category"
-          ? { category: key }
+          ? inBrand
+            ? { type: inBrand, category: categoryName }
+            : { category: key }
           : {
               type: key.split("\0")[0],
               category: key.split("\0")[1],
@@ -369,7 +382,10 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
         await tx.product.update({ where: { id: product.id }, data: { category: name, name: next } });
         if (next !== product.name) renamed.push({ ...product, name: next, category: name });
       }
-      await tx.mediaLink.updateMany({ where: { category: key }, data: { category: name } });
+      await tx.mediaLink.updateMany({
+        where: inBrand ? { brand: inBrand, category: categoryName } : { category: key },
+        data: { category: name },
+      });
       return;
     }
     const [brand, category, family] = key.split("\0");

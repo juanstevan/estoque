@@ -64,7 +64,9 @@ export type ProductRow = {
   category?: string | null;
   model?: string | null;
   tagId?: string | null;
-  tag?: { id: string; name: string; color: string } | null;
+  tag?: { id: string; name: string; color: string; catalogFields?: string } | null;
+  /** Catalog visibility JSON: the variant row, and the model fields when there's no Tag. */
+  catalogFields?: string;
   hsCode: string | null;
   physicalQty: number;
   availableQty: number;

@@ -168,6 +168,8 @@ model Product {
   qbUpdatedAt        DateTime?
   /// QuickBooks name, SKU and price as last seen or pushed (JSON)
   qbSeen             String?
+  /// Catalog visibility: the variant row, and the model fields when the product has no Tag (JSON)
+  catalogFields      String   @default("{}")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -243,6 +245,8 @@ model Tag {
   id       String      @id @default(cuid())
   name     String      @unique
   color    String
+  /// Who sees each catalog field of this model, JSON { field: internal | partners | public }
+  catalogFields String @default("{}")
   products Product[]
   links    MediaLink[]
 }
@@ -588,4 +592,15 @@ model Sale {
 
   @@unique([invoice, sku])
   @@index([date])
+}
+
+/// A shareable catalog for one brand. The audience decides which fields and files it shows.
+model CatalogLink {
+  token     String    @id
+  brand     String
+  audience  String    @default("partners")
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  @@index([brand, audience])
 }

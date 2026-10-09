@@ -375,7 +375,7 @@ export async function deleteProduct(id: string) {
   await dropFiles();
 }
 
-const productListInclude = { tag: { select: { id: true, name: true, color: true } } } as const;
+const productListInclude = { tag: { select: { id: true, name: true, color: true, catalogFields: true } } } as const;
 
 export async function listProducts(search?: string) {
   const q = search?.trim();
