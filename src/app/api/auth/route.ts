@@ -13,7 +13,6 @@ export async function POST(req: Request) {
     name?: string;
     username?: string;
     password?: string;
-    currentPassword?: string;
     remember?: boolean;
   }>(req).catch(() => ({}) as Record<string, never>);
   try {

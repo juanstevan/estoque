@@ -122,10 +122,10 @@ export async function currentUser(): Promise<Me | null> {
   return toMe(session.user);
 }
 
-/** Name, username, or password (the current one is required to change it). */
+/** Name, username, or password. Being signed in is enough to set a new password. */
 export async function updateProfile(
   id: string,
-  input: { name?: string; username?: string; password?: string; currentPassword?: string },
+  input: { name?: string; username?: string; password?: string },
 ) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id } });
   const name = input.name?.trim();
@@ -136,7 +136,6 @@ export async function updateProfile(
     throw new Error(`${username} is already taken`);
   }
   if (input.password !== undefined) {
-    if (!(await checkPassword(input.currentPassword ?? "", user.passwordHash))) throw new Error("The current password is wrong");
     const problem = passwordProblem(input.password);
     if (problem) throw new Error(problem);
   }

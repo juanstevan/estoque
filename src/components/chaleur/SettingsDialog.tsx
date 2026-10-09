@@ -515,8 +515,8 @@ function Reasons({ value, onSave }: { value: string[]; onSave: (next: string[]) 
 
 function Profile({ onNote }: { onNote: (note: Note) => void }) {
   const [me, setMe] = useState<{ name: string; username: string } | null>(null);
-  const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
 
   useEffect(() => {
     void fetch("/api/auth")
@@ -575,28 +575,32 @@ function Profile({ onNote }: { onNote: (note: Note) => void }) {
         <Input
           type="password"
           className="w-36"
-          aria-label="Current password"
-          autoComplete="current-password"
-          placeholder="Current"
-          value={current}
-          onChange={(e) => setCurrent(e.target.value)}
-        />
-        <Input
-          type="password"
-          className="w-36"
           aria-label="New password"
           autoComplete="new-password"
           placeholder="New"
           value={next}
           onChange={(e) => setNext(e.target.value)}
         />
+        <Input
+          type="password"
+          className="w-36"
+          aria-label="Repeat new password"
+          autoComplete="new-password"
+          placeholder="Repeat"
+          value={again}
+          onChange={(e) => setAgain(e.target.value)}
+        />
         <Button
           variant="secondary"
-          disabled={!current || !next}
+          disabled={!next || !again}
           onClick={async () => {
-            if (await saveProfile({ password: next, currentPassword: current })) {
-              setCurrent("");
+            if (next !== again) {
+              onNote({ error: true, text: "The two passwords don't match" });
+              return;
+            }
+            if (await saveProfile({ password: next })) {
               setNext("");
+              setAgain("");
             }
           }}
         >
