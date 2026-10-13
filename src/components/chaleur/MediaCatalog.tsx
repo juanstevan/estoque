@@ -194,7 +194,7 @@ export function MediaCatalog({
       .catch((e) => onError(e instanceof Error ? e.message : "Couldn't copy the link"));
   }
 
-  if (!tree.length) return <p className="text-sm text-gray-500">No products yet.</p>;
+  if (!tree.length) return <p className="text-sm text-gray-500">No Tags yet. Give products a Tag in their product card.</p>;
 
   const modelWindow = (
     <ModelWindow

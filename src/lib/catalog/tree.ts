@@ -37,8 +37,9 @@ export function modelKey(product: TreeProduct) {
   return product.tagId ? `tag:${product.tagId}` : `product:${product.id}`;
 }
 
+/** The catalog is made of Tags: products without one stay out, and so do levels left empty. */
 export function buildTree<P extends TreeProduct>(products: P[]): Brand<P>[] {
-  const brands = groupBy(products, (p) => text(p.type)).map(([brand, inBrand]) => ({
+  const brands = groupBy(products.filter((p) => p.tagId), (p) => text(p.type)).map(([brand, inBrand]) => ({
     key: brand,
     name: brand,
     products: inBrand,
