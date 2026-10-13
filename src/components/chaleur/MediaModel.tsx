@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { ProductRow } from "@/components/chaleur/ProductDialog";
+import { Eyebrow, SpecRow, WeightRow, type ProductRow } from "@/components/chaleur/ProductDialog";
 import type { FileRow, LinkTarget } from "@/components/chaleur/MediaLibrary";
 import { downloadAs } from "@/components/chaleur/ProductPhotos";
 import {
@@ -91,6 +91,29 @@ async function post<T = unknown>(url: string, body: object): Promise<T> {
 
 type Context = { brand: string; category: string; family: string };
 
+type SpecKey = "width" | "length" | "height" | "cutoutWidth" | "cutoutLength" | "cutoutHeight" | "weight";
+const PRODUCT_KEYS: [SpecKey, SpecKey, SpecKey] = ["width", "length", "height"];
+const CUTOUT_KEYS: [SpecKey, SpecKey, SpecKey] = ["cutoutWidth", "cutoutLength", "cutoutHeight"];
+/** The product card's slot names, to the value each one edits. */
+const SPEC_KEY: Record<string, SpecKey> = {
+  "dim-product-W": "width",
+  "dim-product-D": "length",
+  "dim-product-H": "height",
+  "dim-cutout-W": "cutoutWidth",
+  "dim-cutout-D": "cutoutLength",
+  "dim-cutout-H": "cutoutHeight",
+  weight: "weight",
+};
+
+function Varies({ show, children }: { show: boolean; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2">
+      {children}
+      {show && <span className="text-2xs text-warning-text">Varies</span>}
+    </div>
+  );
+}
+
 export function ModelWindow({
   model,
   context,
@@ -102,6 +125,7 @@ export function ModelWindow({
   onChanged,
   onError,
   onModelKey,
+  onOpenProduct,
 }: {
   model: Model<ProductRow> | null;
   context: Context | null;
@@ -113,10 +137,11 @@ export function ModelWindow({
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
   onModelKey: (key: string) => void;
+  onOpenProduct: (id: string) => void;
 }) {
   return (
     <Dialog open={model != null} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="flex h-[72dvh] w-[min(980px,94vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
+      <DialogContent className="flex h-[72dvh] w-[min(1180px,96vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
         {model && (
           <Editor
             key={model.key}
@@ -129,6 +154,7 @@ export function ModelWindow({
             onChanged={onChanged}
             onError={onError}
             onModelKey={onModelKey}
+            onOpenProduct={onOpenProduct}
           />
         )}
       </DialogContent>
@@ -146,6 +172,7 @@ function Editor({
   onChanged,
   onError,
   onModelKey,
+  onOpenProduct,
 }: {
   model: Model<ProductRow>;
   context: Context | null;
@@ -156,11 +183,15 @@ function Editor({
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
   onModelKey: (key: string) => void;
+  onOpenProduct: (id: string) => void;
 }) {
   const [audience, setAudience] = useState<Visibility>("internal");
   const [fieldOverride, setFieldOverride] = useState<Partial<Record<string, Visibility>>>({});
   const [photoIndex, setPhotoIndex] = useState(0);
   const [viewing, setViewing] = useState<string | null>(null);
+  // One spec slot open at a time, like the product card. Closing it saves to every variant.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Partial<Record<SpecKey, number | null>>>({});
   const variants = model.products;
   const first = variants[0]!;
   const owner = model.tagId ? { tagId: model.tagId } : { productId: first.id };
@@ -211,10 +242,6 @@ function Editor({
   }
   const toggleFile = (file: FileRow) =>
     run(() => post("/api/media", { action: "visibility", ids: [file.id], visibility: nextVisibility(file.visibility) }));
-  const toggleVariant = (p: ProductRow) =>
-    run(() =>
-      post("/api/catalog", { action: "field", productId: p.id, field: "variant", visibility: nextVisibility(fieldVisibility(p.catalogFields, "variant")) }),
-    );
 
   async function saveShared(data: Record<string, number | null>) {
     await run(async () => {
@@ -267,12 +294,35 @@ function Editor({
     return values.every((v) => v === values[0]) ? { value: values[0] } : null;
   };
 
+  const same = (key: SpecKey) => variants.every((p) => p[key] === first[key]);
+  const spec = (key: SpecKey) => (key in draft ? (draft[key] ?? null) : same(key) ? first[key] : null);
+  const varies = (keys: SpecKey[]) => keys.some((key) => !(key in draft) && !same(key));
+  const specs = (keys: [SpecKey, SpecKey, SpecKey]) => keys.map(spec) as [number | null, number | null, number | null];
+  function typeSpec(keys: SpecKey[], values: (number | null)[]) {
+    const key = editing ? SPEC_KEY[editing] : undefined;
+    if (key && keys.includes(key)) setDraft((d) => ({ ...d, [key]: values[keys.indexOf(key)] ?? null }));
+  }
+  function closeSpec() {
+    const key = editing ? SPEC_KEY[editing] : undefined;
+    setEditing(null);
+    if (!key || !(key in draft)) return;
+    const value = draft[key] ?? null;
+    const forget = () =>
+      setDraft((d) => {
+        const next = { ...d };
+        delete next[key];
+        return next;
+      });
+    if (same(key) && first[key] === value) return forget();
+    void saveShared({ [key]: value }).then(forget);
+  }
+
   return (
     <>
       <DialogTitle className="sr-only">{model.name}</DialogTitle>
-      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_260px]">
-        <div className="no-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto p-5">
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="no-scrollbar flex min-h-0 flex-col gap-6 overflow-y-auto p-6">
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
             <Gallery
               photo={photo}
               count={photos.length}
@@ -282,7 +332,6 @@ function Editor({
               onRemove={() => photo && void unlink(photo.linkId)}
               onMain={() => photo && makeMain(photo.file.id)}
               onOpen={() => photo && setViewing(photo.file.id)}
-              onRename={(name) => (photo ? renamePhoto(photo.file.id, name) : Promise.resolve())}
             />
             <div className="flex min-w-0 flex-col gap-5">
               <div>
@@ -324,27 +373,48 @@ function Editor({
                   />
                 </div>
               </Item>
-              <div className="grid gap-3">
-                <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Specs</p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Item value={field("dimensions")} dimmed={dim(field("dimensions"))} onToggle={() => toggleField("dimensions")} label="Dimensions (W × D × H)">
-                    <Triple
-                      values={[variants.map((p) => p.width), variants.map((p) => p.length), variants.map((p) => p.height)]}
-                      labels={["Width", "Depth", "Height"]}
-                      onSave={(axis, value) => saveShared({ [["width", "length", "height"][axis]!]: value })}
+              {/* The product card's Specs rows; a value the variants don't share shows "—" and Varies. */}
+              <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
+                <Eyebrow>Specs</Eyebrow>
+                <Item value={field("dimensions")} dimmed={dim(field("dimensions"))} onToggle={() => toggleField("dimensions")}>
+                  <Varies show={varies(PRODUCT_KEYS)}>
+                    <SpecRow
+                      label="Product"
+                      values={specs(PRODUCT_KEYS)}
+                      editingField={editing}
+                      fieldPrefix="dim-product"
+                      onOpen={setEditing}
+                      onDone={closeSpec}
+                      onChange={(values) => typeSpec(PRODUCT_KEYS, values)}
+                      isCreate={false}
                     />
-                  </Item>
-                  <Item value={field("cutout")} dimmed={dim(field("cutout"))} onToggle={() => toggleField("cutout")} label="Cut-out (W × D × H)">
-                    <Triple
-                      values={[variants.map((p) => p.cutoutWidth), variants.map((p) => p.cutoutLength), variants.map((p) => p.cutoutHeight)]}
-                      labels={["Cut-out width", "Cut-out depth", "Cut-out height"]}
-                      onSave={(axis, value) => saveShared({ [["cutoutWidth", "cutoutLength", "cutoutHeight"][axis]!]: value })}
+                  </Varies>
+                </Item>
+                <Item value={field("cutout")} dimmed={dim(field("cutout"))} onToggle={() => toggleField("cutout")}>
+                  <Varies show={varies(CUTOUT_KEYS)}>
+                    <SpecRow
+                      label="Cut-Out"
+                      values={specs(CUTOUT_KEYS)}
+                      editingField={editing}
+                      fieldPrefix="dim-cutout"
+                      onOpen={setEditing}
+                      onDone={closeSpec}
+                      onChange={(values) => typeSpec(CUTOUT_KEYS, values)}
+                      isCreate={false}
                     />
-                  </Item>
-                  <Item value={field("weight")} dimmed={dim(field("weight"))} onToggle={() => toggleField("weight")} label="Weight">
-                    <NumberField values={variants.map((p) => p.weight)} label="Weight for every variant" className="w-24 text-sm" onSave={(value) => saveShared({ weight: value })} />
-                  </Item>
-                </div>
+                  </Varies>
+                </Item>
+                <Item value={field("weight")} dimmed={dim(field("weight"))} onToggle={() => toggleField("weight")}>
+                  <Varies show={varies(["weight"])}>
+                    <WeightRow
+                      value={spec("weight")}
+                      active={editing === "weight"}
+                      onActivate={() => setEditing("weight")}
+                      onDone={closeSpec}
+                      onChange={(value) => typeSpec(["weight"], [value])}
+                    />
+                  </Varies>
+                </Item>
               </div>
             </div>
           </div>
@@ -365,22 +435,20 @@ function Editor({
               key={p.id}
               product={p}
               price={shared((v) => v.b2bPrice)}
-              visibility={fieldVisibility(p.catalogFields, "variant")}
-              dimmed={dim(fieldVisibility(p.catalogFields, "variant"))}
               differs={{
                 dimensions: !shared((v) => `${v.width}|${v.length}|${v.height}`),
                 cutout: !shared((v) => `${v.cutoutWidth}|${v.cutoutLength}|${v.cutoutHeight}`),
                 weight: !shared((v) => v.weight),
               }}
               canRemove={Boolean(model.tagId)}
-              onToggle={() => void toggleVariant(p)}
+              onOpen={() => onOpenProduct(p.id)}
               onRemove={() => void removeProduct(p)}
             />
           ))}
           <ProductPicker products={products} current={variants} onPick={addProduct} />
         </aside>
       </div>
-      <Lightbox photos={photos} openId={viewing} onOpenId={setViewing} onArrange={arrange} />
+      <Lightbox photos={photos} openId={viewing} onOpenId={setViewing} onArrange={arrange} onRename={renamePhoto} />
     </>
   );
 }
@@ -502,32 +570,11 @@ function NumberField({
   );
 }
 
-function Triple({
-  values,
-  labels,
-  onSave,
-}: {
-  values: (number | null)[][];
-  labels: string[];
-  onSave: (axis: number, value: number | null) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1 text-sm">
-      {values.map((axis, i) => (
-        <span key={labels[i]} className="flex items-center gap-1">
-          {i > 0 && <span className="text-gray-400">×</span>}
-          <NumberField values={axis} label={`${labels[i]} for every variant`} className="w-14 text-sm" onSave={(value) => onSave(i, value)} />
-        </span>
-      ))}
-    </div>
-  );
-}
-
 type Placed = { file: FileRow; linkId: string; cover: boolean };
 
 /**
- * The model's photos, like the old product card. Everything is on hover: make main, add, remove,
- * download, and the name (click to rename). A click on the photo opens them large.
+ * The model's photos, like the old product card. The actions are on hover: make main, add,
+ * remove, download. A click on the photo opens them large, where the name can be changed.
  */
 function Gallery({
   photo,
@@ -538,7 +585,6 @@ function Gallery({
   onRemove,
   onMain,
   onOpen,
-  onRename,
 }: {
   photo: Placed | null;
   count: number;
@@ -548,7 +594,6 @@ function Gallery({
   onRemove: () => void;
   onMain: () => void;
   onOpen: () => void;
-  onRename: (name: string) => Promise<void>;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
@@ -594,7 +639,7 @@ function Gallery({
           <button type="button" aria-label="Next photo" onClick={() => onStep(1)} className="absolute top-1/2 right-2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-surface/90 text-gray-700 opacity-0 shadow-xs transition-opacity group-hover/item:opacity-100 focus-visible:opacity-100">
             <ChevronRight className="size-4" />
           </button>
-          <span className="pointer-events-none absolute right-2 bottom-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-600">
+          <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-600">
             {index + 1} / {count}
           </span>
         </>
@@ -616,15 +661,6 @@ function Gallery({
             <GalleryAction label="Download" onClick={() => void downloadAs(photo.file.url, photo.file.fileName)}>
               <Download className="size-3.5" />
             </GalleryAction>
-          </div>
-          <div className="absolute bottom-2 left-2 max-w-[calc(100%-4.5rem)] opacity-0 transition-opacity group-hover/item:opacity-100 focus-within:opacity-100">
-            <InlineText
-              key={photo.file.id}
-              value={photo.file.name}
-              label="Photo name"
-              onSave={onRename}
-              className="mx-0 max-w-full rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-700 ring-0 hover:bg-surface"
-            />
           </div>
           {index === 0 && count > 1 && (
             <span className="pointer-events-none absolute top-2 left-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs font-medium text-gray-700">Main</span>
@@ -654,17 +690,22 @@ function move(list: string[], from: string, to: string) {
   return next;
 }
 
-/** The photos large, Amazon style: thumbnails down the side. Drag a thumbnail to change the order; the first is the main one. */
+/**
+ * The photos large, Amazon style: thumbnails down the side. Drag a thumbnail to change the order;
+ * the first is the main one. The name above the photo changes on click.
+ */
 function Lightbox({
   photos,
   openId,
   onOpenId,
   onArrange,
+  onRename,
 }: {
   photos: Placed[];
   openId: string | null;
   onOpenId: (id: string | null) => void;
   onArrange: (ids: string[]) => Promise<void>;
+  onRename: (id: string, name: string) => Promise<void>;
 }) {
   // The order being dragged; it stays until the saved order comes back.
   const [order, setOrder] = useState<string[] | null>(null);
@@ -717,11 +758,24 @@ function Lightbox({
             );
           })}
         </div>
-        <div className="flex min-w-0 flex-1 items-center justify-center rounded-[14px] bg-sunken p-6">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
           {current && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={current.file.url} alt={current.file.name} className="max-h-full max-w-full object-contain" />
+            <div className="min-w-0 pr-8">
+              <InlineText
+                key={current.file.id}
+                value={current.file.name}
+                label="Photo name"
+                onSave={(name) => onRename(current.file.id, name)}
+                className="text-sm font-medium text-gray-900 ring-0"
+              />
+            </div>
           )}
+          <div className="flex min-h-0 flex-1 items-center justify-center rounded-[14px] bg-sunken p-6">
+            {current && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={current.file.url} alt={current.file.name} className="max-h-full max-w-full object-contain" />
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -872,70 +926,61 @@ function FileGrid({
 
 const measure = (value: number | null) => (value == null ? "—" : String(Number(value.toFixed(2))));
 
+/** One product in the model. A click opens its product card; values it doesn't share are flagged. */
 function VariantRow({
   product: p,
   price,
-  visibility,
-  dimmed,
   differs,
   canRemove,
-  onToggle,
+  onOpen,
   onRemove,
 }: {
   product: ProductRow;
   price: { value: number } | null;
-  visibility: Visibility;
-  dimmed: boolean;
   differs: { dimensions: boolean; cutout: boolean; weight: boolean };
   canRemove: boolean;
-  onToggle: () => void;
+  onOpen: () => void;
   onRemove: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const own = [
+  const flagged = [
     { label: "Dimensions", value: `${measure(p.width)} × ${measure(p.length)} × ${measure(p.height)}`, flag: differs.dimensions },
     { label: "Cut-out", value: `${measure(p.cutoutWidth)} × ${measure(p.cutoutLength)} × ${measure(p.cutoutHeight)}`, flag: differs.cutout },
     { label: "Weight", value: measure(p.weight), flag: differs.weight },
-  ];
+  ].filter((row) => row.flag);
   return (
-    <div className={cn("group/item rounded-[10px] bg-surface transition-opacity", dimmed && "opacity-40")}>
-      <div className="flex items-start gap-1 p-3 pb-2">
-        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="min-w-0 flex-1 text-left">
-          <span className="block text-sm font-medium text-gray-900">{p.name}</span>
-          <span className="block font-mono text-2xs text-gray-500">
-            ID {p.code} · {p.sku}
+    <div className="group/item relative rounded-[10px] bg-surface transition-colors hover:bg-gray-50">
+      <button type="button" onClick={onOpen} aria-label={`Open the product card for ${p.name}`} className="block w-full p-3 text-left">
+        <span className="block pr-5 text-sm font-medium text-gray-900">{p.name}</span>
+        <span className="block font-mono text-2xs text-gray-500">
+          ID {p.code} · {p.sku}
+        </span>
+        <span className="mt-2 flex items-center justify-between text-xs">
+          <span className={p.availableQty > 0 ? "text-gray-700" : "text-warning-text"}>
+            {p.availableQty > 0 ? `${formatQty(p.availableQty)} available` : "Out of stock"}
           </span>
+          <span className={cn("tabular-nums", price ? "text-gray-700" : "font-medium text-warning-text")}>
+            {p.b2bPrice > 0 ? formatMoney(p.b2bPrice) : "No price"}
+          </span>
+        </span>
+      </button>
+      {canRemove && (
+        <button
+          type="button"
+          aria-label={`Take ${p.name} out of this model`}
+          onClick={onRemove}
+          className="absolute top-2 right-2 inline-flex size-6 items-center justify-center rounded-md text-gray-500 opacity-0 transition-opacity group-hover/item:opacity-100 hover:bg-gray-100 hover:text-danger-text focus-visible:opacity-100"
+        >
+          <X className="size-3.5" />
         </button>
-        <EyeToggle value={visibility} onToggle={onToggle} />
-        {canRemove && (
-          <button
-            type="button"
-            aria-label={`Take ${p.name} out of this model`}
-            onClick={onRemove}
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-0 transition-opacity group-hover/item:opacity-100 hover:bg-gray-100 hover:text-danger-text focus-visible:opacity-100"
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
-      </div>
-      <div className="flex items-center justify-between px-3 pb-3 text-xs">
-        <span className={p.availableQty > 0 ? "text-gray-700" : "text-warning-text"}>
-          {p.availableQty > 0 ? `${formatQty(p.availableQty)} available` : "Out of stock"}
-        </span>
-        <span className={cn("tabular-nums", price ? "text-gray-700" : "font-medium text-warning-text")}>
-          {p.b2bPrice > 0 ? formatMoney(p.b2bPrice) : "No price"}
-        </span>
-      </div>
-      {(open || own.some((row) => row.flag)) && (
+      )}
+      {flagged.length > 0 && (
         <dl className="grid gap-1 border-t border-gray-100 px-3 py-2 text-2xs">
-          {own
-            .filter((row) => open || row.flag)
-            .map((row) => (
-              <div key={row.label} className="flex justify-between gap-2">
-                <dt className="text-gray-500">{row.label}</dt>
-                <dd className={cn("tabular-nums", row.flag ? "text-warning-text" : "text-gray-700")}>{row.value}</dd>
-              </div>
-            ))}
+          {flagged.map((row) => (
+            <div key={row.label} className="flex justify-between gap-2">
+              <dt className="text-gray-500">{row.label}</dt>
+              <dd className="tabular-nums text-warning-text">{row.value}</dd>
+            </div>
+          ))}
         </dl>
       )}
     </div>

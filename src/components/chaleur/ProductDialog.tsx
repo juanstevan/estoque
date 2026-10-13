@@ -65,7 +65,7 @@ export type ProductRow = {
   model?: string | null;
   tagId?: string | null;
   tag?: { id: string; name: string; color: string; catalogFields?: string } | null;
-  /** Catalog visibility JSON: the variant row, and the model fields when there's no Tag. */
+  /** Catalog visibility JSON for the model fields when there's no Tag. */
   catalogFields?: string;
   hsCode: string | null;
   physicalQty: number;
@@ -1072,37 +1072,13 @@ export function ProductDialog({
                           }
                           isCreate={isCreate}
                         />
-                        <div className="flex items-center gap-1.5">
-                          <FieldLabel className="shrink-0">Weight</FieldLabel>
-                          <EditSlot
-                            active={isOpen("weight")}
-                            onActivate={() => openField("weight")}
-                            onDone={closeField}
-                            className="font-mono text-xs tabular-nums"
-                            read={
-                              detail.weight === null ? (
-                                <Null />
-                              ) : (
-                                <span className="truncate">
-                                  {formatMeasure(detail.weight)}
-                                  <span className="text-gray-500">
-                                    {" kg · "}
-                                    {formatMeasure(detail.weight * LBS_PER_KG)}{" "}
-                                    lbs
-                                  </span>
-                                </span>
-                              )
-                            }
-                          >
-                            <MeasureField
-                              value={detail.weight}
-                              ariaLabel="Weight in kg"
-                              className="w-[5ch] shrink-0 text-xs tabular-nums"
-                              onChange={(weight) => patch({ weight })}
-                            />
-                            <span className="text-xs text-gray-500">kg</span>
-                          </EditSlot>
-                        </div>
+                        <WeightRow
+                          value={detail.weight}
+                          active={isOpen("weight")}
+                          onActivate={() => openField("weight")}
+                          onDone={closeField}
+                          onChange={(weight) => patch({ weight })}
+                        />
                       </div>
                     </div>
 
@@ -1540,7 +1516,7 @@ function formatMeasure(n: number | null) {
   });
 }
 
-function Eyebrow({ children }: { children: React.ReactNode }) {
+export function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">
       {children}
@@ -1832,7 +1808,50 @@ function DimAxis({
   );
 }
 
-function SpecRow({
+/** Weight in kg, with lbs beside it. */
+export function WeightRow({
+  value,
+  active,
+  onActivate,
+  onDone,
+  onChange,
+}: {
+  value: number | null;
+  active: boolean;
+  onActivate: () => void;
+  onDone: () => void;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <FieldLabel className="shrink-0">Weight</FieldLabel>
+      <EditSlot
+        active={active}
+        onActivate={onActivate}
+        onDone={onDone}
+        className="font-mono text-xs tabular-nums"
+        read={
+          value === null ? (
+            <Null />
+          ) : (
+            <span className="truncate">
+              {formatMeasure(value)}
+              <span className="text-gray-500">
+                {" kg · "}
+                {formatMeasure(value * LBS_PER_KG)} lbs
+              </span>
+            </span>
+          )
+        }
+      >
+        <MeasureField value={value} ariaLabel="Weight in kg" className="w-[5ch] shrink-0 text-xs tabular-nums" onChange={onChange} />
+        <span className="text-xs text-gray-500">kg</span>
+      </EditSlot>
+    </div>
+  );
+}
+
+export function SpecRow({
   label,
   values,
   editingField,

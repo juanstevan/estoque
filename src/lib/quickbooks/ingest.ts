@@ -1,6 +1,7 @@
 import { ExitStatus, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createProduct, nextNumber } from "@/lib/inventory/service";
+import { splitName } from "@/lib/photos/name";
 import { isPhysicalLine } from "@/lib/inventory/delivery-rules";
 import { fitDeliveries } from "@/lib/inventory/orders";
 import { recomputeAvailable, roundMoney } from "@/lib/inventory/math";
@@ -509,9 +510,14 @@ export async function ingestItems(raw: unknown) {
     const codeTaken = preferred
       ? await prisma.product.findUnique({ where: { code: preferred } })
       : null;
+    // The name is category + family + variant, so its first two words place the product.
+    const productName = parts ? parts[2].trim() : name;
+    const split = splitName(productName);
     try {
       const product = await createProduct({
-        name: parts ? parts[2].trim() : name,
+        name: productName,
+        category: split.category || null,
+        model: split.model || null,
         sku,
         code: codeTaken ? await nextNumber() : preferred,
         secondarySku: `qb:${id}`,

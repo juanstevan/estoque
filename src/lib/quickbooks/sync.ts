@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { updateProduct } from "@/lib/inventory/service";
+import { splitName } from "@/lib/photos/name";
 import { INVOICES_FROM, ingestInvoice, ingestItems, parseQbInvoice } from "@/lib/quickbooks/ingest";
 import {
   EXPIRED,
@@ -72,24 +73,31 @@ export async function syncQuickBooks({ auto = false } = {}) {
 type Seen = { name: string; sku: string; price: number };
 /** Nothing remembered: every value QuickBooks has counts as changed. */
 const UNSEEN: Seen = { name: "", sku: "", price: 0 };
-const PRODUCT = { id: true, code: true, name: true, sku: true, b2bPrice: true, secondarySku: true } as const;
+const PRODUCT = { id: true, code: true, name: true, sku: true, b2bPrice: true, secondarySku: true, category: true, model: true } as const;
 
 /**
  * The values QuickBooks changed since `before`, in app form. The ID comes from an "ID - Name"
  * prefix, and like a SKU it's only taken when no other product uses it. Prices only above 0.
+ * A new name brings its category and family: the first two words, unless it still starts with
+ * the ones the product has.
  */
-function changedFields(
+export function changedFields(
   now: Seen,
   before: Seen,
-  product: { code: string; name: string; sku: string; b2bPrice: number },
+  product: { code: string; name: string; sku: string; b2bPrice: number; category: string | null; model: string | null },
   codes: Set<string>,
   skus: Set<string>,
 ) {
-  const data: { name?: string; code?: string; sku?: string; b2bPrice?: number } = {};
+  const data: { name?: string; category?: string | null; model?: string | null; code?: string; sku?: string; b2bPrice?: number } = {};
   if (now.name && now.name !== before.name) {
     const parts = now.name.match(/^(\w{1,3}) ?- (.+)$/);
     const name = parts ? parts[2].trim() : now.name;
-    if (name !== product.name) data.name = name;
+    if (name !== product.name) {
+      data.name = name;
+      const split = splitName(name, product.category, product.model);
+      if (split.category !== (product.category ?? "")) data.category = split.category || null;
+      if (split.model !== (product.model ?? "")) data.model = split.model || null;
+    }
     const code = parts?.[1].toUpperCase();
     if (code && code !== product.code && !codes.has(code)) data.code = code;
   }

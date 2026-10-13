@@ -102,6 +102,7 @@ export type ShownFile = {
   tag: string;
   fileName: string;
   visibility: string;
+  position: number;
 };
 
 type PhotoRow = {
@@ -117,6 +118,7 @@ type PhotoRow = {
   height: number | null;
   fileName: string;
   visibility: string;
+  position: number;
 };
 
 function shown(photo: PhotoRow, scope: Scope): ShownFile {
@@ -135,6 +137,7 @@ function shown(photo: PhotoRow, scope: Scope): ShownFile {
     tag: photo.tag,
     fileName: photo.fileName,
     visibility: photo.visibility,
+    position: photo.position,
   };
 }
 
@@ -172,7 +175,8 @@ export async function mediaForProduct(product: {
   };
   for (const photo of own) keep(shown(photo, { rank: 0, source: "This product" }));
   for (const link of links) keep(shown(link.photo, linked(link)));
-  return [...best.values()].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  // Closest first, then the order arranged in the Media tab.
+  return [...best.values()].sort((a, b) => a.rank - b.rank || a.position - b.position);
 }
 
 type Connected = { scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string };

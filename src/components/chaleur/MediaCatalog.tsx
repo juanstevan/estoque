@@ -55,6 +55,7 @@ export function MediaCatalog({
   products,
   files,
   onOpenFile,
+  onOpenProduct,
   onAddFiles,
   onChanged,
   onError,
@@ -62,6 +63,7 @@ export function MediaCatalog({
   products: ProductRow[];
   files: FileRow[];
   onOpenFile: (id: string) => void;
+  onOpenProduct: (id: string) => void;
   onAddFiles: (files: File[], target: LinkTarget) => Promise<void>;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
@@ -206,6 +208,7 @@ export function MediaCatalog({
       onChanged={onChanged}
       onError={onError}
       onModelKey={setModelKey}
+      onOpenProduct={onOpenProduct}
     />
   );
 

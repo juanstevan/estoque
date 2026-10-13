@@ -19,7 +19,7 @@ export function nextVisibility(current: Visibility): Visibility {
 }
 
 export const MODEL_FIELDS = ["title", "id", "price", "dimensions", "cutout", "weight"] as const;
-export type CatalogField = (typeof MODEL_FIELDS)[number] | "variant";
+export type CatalogField = (typeof MODEL_FIELDS)[number];
 
 /** Until someone changes it: the B2B price is for builders, everything else for anyone. */
 export const FIELD_DEFAULT: Record<CatalogField, Visibility> = {
@@ -29,7 +29,6 @@ export const FIELD_DEFAULT: Record<CatalogField, Visibility> = {
   dimensions: "public",
   cutout: "public",
   weight: "public",
-  variant: "public",
 };
 
 export function isVisibility(value: unknown): value is Visibility {
@@ -37,7 +36,7 @@ export function isVisibility(value: unknown): value is Visibility {
 }
 
 export function isCatalogField(value: unknown): value is CatalogField {
-  return value === "variant" || (MODEL_FIELDS as readonly unknown[]).includes(value);
+  return (MODEL_FIELDS as readonly unknown[]).includes(value);
 }
 
 export function readFields(json: string | null | undefined): Partial<Record<CatalogField, Visibility>> {

@@ -15,7 +15,7 @@ import { buildTree } from "./tree";
 
 // ── Editing from the Media tab ─────────────────────────────────────────
 
-/** One field's eye: on the Tag for a model, on the product for a variant row or an untagged model. */
+/** One field's eye: on the Tag for a model, on the product for an untagged model. */
 export async function setCatalogField(
   owner: { tagId?: string | null; productId?: string | null },
   field: string,
@@ -115,8 +115,8 @@ export type SharedModel = {
   weight: string | null;
   images: string[];
   files: SharedFile[];
-  /** Units available across the model's variants. */
-  stock: number;
+  /** Any variant has stock. The count itself never leaves the app. */
+  inStock: boolean;
 };
 export type SharedCatalog = {
   brand: string;
@@ -192,10 +192,9 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
             name: f.name,
             files: (at.get(`family|${link.brand}\0${c.key}\0${f.key}`) ?? []).filter((x) => !isPhoto(x)).map(asFile),
             models: f.models
-              .map((m): SharedModel | null => {
-                const fields = m.tagId ? m.products[0]!.tag?.catalogFields : m.products[0]!.catalogFields;
-                const variants = m.products.filter((p) => can(p.catalogFields, "variant"));
-                if (!variants.length) return null;
+              .map((m): SharedModel => {
+                const variants = m.products;
+                const fields = m.tagId ? variants[0]!.tag?.catalogFields : variants[0]!.catalogFields;
                 const own = [...(m.tagId ? at.get(`tag|${m.tagId}`) ?? [] : []), ...variants.flatMap((p) => at.get(`product|${p.id}`) ?? [])];
                 const unique = [...new Map(own.map((x) => [x.id, x])).values()].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
                 const photos = unique.filter(isPhoto).map((x) => x.thumbUrl || x.url);
@@ -213,10 +212,9 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                   weight: can(fields, "weight") ? sharedText(variants.map((p) => (p.weight == null ? "" : measure(p.weight)))) : null,
                   images: photos,
                   files: unique.filter((x) => !isPhoto(x)).map(asFile),
-                  stock: variants.reduce((sum, p) => sum + Math.max(0, p.availableQty), 0),
+                  inStock: variants.some((p) => p.availableQty > 0),
                 };
-              })
-              .filter((m): m is SharedModel => m !== null),
+              }),
           }))
           .filter((f) => f.models.length),
       }))

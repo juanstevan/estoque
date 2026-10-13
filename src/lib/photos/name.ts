@@ -65,14 +65,16 @@ export function quickBooksName(code: string, name: string) {
   return `${code.trim()} - ${name.trim()}`.slice(0, 100).trimEnd();
 }
 
-/** Stored category and model win. Otherwise the first two words are the guess. */
+/**
+ * A name is category + family + variant. The stored category and family win while the name still
+ * starts with them (either may be several words); otherwise the name's first two words are them.
+ */
 export function splitName(name: string, category?: string | null, model?: string | null) {
   const cat = category?.trim() ?? "";
   const mod = model?.trim() ?? "";
-  if (cat || mod) {
-    const prefix = [cat, mod].filter(Boolean).join(" ");
-    const rest = name.startsWith(prefix) ? name.slice(prefix.length).trim() : name.trim();
-    return { category: cat, model: mod, variation: rest };
+  const prefix = `${cat} ${mod}`;
+  if (cat && mod && `${name.trim()} `.startsWith(`${prefix} `)) {
+    return { category: cat, model: mod, variation: name.trim().slice(prefix.length).trim() };
   }
   const words = name.replace(/^\s*\d+\s*-\s*/, "").trim().split(/\s+/).filter(Boolean);
   return {

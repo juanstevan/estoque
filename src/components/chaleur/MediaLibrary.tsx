@@ -19,7 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { downloadAs, type PhotoStorage } from "@/components/chaleur/ProductPhotos";
 import { MediaCatalog } from "@/components/chaleur/MediaCatalog";
 import { FILE_MAX_BYTES, PHOTO_MAX_BYTES, PHOTO_TYPES } from "@/lib/photos/name";
-import type { ProductRow } from "@/components/chaleur/ProductDialog";
+import { ProductDialog, uniqueProductTypes, type ProductRow } from "@/components/chaleur/ProductDialog";
 import { cn } from "@/lib/utils";
 
 type Scope = "brand" | "category" | "family" | "tag" | "product";
@@ -260,7 +260,15 @@ function FilterSelect({
   );
 }
 
-export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; onChanged?: () => void | Promise<void> }) {
+export function MediaLibrary({
+  products,
+  reasons,
+  onChanged,
+}: {
+  products: ProductRow[];
+  reasons: string[];
+  onChanged?: () => void | Promise<void>;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const renameLock = useRef(false);
   const [files, setFiles] = useState<FileRow[]>([]);
@@ -268,6 +276,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
   const [tags, setTags] = useState<Tag[]>([]);
   const [storage, setStorage] = useState<PhotoStorage>("blob");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [productId, setProductId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<Suggestion | null>(null);
   const [suggesting, setSuggesting] = useState(false);
@@ -1067,6 +1076,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           products={products}
           files={files}
           onOpenFile={setOpenId}
+          onOpenProduct={setProductId}
           onAddFiles={uploadFiles}
           onChanged={async () => {
             await Promise.all([onChanged?.(), reload()]);
@@ -1180,6 +1190,17 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
           )}
         </DialogContent>
       </Dialog>
+      <ProductDialog
+        open={productId != null}
+        productId={productId}
+        reasons={reasons}
+        types={uniqueProductTypes(products)}
+        catalog={products}
+        onClose={() => setProductId(null)}
+        onSaved={async () => {
+          await Promise.all([onChanged?.(), reload()]);
+        }}
+      />
     </div>
   );
 }
