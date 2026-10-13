@@ -121,12 +121,15 @@ export type SharedModel = {
 export type SharedCatalog = {
   brand: string;
   audience: Visibility;
+  company: { name: string; phone: string | null };
   categories: { key: string; name: string; families: { key: string; name: string; files: SharedFile[]; models: SharedModel[] }[] }[];
 };
 
 const measure = (value: number | null) => (value == null ? "—" : String(Number(value.toFixed(2))));
+/** Sizes are stored in inches, weight in kg; builders read pounds first. */
 const triple = (w: number | null, d: number | null, h: number | null) =>
-  w == null && d == null && h == null ? "" : `${measure(w)} × ${measure(d)} × ${measure(h)}`;
+  w == null && d == null && h == null ? "" : `${measure(w)} × ${measure(d)} × ${measure(h)} in`;
+const weight = (kg: number | null) => (kg == null ? "" : `${Number((kg * 2.20462).toFixed(1))} lb · ${measure(kg)} kg`);
 
 /** Every variant agrees: that value; otherwise "Varies". Nothing set: null. */
 function sharedText(values: string[]) {
@@ -175,13 +178,16 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
   const isPhoto = (f: (typeof files)[number]) => f.kind !== "file" && f.contentType.startsWith("image/");
   const asFile = (f: (typeof files)[number]): SharedFile => ({ name: f.tag || f.originalName || "File", url: f.url, fileName: f.fileName });
 
+  const settings = await prisma.appSettings.findUnique({ where: { id: "default" }, select: { companyName: true, companyPhone: true } });
+  const company = { name: settings?.companyName ?? "Chaleur Manufacturing Co.", phone: settings?.companyPhone ?? null };
   const tree = buildTree(products).find((b) => b.key === link.brand);
-  if (!tree) return { brand: link.brand, audience, categories: [] };
+  if (!tree) return { brand: link.brand, audience, company, categories: [] };
   const can = (json: string | null | undefined, field: CatalogField) => visibleTo(audience, fieldVisibility(json, field));
 
   return {
     brand: link.brand,
     audience,
+    company,
     categories: tree.categories
       .map((c) => ({
         key: c.key,
@@ -209,7 +215,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                       : null,
                   dimensions: can(fields, "dimensions") ? sharedText(variants.map((p) => triple(p.width, p.length, p.height))) : null,
                   cutout: can(fields, "cutout") ? sharedText(variants.map((p) => triple(p.cutoutWidth, p.cutoutLength, p.cutoutHeight))) : null,
-                  weight: can(fields, "weight") ? sharedText(variants.map((p) => (p.weight == null ? "" : measure(p.weight)))) : null,
+                  weight: can(fields, "weight") ? sharedText(variants.map((p) => weight(p.weight))) : null,
                   images: photos,
                   files: unique.filter((x) => !isPhoto(x)).map(asFile),
                   inStock: variants.some((p) => p.availableQty > 0),

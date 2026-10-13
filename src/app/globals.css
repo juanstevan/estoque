@@ -99,6 +99,18 @@
 }
 
 @theme {
+  /* Chaleur brand (design kit), for the shared catalog. Good/warn are for stock only. */
+  --color-chaleur-flame: #e54242;
+  --color-chaleur-ember: #b42f2b;
+  --color-chaleur-char: #161514;
+  --color-chaleur-graphite: #34322f;
+  --color-chaleur-iron: #5f6368;
+  --color-chaleur-steel: #8b9197;
+  --color-chaleur-stone: #d8d5d0;
+  --color-chaleur-smoke: #f2f1ef;
+  --color-chaleur-good: #2e7d4f;
+  --color-chaleur-warn: #b7791f;
+
   /* Surfaces named by role, for places where the shadcn names read wrong. */
   --color-canvas: #ffffff;
   --color-surface: #ffffff;
@@ -232,6 +244,18 @@
   --radius-2xl: 10px;
   --radius-3xl: 10px;
   --radius-4xl: 10px;
+}
+
+/* Chaleur type: Archivo 800, wide, caps for display; Lexend for text. Fonts load on the catalog page. */
+@utility font-chaleur-display {
+  font-family: var(--font-archivo), "Arial Narrow", Verdana, sans-serif;
+  font-weight: 800;
+  font-stretch: 118%;
+  text-transform: uppercase;
+}
+
+@utility font-chaleur-text {
+  font-family: var(--font-lexend), Verdana, Arial, sans-serif;
 }
 
 @utility border-1 {
