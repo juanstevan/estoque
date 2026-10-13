@@ -156,6 +156,7 @@ export async function addAssets(owner: Owner, inputs: AssetInput[]) {
           width: asset.width ?? null,
           height: asset.height ?? null,
           position: start + i,
+          ...(asset.kind === "file" ? {} : { visibility: "public" }),
         },
       }),
     ),

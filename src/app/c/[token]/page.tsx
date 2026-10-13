@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { FileText } from "lucide-react";
 import { sharedCatalog, type SharedFile, type SharedModel } from "@/lib/catalog/service";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatQty } from "@/lib/format";
 
 export const metadata: Metadata = {
   title: "Catalog",
@@ -106,19 +106,9 @@ function ModelCard({ model: m }: { model: SharedModel }) {
             ))}
           </dl>
         )}
-        <ul className="grid gap-1.5">
-          {m.variants.map((v) => (
-            <li key={`${v.name}-${v.code}`} className="flex items-center justify-between gap-3 rounded-[10px] bg-sunken px-3 py-2 text-sm">
-              <span className="min-w-0">
-                <span className="block truncate">{v.name}</span>
-                {v.code && <span className="font-mono text-2xs text-gray-500">ID {v.code}</span>}
-              </span>
-              <span className={v.inStock ? "shrink-0 text-xs text-success-text" : "shrink-0 text-xs text-gray-500"}>
-                {v.inStock ? "In stock" : "Out of stock"}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <p className={m.stock > 0 ? "text-sm text-success-text" : "text-sm text-gray-500"}>
+          {m.stock > 0 ? `${formatQty(m.stock)} in stock` : "Out of stock"}
+        </p>
         {m.files.length > 0 && <Files files={m.files} />}
       </div>
     </article>

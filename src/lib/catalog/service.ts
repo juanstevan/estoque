@@ -115,7 +115,8 @@ export type SharedModel = {
   weight: string | null;
   images: string[];
   files: SharedFile[];
-  variants: { name: string; code: string | null; inStock: boolean }[];
+  /** Units available across the model's variants. */
+  stock: number;
 };
 export type SharedCatalog = {
   brand: string;
@@ -156,19 +157,19 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
   const files = await prisma.productPhoto.findMany({
     where: { visibility: { in: [...allowed] } },
     select: { id: true, url: true, thumbUrl: true, tag: true, originalName: true, fileName: true, kind: true, contentType: true, productId: true, links: true },
-    orderBy: { createdAt: "asc" },
+    // The order the Media tab arranged them in; the first photo is the main one.
+    orderBy: [{ position: "asc" }, { createdAt: "asc" }],
   });
-  // Files by the level they're linked to, covers first.
+  const rank = new Map(files.map((f, i) => [f.id, i]));
+  // Files by the level they're linked to.
   const at = new Map<string, typeof files>();
-  const put = (key: string, file: (typeof files)[number], cover: boolean) =>
-    at.set(key, cover ? [file, ...(at.get(key) ?? [])] : [...(at.get(key) ?? []), file]);
+  const put = (key: string, file: (typeof files)[number]) => at.set(key, [...(at.get(key) ?? []), file]);
   for (const file of files) {
-    if (file.productId) put(`product|${file.productId}`, file, false);
+    if (file.productId) put(`product|${file.productId}`, file);
     for (const l of file.links) {
-      const cover = l.role === "cover";
-      if (l.productId) put(`product|${l.productId}`, file, cover);
-      else if (l.tagId) put(`tag|${l.tagId}`, file, cover);
-      else if (l.family && l.brand && l.category) put(`family|${l.brand}\0${l.category}\0${l.family}`, file, cover);
+      if (l.productId) put(`product|${l.productId}`, file);
+      else if (l.tagId) put(`tag|${l.tagId}`, file);
+      else if (l.family && l.brand && l.category) put(`family|${l.brand}\0${l.category}\0${l.family}`, file);
     }
   }
   const isPhoto = (f: (typeof files)[number]) => f.kind !== "file" && f.contentType.startsWith("image/");
@@ -196,7 +197,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                 const variants = m.products.filter((p) => can(p.catalogFields, "variant"));
                 if (!variants.length) return null;
                 const own = [...(m.tagId ? at.get(`tag|${m.tagId}`) ?? [] : []), ...variants.flatMap((p) => at.get(`product|${p.id}`) ?? [])];
-                const unique = [...new Map(own.map((x) => [x.id, x])).values()];
+                const unique = [...new Map(own.map((x) => [x.id, x])).values()].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
                 const photos = unique.filter(isPhoto).map((x) => x.thumbUrl || x.url);
                 const prices = variants.map((p) => p.b2bPrice).filter((v) => v > 0);
                 return {
@@ -212,11 +213,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                   weight: can(fields, "weight") ? sharedText(variants.map((p) => (p.weight == null ? "" : measure(p.weight)))) : null,
                   images: photos,
                   files: unique.filter((x) => !isPhoto(x)).map(asFile),
-                  variants: variants.map((p) => ({
-                    name: p.name,
-                    code: can(fields, "id") ? p.code : null,
-                    inStock: p.availableQty > 0,
-                  })),
+                  stock: variants.reduce((sum, p) => sum + Math.max(0, p.availableQty), 0),
                 };
               })
               .filter((m): m is SharedModel => m !== null),

@@ -1,6 +1,6 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny } from "@/lib/guard";
-import { addLibraryFile, addLink, deleteLibraryFiles, listLibrary, removeConnection, renameFile, renameScope, setCover, setVisibility } from "@/lib/media/library";
+import { addLibraryFile, addLink, arrangeFiles, deleteLibraryFiles, listLibrary, removeConnection, renameFile, renameScope, setCover, setVisibility } from "@/lib/media/library";
 
 export async function GET() {
   const denied = await deny(["media", "storage"], "view");
@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   if (denied) return denied;
   try {
     const body = await readJson<{
-      action?: "add" | "link" | "unlink" | "rename" | "rename-file" | "visibility" | "cover" | "delete";
+      action?: "add" | "link" | "unlink" | "rename" | "rename-file" | "visibility" | "cover" | "arrange" | "delete";
       visibility?: string;
       on?: boolean;
       id?: string;
@@ -43,6 +43,10 @@ export async function POST(req: Request) {
     if (body.action === "rename-file" && body.id) return jsonOk(await renameFile(body.id, body.name ?? ""));
     if (body.action === "visibility") {
       await setVisibility(body.ids ?? [], body.visibility ?? "");
+      return jsonOk({ ok: true });
+    }
+    if (body.action === "arrange") {
+      await arrangeFiles(body.ids ?? []);
       return jsonOk({ ok: true });
     }
     if (body.action === "cover" && body.id) {

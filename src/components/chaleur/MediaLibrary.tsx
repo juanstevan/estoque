@@ -38,6 +38,8 @@ export type FileRow = {
   kind: string;
   contentType: string;
   size: number;
+  /** Order within a model's photos; the first is the main one. */
+  position: number;
   connections: Connection[];
 };
 type Tag = { id: string; name: string; color: string };
@@ -670,12 +672,12 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                       ? file.connections[0]!.label
                       : `${file.connections[0]!.name} +${file.connections.length - 1}`}
                 </span>
-                {(file.visibility !== "internal" || file.connections.some((link) => link.cover)) && (
+                {((!image && file.visibility !== "internal") || file.connections.some((link) => link.cover)) && (
                   <span className="pointer-events-none absolute bottom-1.5 left-2 flex gap-1">
                     {file.connections.some((link) => link.cover) && (
                       <span className="rounded-sm bg-surface/90 px-1.5 py-0.5 text-2xs font-medium text-gray-700">Cover</span>
                     )}
-                    {file.visibility !== "internal" && (
+                    {!image && file.visibility !== "internal" && (
                       <span className="rounded-sm bg-surface/90 px-1.5 py-0.5 text-2xs font-medium text-gray-700">{VISIBILITY[file.visibility].label}</span>
                     )}
                   </span>
@@ -1081,6 +1083,8 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                 <FileNameField key={openFile.id} file={openFile} onRename={(name) => void renameFile(openFile.id, name)} />
               </DialogHeader>
               <div className="grid gap-4">
+                {/* Photos are always public; other files choose who sees them. */}
+                {fileKind(openFile) !== "photo" && (
                 <div className="grid gap-1.5">
                   <div className="flex gap-1" role="radiogroup" aria-label="Who can see it">
                     {(Object.keys(VISIBILITY) as Visibility[]).map((value) => (
@@ -1098,6 +1102,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                   </div>
                   <p className="text-xs text-gray-500">{VISIBILITY[openFile.visibility].hint}</p>
                 </div>
+                )}
                 {fileKind(openFile) === "photo" ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={openFile.url} alt="" className="max-h-64 w-full rounded-md object-contain" />
@@ -1131,7 +1136,7 @@ export function MediaLibrary({ products, onChanged }: { products: ProductRow[]; 
                         {link.context && <span className="text-gray-400"> · {link.context}</span>}
                       </span>
                       <span className="flex shrink-0 items-center gap-3">
-                        {link.scope !== "product" && !link.id.startsWith("owner:") && fileKind(openFile) === "photo" && (
+                        {link.scope !== "product" && link.scope !== "tag" && !link.id.startsWith("owner:") && fileKind(openFile) === "photo" && (
                           <button
                             type="button"
                             aria-pressed={Boolean(link.cover)}

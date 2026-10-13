@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Eye, EyeClosed, FileText, ImagePlus, Plus, Star, Trash2, Upload, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Eye, EyeClosed, FileText, ImagePlus, Plus, Star, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import type { FileRow, LinkTarget } from "@/components/chaleur/MediaLibrary";
+import { downloadAs } from "@/components/chaleur/ProductPhotos";
 import {
   fieldVisibility,
   nextVisibility,
@@ -24,7 +25,8 @@ import { cn } from "@/lib/utils";
 /**
  * A model (Tag) in the Media tab: its photos, shared values, files and variants. Shared values
  * live on each variant and are saved to all of them together; nothing is copied anywhere else.
- * Every item carries an eye: closed (this app), half (builders), open (everyone).
+ * Every item carries an eye: closed (this app), half (builders), open (everyone). Photos are
+ * always public, so they have none; they show in the order arranged here, the first is the main one.
  */
 
 const AUDIENCE_LABEL: Record<Visibility, string> = { internal: "System view", partners: "Builder view", public: "Consumer view" };
@@ -114,7 +116,7 @@ export function ModelWindow({
 }) {
   return (
     <Dialog open={model != null} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="flex h-[92dvh] w-[min(1240px,96vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
+      <DialogContent className="flex h-[72dvh] w-[min(980px,94vw)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
         {model && (
           <Editor
             key={model.key}
@@ -158,6 +160,7 @@ function Editor({
   const [audience, setAudience] = useState<Visibility>("internal");
   const [fieldOverride, setFieldOverride] = useState<Partial<Record<string, Visibility>>>({});
   const [photoIndex, setPhotoIndex] = useState(0);
+  const [viewing, setViewing] = useState<string | null>(null);
   const variants = model.products;
   const first = variants[0]!;
   const owner = model.tagId ? { tagId: model.tagId } : { productId: first.id };
@@ -185,7 +188,7 @@ function Editor({
     return { own, inherited };
   }, [files, model.tagId, variants, context]);
 
-  const photos = placed.own.filter((x) => isPhoto(x.file)).sort((a, b) => Number(b.cover) - Number(a.cover));
+  const photos = placed.own.filter((x) => isPhoto(x.file)).sort((a, b) => a.file.position - b.file.position);
   const documents = placed.own.filter((x) => !isPhoto(x.file));
   const photo = photos[Math.min(photoIndex, Math.max(0, photos.length - 1))] ?? null;
 
@@ -240,7 +243,12 @@ function Editor({
 
   const upload = (list: File[]) => run(() => onUpload(list, target));
   const unlink = (linkId: string) => run(() => post("/api/media", { action: "unlink", id: linkId }));
-  const makeMain = (linkId: string) => run(() => post("/api/media", { action: "cover", id: linkId, on: true }));
+  const arrange = (ids: string[]) => run(() => post("/api/media", { action: "arrange", ids }));
+  const renamePhoto = (id: string, name: string) => run(() => post("/api/media", { action: "rename-file", id, name }));
+  function makeMain(id: string) {
+    setPhotoIndex(0);
+    void arrange([id, ...photos.map((x) => x.file.id).filter((other) => other !== id)]);
+  }
 
   async function addProduct(p: ProductRow) {
     await run(async () => {
@@ -262,62 +270,63 @@ function Editor({
   return (
     <>
       <DialogTitle className="sr-only">{model.name}</DialogTitle>
-      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="no-scrollbar flex min-h-0 flex-col gap-6 overflow-y-auto p-6">
-          <div className="flex justify-end">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={() => setAudience(nextVisibility(audience))}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-sunken px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-150"
-                  />
-                }
-              >
-                <EyeIcon value={audience} className="size-3.5" />
-                {AUDIENCE_LABEL[audience]}
-              </TooltipTrigger>
-              <TooltipContent>See what each audience sees. Hidden items fade.</TooltipContent>
-            </Tooltip>
-          </div>
-          <div className="grid gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_260px]">
+        <div className="no-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto p-5">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
             <Gallery
               photo={photo}
               count={photos.length}
               index={Math.min(photoIndex, Math.max(0, photos.length - 1))}
-              dimmed={photo ? dim(photo.file.visibility) : false}
               onStep={(d) => setPhotoIndex((i) => (i + d + photos.length) % photos.length)}
               onAdd={upload}
-              onToggle={() => photo && void toggleFile(photo.file)}
               onRemove={() => photo && void unlink(photo.linkId)}
-              onMain={() => photo && void makeMain(photo.linkId)}
-              onOpen={() => photo && onOpenFile(photo.file.id)}
+              onMain={() => photo && makeMain(photo.file.id)}
+              onOpen={() => photo && setViewing(photo.file.id)}
+              onRename={(name) => (photo ? renamePhoto(photo.file.id, name) : Promise.resolve())}
             />
-            <div className="flex min-w-0 flex-col gap-6">
+            <div className="flex min-w-0 flex-col gap-5">
               <div>
-                <Item value={field("title")} dimmed={dim(field("title"))} onToggle={() => toggleField("title")}>
-                  <InlineText value={model.name} label="Model name" onSave={rename} className="text-2xl font-semibold text-gray-900" />
-                </Item>
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Item value={field("title")} dimmed={dim(field("title"))} onToggle={() => toggleField("title")}>
+                      <InlineText value={model.name} label="Model name" onSave={rename} className="text-xl font-semibold text-gray-900" />
+                    </Item>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          onClick={() => setAudience(nextVisibility(audience))}
+                          className="mt-0.5 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sunken px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-150"
+                        />
+                      }
+                    >
+                      <EyeIcon value={audience} className="size-3.5" />
+                      {AUDIENCE_LABEL[audience]}
+                    </TooltipTrigger>
+                    <TooltipContent>See what each audience sees. Hidden items fade.</TooltipContent>
+                  </Tooltip>
+                </div>
                 <Item value={field("id")} dimmed={dim(field("id"))} onToggle={() => toggleField("id")}>
                   <p className="font-mono text-xs text-gray-500">ID {variants.map((p) => p.code).join(" · ")}</p>
                 </Item>
               </div>
               <Item value={field("price")} dimmed={dim(field("price"))} onToggle={() => toggleField("price")} label="B2B price">
-                <div className="flex items-baseline gap-1 text-3xl font-semibold text-gray-900">
+                <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
                   <span className="text-gray-400">$</span>
                   <NumberField
                     values={variants.map((p) => (p.b2bPrice > 0 ? p.b2bPrice : null))}
                     label="B2B price for every variant"
                     money
-                    className="w-44 text-3xl font-semibold"
+                    className="w-40 text-2xl font-semibold"
                     onSave={(value) => value != null && saveShared({ b2bPrice: value })}
                   />
                 </div>
               </Item>
-              <div className="grid gap-4">
+              <div className="grid gap-3">
                 <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Specs</p>
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2">
                   <Item value={field("dimensions")} dimmed={dim(field("dimensions"))} onToggle={() => toggleField("dimensions")} label="Dimensions (W × D × H)">
                     <Triple
                       values={[variants.map((p) => p.width), variants.map((p) => p.length), variants.map((p) => p.height)]}
@@ -371,6 +380,7 @@ function Editor({
           <ProductPicker products={products} current={variants} onPick={addProduct} />
         </aside>
       </div>
+      <Lightbox photos={photos} openId={viewing} onOpenId={setViewing} onArrange={arrange} />
     </>
   );
 }
@@ -513,33 +523,35 @@ function Triple({
   );
 }
 
-/** The model's photos, like the old product card: step through, add, remove, choose the main one. */
+type Placed = { file: FileRow; linkId: string; cover: boolean };
+
+/**
+ * The model's photos, like the old product card. Everything is on hover: make main, add, remove,
+ * download, and the name (click to rename). A click on the photo opens them large.
+ */
 function Gallery({
   photo,
   count,
   index,
-  dimmed,
   onStep,
   onAdd,
-  onToggle,
   onRemove,
   onMain,
   onOpen,
+  onRename,
 }: {
-  photo: { file: FileRow; linkId: string; cover: boolean } | null;
+  photo: Placed | null;
   count: number;
   index: number;
-  dimmed: boolean;
   onStep: (d: number) => void;
   onAdd: (files: File[]) => void;
-  onToggle: () => void;
   onRemove: () => void;
   onMain: () => void;
   onOpen: () => void;
+  onRename: (name: string) => Promise<void>;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const src = photo?.file.url ?? null;
   return (
     <div
       className={cn(
@@ -563,10 +575,10 @@ function Gallery({
         onAdd([...e.dataTransfer.files]);
       }}
     >
-      {src ? (
-        <button type="button" className={cn("flex size-full items-center justify-center p-6 transition-opacity", dimmed && "opacity-40")} onClick={photo ? onOpen : () => input.current?.click()} aria-label={photo ? "Open photo" : "Add photos"}>
+      {photo ? (
+        <button type="button" className="flex size-full items-center justify-center p-6" onClick={onOpen} aria-label="Open photos">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={src} alt="" className="max-h-full max-w-full object-contain" />
+          <img src={photo.file.url} alt={photo.file.name} className="max-h-full max-w-full object-contain" />
         </button>
       ) : (
         <button type="button" onClick={() => input.current?.click()} className="flex flex-col items-center gap-2 text-xs font-medium text-gray-500 hover:text-gray-900">
@@ -582,31 +594,42 @@ function Gallery({
           <button type="button" aria-label="Next photo" onClick={() => onStep(1)} className="absolute top-1/2 right-2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-surface/90 text-gray-700 opacity-0 shadow-xs transition-opacity group-hover/item:opacity-100 focus-visible:opacity-100">
             <ChevronRight className="size-4" />
           </button>
-          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-600">
+          <span className="pointer-events-none absolute right-2 bottom-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-600">
             {index + 1} / {count}
           </span>
         </>
       )}
-      <div className="absolute top-2 right-2 flex gap-1">
-        {photo && (
-          <>
-            <EyeToggle value={photo.file.visibility} onToggle={onToggle} className="bg-surface/90" />
-            {!photo.cover && !photo.linkId.startsWith("owner:") && (
+      {photo && (
+        <>
+          <div className="absolute top-2 right-2 flex gap-1">
+            {index > 0 && (
               <GalleryAction label="Make main photo" onClick={onMain}>
                 <Star className="size-3.5" />
               </GalleryAction>
             )}
+            <GalleryAction label="Add photos" onClick={() => input.current?.click()}>
+              <ImagePlus className="size-3.5" />
+            </GalleryAction>
             <GalleryAction label="Remove from this model" onClick={onRemove}>
               <Trash2 className="size-3.5" />
             </GalleryAction>
-          </>
-        )}
-        <GalleryAction label="Add photos" onClick={() => input.current?.click()}>
-          <ImagePlus className="size-3.5" />
-        </GalleryAction>
-      </div>
-      {photo?.cover && count > 1 && (
-        <span className="pointer-events-none absolute top-2 left-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs font-medium text-gray-700">Main</span>
+            <GalleryAction label="Download" onClick={() => void downloadAs(photo.file.url, photo.file.fileName)}>
+              <Download className="size-3.5" />
+            </GalleryAction>
+          </div>
+          <div className="absolute bottom-2 left-2 max-w-[calc(100%-4.5rem)] opacity-0 transition-opacity group-hover/item:opacity-100 focus-within:opacity-100">
+            <InlineText
+              key={photo.file.id}
+              value={photo.file.name}
+              label="Photo name"
+              onSave={onRename}
+              className="mx-0 max-w-full rounded-full bg-surface/90 px-2 py-0.5 text-2xs text-gray-700 ring-0 hover:bg-surface"
+            />
+          </div>
+          {index === 0 && count > 1 && (
+            <span className="pointer-events-none absolute top-2 left-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs font-medium text-gray-700">Main</span>
+          )}
+        </>
       )}
       <input
         ref={input}
@@ -621,6 +644,87 @@ function Gallery({
         }}
       />
     </div>
+  );
+}
+
+/** Moves `from` to where `to` is. */
+function move(list: string[], from: string, to: string) {
+  const next = list.filter((id) => id !== from);
+  next.splice(list.indexOf(to), 0, from);
+  return next;
+}
+
+/** The photos large, Amazon style: thumbnails down the side. Drag a thumbnail to change the order; the first is the main one. */
+function Lightbox({
+  photos,
+  openId,
+  onOpenId,
+  onArrange,
+}: {
+  photos: Placed[];
+  openId: string | null;
+  onOpenId: (id: string | null) => void;
+  onArrange: (ids: string[]) => Promise<void>;
+}) {
+  // The order being dragged; it stays until the saved order comes back.
+  const [order, setOrder] = useState<string[] | null>(null);
+  const dragged = useRef<string | null>(null);
+  const ids = photos.map((x) => x.file.id);
+  const shownIds = order && order.length === ids.length && order.every((id) => ids.includes(id)) ? order : ids;
+  const byId = new Map(photos.map((x) => [x.file.id, x]));
+  const current = byId.get(openId ?? "") ?? photos[0] ?? null;
+  return (
+    <Dialog open={openId != null} onOpenChange={(next) => !next && onOpenId(null)}>
+      <DialogContent className="flex h-[86dvh] w-[min(1100px,94vw)] max-w-none gap-4 p-4 sm:max-w-none">
+        <DialogTitle className="sr-only">{current?.file.name ?? "Photos"}</DialogTitle>
+        <div className="no-scrollbar flex w-16 shrink-0 flex-col gap-2 overflow-y-auto" aria-label="Photos, drag to reorder">
+          {shownIds.map((id) => {
+            const x = byId.get(id)!;
+            return (
+              <button
+                key={id}
+                type="button"
+                draggable
+                aria-label={`Show ${x.file.name}`}
+                aria-current={id === current?.file.id}
+                onClick={() => onOpenId(id)}
+                onMouseEnter={() => onOpenId(id)}
+                onDragStart={(e) => {
+                  dragged.current = id;
+                  e.dataTransfer.effectAllowed = "move";
+                  setOrder(shownIds);
+                }}
+                onDragOver={(e) => {
+                  const from = dragged.current;
+                  if (!from) return;
+                  e.preventDefault();
+                  if (from !== id) setOrder((list) => move(list ?? shownIds, from, id));
+                }}
+                onDrop={(e) => e.preventDefault()}
+                onDragEnd={async () => {
+                  dragged.current = null;
+                  if (order && order.join() !== ids.join()) await onArrange(order);
+                  setOrder(null);
+                }}
+                className={cn(
+                  "size-16 shrink-0 cursor-grab overflow-hidden rounded-md bg-sunken p-1 ring-2 ring-transparent ring-inset active:cursor-grabbing",
+                  id === current?.file.id && "ring-gray-900",
+                )}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={x.file.thumbUrl} alt="" draggable={false} className="size-full object-contain" />
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex min-w-0 flex-1 items-center justify-center rounded-[14px] bg-sunken p-6">
+          {current && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={current.file.url} alt={current.file.name} className="max-h-full max-w-full object-contain" />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -667,7 +771,7 @@ function FilesBox({
   return (
     <section
       aria-label="Files"
-      className={cn("flex flex-col gap-4 rounded-[14px] bg-sunken p-4", over && "bg-blue-50 outline-1 outline-blue-500 outline-dashed -outline-offset-2")}
+      className={cn("flex flex-1 flex-col gap-4 rounded-[14px] bg-sunken p-4", over && "bg-blue-50 outline-1 outline-blue-500 outline-dashed -outline-offset-2")}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -706,7 +810,7 @@ function FilesBox({
       {documents.length ? (
         <FileGrid items={documents} dim={dim} onOpen={onOpen} onToggle={onToggle} onRemove={onRemove} />
       ) : (
-        <p className="py-4 text-center text-xs text-gray-500">Drop manuals, spec sheets or videos here.</p>
+        <p className="m-auto py-4 text-center text-xs text-gray-500">Drop manuals, spec sheets or videos here.</p>
       )}
       {inherited.map((group) => (
         <div key={group.label} className="grid gap-2">
@@ -734,7 +838,7 @@ function FileGrid({
   return (
     <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(180px,1fr))]">
       {items.map(({ file, linkId }) => (
-        <div key={file.id} className={cn("group/item relative flex items-center gap-2 rounded-[10px] bg-surface p-2 transition-opacity", dim(file.visibility) && "opacity-40")}>
+        <div key={file.id} className={cn("group/item relative flex items-center gap-2 rounded-[10px] bg-surface p-2 transition-opacity", !isPhoto(file) && dim(file.visibility) && "opacity-40")}>
           <button type="button" onClick={() => onOpen(file.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
             <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-sunken">
               {isPhoto(file) ? (
@@ -748,7 +852,7 @@ function FileGrid({
           </button>
           {/* Over the tile's right edge on hover, so the name keeps the whole width. */}
           <span className="pointer-events-none absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center rounded-md bg-surface opacity-0 transition-opacity group-hover/item:pointer-events-auto group-hover/item:opacity-100 focus-within:opacity-100">
-            <EyeToggle value={file.visibility} onToggle={() => onToggle(file)} />
+            {!isPhoto(file) && <EyeToggle value={file.visibility} onToggle={() => onToggle(file)} />}
             {onRemove && (
               <button
                 type="button"

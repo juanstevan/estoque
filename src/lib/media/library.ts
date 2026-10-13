@@ -200,12 +200,21 @@ function downloadName(
 
 export { VISIBILITY, type Visibility } from "@/lib/catalog/fields";
 
-/** Internal: only the app. Partners: partner links. Public: catalog and share links. */
+/** Internal: only the app. Partners: partner links. Public: catalog and share links. Photos are always public. */
 export async function setVisibility(ids: string[], visibility: string) {
   if (!VISIBILITY.includes(visibility as Visibility)) throw new Error("Choose Internal, Partners or Public");
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return;
-  await prisma.productPhoto.updateMany({ where: { id: { in: unique } }, data: { visibility } });
+  await prisma.productPhoto.updateMany({
+    where: { id: { in: unique }, OR: [{ kind: "file" }, { NOT: { contentType: { startsWith: "image/" } } }] },
+    data: { visibility },
+  });
+}
+
+/** The order a model's photos show in; the first is the main one. */
+export async function arrangeFiles(ids: string[]) {
+  const unique = [...new Set(ids.filter(Boolean))];
+  await prisma.$transaction(unique.map((id, position) => prisma.productPhoto.update({ where: { id }, data: { position } })));
 }
 
 /** One cover per brand, category, family, tag or product: setting one clears the one before. */
@@ -267,6 +276,7 @@ export async function listLibrary() {
         kind: photo.kind,
         contentType: photo.contentType,
         size: photo.size,
+        position: photo.position,
         connections,
       };
     }),
@@ -283,14 +293,19 @@ export async function addLibraryFile(file: {
 }) {
   const existing = await prisma.productPhoto.findFirst({ where: { url: file.url } });
   if (existing) return existing;
+  const kind = file.kind === "file" ? "file" : "photo";
+  const contentType = file.contentType || "application/octet-stream";
   return prisma.productPhoto.create({
     data: {
       url: file.url,
       thumbUrl: file.thumbUrl || file.url,
       originalName: file.name.slice(0, 200),
-      kind: file.kind === "file" ? "file" : "photo",
-      contentType: file.contentType || "application/octet-stream",
+      kind,
+      contentType,
       size: Math.round(file.size),
+      // Photos are always public. New files go last until someone arranges them.
+      ...(kind === "photo" && contentType.startsWith("image/") ? { visibility: "public" } : {}),
+      position: Date.now(),
     },
   });
 }
