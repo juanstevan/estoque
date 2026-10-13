@@ -147,7 +147,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
   const products = await prisma.product.findMany({
     where: { type: link.brand },
     select: {
-      id: true, code: true, name: true, type: true, category: true, model: true, tagId: true, imageUrl: true,
+      id: true, code: true, name: true, type: true, category: true, model: true, tagId: true,
       b2bPrice: true, availableQty: true, width: true, length: true, height: true,
       cutoutWidth: true, cutoutLength: true, cutoutHeight: true, weight: true, catalogFields: true,
       tag: { select: { name: true, catalogFields: true } },
@@ -198,7 +198,6 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                 const own = [...(m.tagId ? at.get(`tag|${m.tagId}`) ?? [] : []), ...variants.flatMap((p) => at.get(`product|${p.id}`) ?? [])];
                 const unique = [...new Map(own.map((x) => [x.id, x])).values()];
                 const photos = unique.filter(isPhoto).map((x) => x.thumbUrl || x.url);
-                const fallback = variants.find((p) => p.imageUrl)?.imageUrl;
                 const prices = variants.map((p) => p.b2bPrice).filter((v) => v > 0);
                 return {
                   key: m.key,
@@ -211,7 +210,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                   dimensions: can(fields, "dimensions") ? sharedText(variants.map((p) => triple(p.width, p.length, p.height))) : null,
                   cutout: can(fields, "cutout") ? sharedText(variants.map((p) => triple(p.cutoutWidth, p.cutoutLength, p.cutoutHeight))) : null,
                   weight: can(fields, "weight") ? sharedText(variants.map((p) => (p.weight == null ? "" : measure(p.weight)))) : null,
-                  images: photos.length ? photos : fallback ? [fallback] : [],
+                  images: photos,
                   files: unique.filter((x) => !isPhoto(x)).map(asFile),
                   variants: variants.map((p) => ({
                     name: p.name,

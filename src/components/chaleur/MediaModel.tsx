@@ -187,7 +187,6 @@ function Editor({
 
   const photos = placed.own.filter((x) => isPhoto(x.file)).sort((a, b) => Number(b.cover) - Number(a.cover));
   const documents = placed.own.filter((x) => !isPhoto(x.file));
-  const fallback = variants.find((p) => p.imageUrl)?.imageUrl ?? null;
   const photo = photos[Math.min(photoIndex, Math.max(0, photos.length - 1))] ?? null;
 
   const field = (name: CatalogField) => fieldOverride[name] ?? fieldVisibility(fieldsJson, name);
@@ -287,7 +286,6 @@ function Editor({
               photo={photo}
               count={photos.length}
               index={Math.min(photoIndex, Math.max(0, photos.length - 1))}
-              fallback={fallback}
               dimmed={photo ? dim(photo.file.visibility) : false}
               onStep={(d) => setPhotoIndex((i) => (i + d + photos.length) % photos.length)}
               onAdd={upload}
@@ -520,7 +518,6 @@ function Gallery({
   photo,
   count,
   index,
-  fallback,
   dimmed,
   onStep,
   onAdd,
@@ -532,7 +529,6 @@ function Gallery({
   photo: { file: FileRow; linkId: string; cover: boolean } | null;
   count: number;
   index: number;
-  fallback: string | null;
   dimmed: boolean;
   onStep: (d: number) => void;
   onAdd: (files: File[]) => void;
@@ -543,7 +539,7 @@ function Gallery({
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const src = photo?.file.url ?? fallback;
+  const src = photo?.file.url ?? null;
   return (
     <div
       className={cn(

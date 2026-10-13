@@ -97,8 +97,8 @@ export function MediaCatalog({
   const modelKeys = (m: M) => [...(m.tagId ? [`tag|${m.tagId}`] : []), ...m.products.map((p) => `product|${p.id}`)];
   const coverAt = (keys: string[]) => keys.map((k) => index.covers.get(k)).find(Boolean) ?? null;
   const firstPhoto = (keys: string[]) => keys.flatMap((k) => index.all.get(k) ?? []).find(isPhoto) ?? null;
-  const modelImage = (m: M) =>
-    coverAt(modelKeys(m))?.thumbUrl ?? firstPhoto(modelKeys(m))?.thumbUrl ?? m.products.find((p) => p.imageUrl)?.imageUrl ?? null;
+  // Media photos only; the old bundled product images stay out of the catalog.
+  const modelImage = (m: M) => coverAt(modelKeys(m))?.thumbUrl ?? firstPhoto(modelKeys(m))?.thumbUrl ?? null;
   const familyImage = (b: string, c: string, f: F) =>
     coverAt([`family|${b}\0${c}\0${f.key}`])?.thumbUrl ?? f.models.map(modelImage).find(Boolean) ?? null;
   const categoryImage = (b: string, c: C) =>
