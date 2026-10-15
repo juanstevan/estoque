@@ -18,10 +18,10 @@ export function nextVisibility(current: Visibility): Visibility {
   return VISIBILITY[(VISIBILITY.indexOf(current) + 1) % VISIBILITY.length]!;
 }
 
-export const MODEL_FIELDS = ["title", "id", "price", "dimensions", "cutout", "weight"] as const;
+export const MODEL_FIELDS = ["title", "id", "price", "dimensions", "cutout", "weight", "description"] as const;
 export type CatalogField = (typeof MODEL_FIELDS)[number];
 
-/** Until someone changes it: the B2B price is for builders, everything else for anyone. */
+/** Until someone changes it: the B2B price and the description are for builders, everything else for anyone. */
 export const FIELD_DEFAULT: Record<CatalogField, Visibility> = {
   title: "public",
   id: "public",
@@ -29,6 +29,7 @@ export const FIELD_DEFAULT: Record<CatalogField, Visibility> = {
   dimensions: "public",
   cutout: "public",
   weight: "public",
+  description: "partners",
 };
 
 export function isVisibility(value: unknown): value is Visibility {

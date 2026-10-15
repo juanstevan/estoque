@@ -39,10 +39,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { CatalogDescription, saveDescription } from "@/components/chaleur/CatalogDescription";
 import { DataGrid } from "@/components/chaleur/DataGrid";
 import { QuickBooksPicker, linkQuickBooks, linkedItemId } from "@/components/chaleur/QuickBooksPicker";
 import {
   PHOTO_ACCEPT,
+  PhotoGallery,
   PhotoLightbox,
   PhotoStage,
   usePhotos,
@@ -242,13 +244,25 @@ export function ProductDialog({
   const [parts, setParts] = useState({ category: "", model: "", variation: "" });
   const nameRoot = useRef<HTMLDivElement>(null);
   const [viewer, setViewer] = useState<number | null>(null);
+  /** The Catalog tab's edited description, saved with the card's Save changes; undefined when untouched. */
+  const [descriptionDraft, setDescriptionDraft] = useState<unknown>(undefined);
   const [tags, setTags] = useState<{ id: string; name: string; color: string }[]>([]);
   const [tagDraft, setTagDraft] = useState("");
   const tagDraftRef = useRef("");
 
+  // Media photos in their library order. This product's own ones carry their live state (uploads,
+  // renames); a new upload goes at the end until the next load places it. Nothing in the library:
+  // the product's own, or its old picture.
   const photoList = useMemo(() => {
+    const own = (detail?.photos ?? []).filter((photo) => photo.kind !== "file");
     const shared = (detail?.shown ?? []).filter((photo) => photo.kind !== "file");
-    return shared.length ? shared : (detail?.photos ?? []).filter((photo) => photo.kind !== "file");
+    if (!shared.length) return own;
+    const live = new Map(own.map((photo) => [photo.id, photo]));
+    const listed = new Set(shared.map((photo) => photo.id));
+    return [
+      ...shared.map((photo) => ({ ...photo, ...live.get(photo.id) })),
+      ...own.filter((photo) => !listed.has(photo.id) && photo.id !== "cover"),
+    ];
   }, [detail?.shown, detail?.photos]);
   const fileGroups = useMemo(() => {
     const groups = new Map<string, Array<Photo & { source: string; name?: string }>>();
@@ -303,6 +317,52 @@ export function ProductDialog({
   });
   const stageIndex = Math.min(photoIndex, Math.max(0, photoList.length - 1));
 
+  /** One name per file, saved in the library like a rename in the Media tab; uploads name themselves. */
+  async function renamePhoto(id: string, tag: string) {
+    if (id.startsWith("tmp-")) return photoActions.retag(id, tag);
+    const before = photoList.find((photo) => photo.id === id)?.tag ?? "";
+    const rename = (value: string) =>
+      setDetail((d) =>
+        d
+          ? {
+              ...d,
+              photos: d.photos.map((photo) => (photo.id === id ? { ...photo, tag: value } : photo)),
+              shown: d.shown?.map((photo) => (photo.id === id ? { ...photo, tag: value } : photo)),
+            }
+          : d,
+      );
+    rename(tag);
+    setError(null);
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rename-file", id, name: tag }),
+    });
+    if (!res.ok) {
+      rename(before);
+      setError((await res.json().catch(() => ({}))).error ?? "Couldn't rename the photo");
+    }
+  }
+
+  /** Deletes the file everywhere (the Tag and the library too); an unfinished upload just stops. */
+  async function removePhoto(id: string) {
+    if (id.startsWith("tmp-")) return photoActions.remove(id);
+    const before = detail;
+    setDetail((d) => (d ? { ...d, photos: d.photos.filter((p) => p.id !== id), shown: d.shown?.filter((p) => p.id !== id) } : d));
+    setError(null);
+    const res = await fetch("/api/media", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [id] }),
+    });
+    if (!res.ok) {
+      setDetail(before);
+      setError((await res.json().catch(() => ({}))).error ?? "Couldn't delete the photo");
+      return;
+    }
+    onSaved();
+  }
+
   useEffect(() => {
     if (!open) return;
     setTab("info");
@@ -311,6 +371,7 @@ export function ProductDialog({
     setConfirmDelete(false);
     setPhotoIndex(0);
     setViewer(null);
+    setDescriptionDraft(undefined);
     setTagDraft("");
     fetch("/api/tags")
       .then((r) => r.json())
@@ -466,6 +527,15 @@ export function ProductDialog({
       return;
     }
     setEditingField(null);
+    if (!isCreate && descriptionDraft !== undefined) {
+      try {
+        await saveDescription({ productId: detail.id }, descriptionDraft);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Couldn't save the description");
+        onSaved();
+        return;
+      }
+    }
     onSaved(
       data?.id ? { id: data.id, code: data.code, name: data.name } : undefined,
     );
@@ -530,7 +600,7 @@ export function ProductDialog({
                     }}
                     className="w-full gap-0"
                   >
-                    <TabsList className="mx-auto w-[300px] bg-[#f2f2f7]">
+                    <TabsList className="mx-auto w-[400px] bg-[#f2f2f7]">
                       <TabsTrigger
                         value="info"
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
@@ -548,11 +618,17 @@ export function ProductDialog({
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
                       >
                         Media
-                        {fileGroups.reduce((n, [, files]) => n + files.length, 0) > 0 && (
+                        {photoList.length + fileGroups.reduce((n, [, files]) => n + files.length, 0) > 0 && (
                           <span className="tabular-nums text-gray-400">
-                            {fileGroups.reduce((n, [, files]) => n + files.length, 0)}
+                            {photoList.length + fileGroups.reduce((n, [, files]) => n + files.length, 0)}
                           </span>
                         )}
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="catalog"
+                        className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
+                      >
+                        Catalog
                       </TabsTrigger>
                     </TabsList>
                   </Tabs>
@@ -1136,23 +1212,36 @@ export function ProductDialog({
                     </div>
                   </div>
                 </div>
-              <div className={cn("min-h-0 flex-1 flex-col gap-4 overflow-y-auto", tab === "photos" ? "flex" : "hidden")}>
-                {fileGroups.map(([source, files]) => (
-                  <section key={source} className="grid gap-2">
-                    <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">{source}</div>
-                    <div className="grid grid-cols-4 gap-3">
-                      {files.map((file) => (
-                        <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="truncate text-sm underline">
-                          {file.name || file.tag || file.fileName || "File"}
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-                {!fileGroups.length && (
-                  <p className="text-sm text-gray-500">No other files. Photos stay on Info. Upload and connect files from the Media tab.</p>
-                )}
+              <div className={cn("min-h-0 flex-1 flex-col", tab === "photos" ? "flex" : "hidden")}>
+                <PhotoGallery
+                  photos={photoList}
+                  onPick={() => fileRef.current?.click()}
+                  onFiles={photoActions.add}
+                  onOpen={setViewer}
+                  onRename={(id, tag) => void renamePhoto(id, tag)}
+                  onRemove={(id) => void removePhoto(id)}
+                  onDownload={(photo, i) => void photoActions.download(photo, photoNames[i] ?? photo.fileName)}
+                >
+                  {fileGroups.map(([source, files]) => (
+                    <section key={source} className="mt-6 grid gap-2">
+                      <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">{source}</div>
+                      <div className="grid grid-cols-4 gap-3">
+                        {files.map((file) => (
+                          <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="truncate text-sm underline">
+                            {file.name || file.tag || file.fileName || "File"}
+                          </a>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </PhotoGallery>
               </div>
+              {/* Kept mounted while the card is open, so switching tabs doesn't drop an unsaved edit. */}
+              {!isCreate && detail.id && (
+                <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "catalog" ? "flex" : "hidden")}>
+                  <CatalogDescription key={detail.id} owner={{ productId: detail.id }} className="flex-1" onChange={setDescriptionDraft} />
+                </div>
+              )}
               <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "log" ? "flex" : "hidden")}>
                   <DataGrid
                     rows={detail.transactions}

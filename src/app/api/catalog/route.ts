@@ -1,6 +1,21 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny } from "@/lib/guard";
 import { assignProduct, catalogLink, setCatalogField, setShared, unassignProduct } from "@/lib/catalog/service";
+import { getCatalogText, setCatalogText } from "@/lib/catalog/text";
+
+/** A description: ?productId= (its Tag's when it has one), ?tagId=, or ?brand=&category=[&family=]. */
+export async function GET(req: Request) {
+  const denied = await deny(["media", "storage"], "view");
+  if (denied) return denied;
+  try {
+    const q = new URL(req.url).searchParams;
+    return jsonOk(
+      await getCatalogText({ productId: q.get("productId"), tagId: q.get("tagId"), brand: q.get("brand"), category: q.get("category"), family: q.get("family") }),
+    );
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : "Couldn't load the description");
+  }
+}
 
 /** Catalog editing from the Media tab, and builder links. */
 export async function POST(req: Request) {
@@ -8,7 +23,7 @@ export async function POST(req: Request) {
   if (denied) return denied;
   try {
     const body = await readJson<{
-      action?: "field" | "shared" | "assign" | "unassign" | "link";
+      action?: "field" | "shared" | "assign" | "unassign" | "link" | "text";
       tagId?: string | null;
       productId?: string | null;
       productIds?: string[];
@@ -17,7 +32,11 @@ export async function POST(req: Request) {
       data?: Record<string, unknown>;
       newTag?: { name: string; productIds: string[] };
       brand?: string;
+      category?: string | null;
+      family?: string | null;
+      content?: unknown;
     }>(req);
+    if (body.action === "text") return jsonOk(await setCatalogText(body, body.content));
     if (body.action === "field") {
       await setCatalogField({ tagId: body.tagId, productId: body.productId }, body.field ?? "", body.visibility ?? "");
       return jsonOk({ ok: true });

@@ -25,7 +25,7 @@ export function ModelGallery({ images, title }: { images: string[]; title: strin
         )}
       </div>
       {images.length > 1 && (
-        <div className="absolute bottom-3 left-3 flex gap-1.5">
+        <div className="absolute bottom-3 left-3 z-10 flex gap-1.5">
           {images.slice(0, 6).map((thumb, i) => (
             <button
               key={thumb}

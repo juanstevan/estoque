@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Eyebrow, SpecRow, WeightRow, type ProductRow } from "@/components/chaleur/ProductDialog";
 import type { FileRow, LinkTarget } from "@/components/chaleur/MediaLibrary";
 import { downloadAs } from "@/components/chaleur/ProductPhotos";
+import { CatalogDescription } from "@/components/chaleur/CatalogDescription";
 import {
   fieldVisibility,
   nextVisibility,
@@ -321,8 +322,9 @@ function Editor({
     <>
       <DialogTitle className="sr-only">{model.name}</DialogTitle>
       <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="no-scrollbar flex min-h-0 flex-col gap-6 overflow-y-auto p-6">
-          <div className="grid gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+        {/* Two columns to the bottom: photos and files on the left, details and description on the right. */}
+        <div className="no-scrollbar grid min-h-0 gap-8 overflow-y-auto p-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+          <div className="flex min-w-0 flex-col gap-6">
             <Gallery
               photo={photo}
               count={photos.length}
@@ -333,49 +335,60 @@ function Editor({
               onMain={() => photo && makeMain(photo.file.id)}
               onOpen={() => photo && setViewing(photo.file.id)}
             />
-            <div className="flex min-w-0 flex-col gap-5">
-              <div>
-                <div className="flex items-start gap-2">
-                  <div className="min-w-0 flex-1">
-                    <Item value={field("title")} dimmed={dim(field("title"))} onToggle={() => toggleField("title")}>
-                      <InlineText value={model.name} label="Model name" onSave={rename} className="text-xl font-semibold text-gray-900" />
-                    </Item>
-                  </div>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          onClick={() => setAudience(nextVisibility(audience))}
-                          className="mt-0.5 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sunken px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-150"
-                        />
-                      }
-                    >
-                      <EyeIcon value={audience} className="size-3.5" />
-                      {AUDIENCE_LABEL[audience]}
-                    </TooltipTrigger>
-                    <TooltipContent>See what each audience sees. Hidden items fade.</TooltipContent>
-                  </Tooltip>
+            <FilesBox
+              documents={documents}
+              inherited={placed.inherited}
+              dim={dim}
+              onAdd={upload}
+              onOpen={onOpenFile}
+              onToggle={(file) => void toggleFile(file)}
+              onRemove={(linkId) => void unlink(linkId)}
+            />
+          </div>
+          <div className="flex min-w-0 flex-col gap-5">
+            <div>
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <Item value={field("title")} dimmed={dim(field("title"))} onToggle={() => toggleField("title")}>
+                    <InlineText value={model.name} label="Model name" onSave={rename} className="text-xl font-semibold text-gray-900" />
+                  </Item>
                 </div>
-                <Item value={field("id")} dimmed={dim(field("id"))} onToggle={() => toggleField("id")}>
-                  <p className="font-mono text-xs text-gray-500">ID {variants.map((p) => p.code).join(" · ")}</p>
-                </Item>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        onClick={() => setAudience(nextVisibility(audience))}
+                        className="mt-0.5 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-sunken px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-150"
+                      />
+                    }
+                  >
+                    <EyeIcon value={audience} className="size-3.5" />
+                    {AUDIENCE_LABEL[audience]}
+                  </TooltipTrigger>
+                  <TooltipContent>See what each audience sees. Hidden items fade.</TooltipContent>
+                </Tooltip>
               </div>
-              <Item value={field("price")} dimmed={dim(field("price"))} onToggle={() => toggleField("price")} label="B2B price">
-                <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
-                  <span className="text-gray-400">$</span>
-                  <NumberField
-                    values={variants.map((p) => (p.b2bPrice > 0 ? p.b2bPrice : null))}
-                    label="B2B price for every variant"
-                    money
-                    className="w-40 text-2xl font-semibold"
-                    onSave={(value) => value != null && saveShared({ b2bPrice: value })}
-                  />
-                </div>
+              <Item value={field("id")} dimmed={dim(field("id"))} onToggle={() => toggleField("id")}>
+                <p className="font-mono text-xs text-gray-500">ID {variants.map((p) => p.code).join(" · ")}</p>
               </Item>
-              {/* The product card's Specs rows; a value the variants don't share shows "—" and Varies. */}
-              <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
-                <Eyebrow>Specs</Eyebrow>
+            </div>
+            <Item value={field("price")} dimmed={dim(field("price"))} onToggle={() => toggleField("price")} label="B2B price">
+              <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
+                <span className="text-gray-400">$</span>
+                <NumberField
+                  values={variants.map((p) => (p.b2bPrice > 0 ? p.b2bPrice : null))}
+                  label="B2B price for every variant"
+                  money
+                  className="w-40 text-2xl font-semibold"
+                  onSave={(value) => value != null && saveShared({ b2bPrice: value })}
+                />
+              </div>
+            </Item>
+            {/* The product card's Specs rows; a value the variants don't share shows "—" and Varies. */}
+            <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
+              <Eyebrow>Specs</Eyebrow>
+              <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
                 <Item value={field("dimensions")} dimmed={dim(field("dimensions"))} onToggle={() => toggleField("dimensions")}>
                   <Varies show={varies(PRODUCT_KEYS)}>
                     <SpecRow
@@ -386,20 +399,6 @@ function Editor({
                       onOpen={setEditing}
                       onDone={closeSpec}
                       onChange={(values) => typeSpec(PRODUCT_KEYS, values)}
-                      isCreate={false}
-                    />
-                  </Varies>
-                </Item>
-                <Item value={field("cutout")} dimmed={dim(field("cutout"))} onToggle={() => toggleField("cutout")}>
-                  <Varies show={varies(CUTOUT_KEYS)}>
-                    <SpecRow
-                      label="Cut-Out"
-                      values={specs(CUTOUT_KEYS)}
-                      editingField={editing}
-                      fieldPrefix="dim-cutout"
-                      onOpen={setEditing}
-                      onDone={closeSpec}
-                      onChange={(values) => typeSpec(CUTOUT_KEYS, values)}
                       isCreate={false}
                     />
                   </Varies>
@@ -416,17 +415,30 @@ function Editor({
                   </Varies>
                 </Item>
               </div>
+              <Item value={field("cutout")} dimmed={dim(field("cutout"))} onToggle={() => toggleField("cutout")}>
+                <Varies show={varies(CUTOUT_KEYS)}>
+                  <SpecRow
+                    label="Cut-Out"
+                    values={specs(CUTOUT_KEYS)}
+                    editingField={editing}
+                    fieldPrefix="dim-cutout"
+                    onOpen={setEditing}
+                    onDone={closeSpec}
+                    onChange={(values) => typeSpec(CUTOUT_KEYS, values)}
+                    isCreate={false}
+                  />
+                </Varies>
+              </Item>
+            </div>
+            {/* The same description the product card's Description tab edits: the Tag's, or the product's without one. */}
+            <div className={cn("group/item flex min-h-56 flex-1 flex-col transition-opacity", dim(field("description")) && "opacity-40")}>
+              <CatalogDescription
+                owner={model.tagId ? { tagId: model.tagId } : { productId: first.id }}
+                className="flex-1 border-t border-gray-150 pt-[13px]"
+                aside={<EyeToggle value={field("description")} onToggle={() => toggleField("description")} />}
+              />
             </div>
           </div>
-          <FilesBox
-            documents={documents}
-            inherited={placed.inherited}
-            dim={dim}
-            onAdd={upload}
-            onOpen={onOpenFile}
-            onToggle={(file) => void toggleFile(file)}
-            onRemove={(linkId) => void unlink(linkId)}
-          />
         </div>
         <aside className="no-scrollbar flex min-h-0 flex-col gap-2 overflow-y-auto bg-sunken p-4 pt-12">
           <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Products</p>

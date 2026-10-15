@@ -183,6 +183,7 @@ model Product {
   tagId            String?
   tag              Tag?                   @relation(fields: [tagId], references: [id], onDelete: SetNull)
   mediaLinks       MediaLink[]
+  catalogText      CatalogText?
 
   @@index([name])
   @@index([ean])
@@ -249,6 +250,25 @@ model Tag {
   catalogFields String @default("{}")
   products Product[]
   links    MediaLink[]
+  text     CatalogText?
+}
+
+/// The catalog description (rich text) of one owner, scoped like a MediaLink: a Tag (shared by its
+/// products), a product without a Tag, or brand + category (+ family). One row per owner.
+model CatalogText {
+  id        String   @id @default(cuid())
+  tagId     String?  @unique
+  productId String?  @unique
+  brand     String?
+  category  String?
+  family    String?
+  /// The editor's document (ProseMirror JSON), cleaned to headings, paragraphs, lists, bold and italic
+  content   String
+  updatedAt DateTime @updatedAt
+  tag       Tag?     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([brand, category, family])
 }
 
 /** One file, many connections. A product sees a file when any connection matches it. */

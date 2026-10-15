@@ -11,6 +11,7 @@ import {
   type CatalogField,
   type Visibility,
 } from "./fields";
+import { readDoc, type RichNode } from "./rich-text";
 import { buildTree } from "./tree";
 
 // ── Editing from the Media tab ─────────────────────────────────────────
@@ -113,10 +114,13 @@ export type SharedModel = {
   dimensions: string | null;
   cutout: string | null;
   weight: string | null;
-  images: string[];
+  /** Photos cleared for the link, in their arranged order: `src` to show, `full` the original for the large view. */
+  images: { src: string; full: string }[];
   files: SharedFile[];
   /** Any variant has stock. The count itself never leaves the app. */
   inStock: boolean;
+  /** The model's description (its Tag's), when there is one and its eye allows it. */
+  description: RichNode | null;
 };
 export type SharedCatalog = {
   brand: string;
@@ -182,6 +186,12 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
   const company = { name: settings?.companyName ?? "Chaleur Manufacturing Co.", phone: settings?.companyPhone ?? null };
   const tree = buildTree(products).find((b) => b.key === link.brand);
   if (!tree) return { brand: link.brand, audience, company, categories: [] };
+  // Only Tags' descriptions: the catalog is Tags, and categories and families aren't published yet.
+  const texts = new Map(
+    (await prisma.catalogText.findMany({ where: { tagId: { in: products.flatMap((p) => (p.tagId ? [p.tagId] : [])) } }, select: { tagId: true, content: true } })).map(
+      (t) => [t.tagId!, readDoc(t.content)],
+    ),
+  );
   const can = (json: string | null | undefined, field: CatalogField) => visibleTo(audience, fieldVisibility(json, field));
 
   return {
@@ -203,7 +213,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                 const fields = m.tagId ? variants[0]!.tag?.catalogFields : variants[0]!.catalogFields;
                 const own = [...(m.tagId ? at.get(`tag|${m.tagId}`) ?? [] : []), ...variants.flatMap((p) => at.get(`product|${p.id}`) ?? [])];
                 const unique = [...new Map(own.map((x) => [x.id, x])).values()].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
-                const photos = unique.filter(isPhoto).map((x) => x.thumbUrl || x.url);
+                const photos = unique.filter(isPhoto).map((x) => ({ src: x.thumbUrl || x.url, full: x.url }));
                 const prices = variants.map((p) => p.b2bPrice).filter((v) => v > 0);
                 return {
                   key: m.key,
@@ -219,6 +229,7 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                   images: photos,
                   files: unique.filter((x) => !isPhoto(x)).map(asFile),
                   inStock: variants.some((p) => p.availableQty > 0),
+                  description: m.tagId && can(fields, "description") ? (texts.get(m.tagId) ?? null) : null,
                 };
               }),
           }))

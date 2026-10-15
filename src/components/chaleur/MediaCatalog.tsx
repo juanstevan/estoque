@@ -288,7 +288,7 @@ export function MediaCatalog({
                             <X />
                           </Button>
                         </div>
-                        <div className="grid grid-flow-row-dense grid-cols-2 gap-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
+                        <div className="grid grid-flow-row-dense grid-cols-2 items-start gap-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
                           {category.families.map((f, i) => (
                             <ViewTransition key={f.key || "-"} name={`mc-fam-${i}`} share="mc-morph" update="mc-morph" default="none">
                               <FamilyBlock
@@ -563,6 +563,7 @@ function FamilyBlock({
   children: React.ReactNode;
 }) {
   const name = family.name || "No family";
+  const single = family.models.length === 1;
   if (!open) {
     return (
       <button
@@ -577,14 +578,15 @@ function FamilyBlock({
     );
   }
   return (
-    <section aria-label={name} className="@container col-span-2 row-span-2 flex flex-col gap-3 rounded-[12px] bg-sunken p-3">
+    // One model fits one column; more get two, so their cards keep a useful size.
+    <section aria-label={name} className={cn("@container flex flex-col gap-3 rounded-[12px] bg-sunken p-3", single ? "col-span-1" : "col-span-2")}>
       <div className="flex items-center justify-between gap-2">
         <Title value={family.name} empty="No family" editable={Boolean(onRename)} className="text-sm" fill onSave={(next) => onRename?.(next) ?? Promise.resolve()} />
         <Button variant="ghost" size="icon-sm" aria-label="Close family" onClick={onClose}>
           <X />
         </Button>
       </div>
-      <div className="grid grid-cols-2 gap-2 @lg:grid-cols-3">{children}</div>
+      <div className={cn("grid gap-2", single ? "grid-cols-1" : "grid-cols-2 @lg:grid-cols-3")}>{children}</div>
     </section>
   );
 }

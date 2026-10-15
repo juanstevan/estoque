@@ -1,22 +1,12 @@
 import type { Metadata } from "next";
-import { Archivo, Lexend } from "next/font/google";
 import Image from "next/image";
-import { notFound } from "next/navigation";
-import { cache } from "react";
-import { ArrowDownToLine } from "lucide-react";
-import { sharedCatalog, type SharedFile, type SharedModel } from "@/lib/catalog/service";
+import { ArrowUpRight } from "lucide-react";
+import type { SharedModel } from "@/lib/catalog/service";
 import { formatMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ModelGallery } from "./gallery";
 import hero from "./brand/hero.jpg";
-import logo from "./brand/logo.svg";
-import logoReversed from "./brand/logo-reversed.svg";
-
-// The Chaleur design kit's type: Archivo (wide display caps) and Lexend (text).
-const archivo = Archivo({ subsets: ["latin"], axes: ["wdth"], variable: "--font-archivo" });
-const lexend = Lexend({ subsets: ["latin"], variable: "--font-lexend" });
-
-const load = cache(sharedCatalog);
+import { caps, Files, focus, load, modelHref, slug, specRows, Stock } from "./shared";
 
 export async function generateMetadata({ params }: { params: Promise<{ token: string }> }): Promise<Metadata> {
   const data = await load((await params).token);
@@ -26,45 +16,17 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
   };
 }
 
-function slug(text: string) {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "other";
-}
-
-const caps = "text-[11px] font-normal tracking-[0.12em] uppercase";
-const focus = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-chaleur-flame";
-
 /** A brand's catalog for whoever holds the link. Built on the server from fields and files cleared for it. */
 export default async function CatalogPage({ params }: { params: Promise<{ token: string }> }) {
-  const data = await load((await params).token);
-  if (!data) notFound();
+  const { token } = await params;
+  const data = (await load(token))!; // the layout already answered a link that isn't valid
 
   const models = data.categories.flatMap((c) => c.families.flatMap((f) => f.models));
   const month = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const priced = models.some((m) => m.price);
 
   return (
-    <div className={cn(archivo.variable, lexend.variable, "min-h-dvh bg-white font-chaleur-text font-light text-chaleur-char antialiased")}>
-      <header className="sticky top-0 z-20 border-b border-chaleur-stone bg-white/90 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-5 sm:gap-10 sm:px-8">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={logo.src} alt="Chaleur" className="h-6 w-auto shrink-0 sm:h-7" />
-          {data.categories.length > 1 && (
-            <nav aria-label="Categories" className="no-scrollbar flex min-w-0 flex-1 gap-1 overflow-x-auto">
-              {data.categories.map((c) => (
-                <a
-                  key={c.key}
-                  href={`#${slug(c.name)}`}
-                  className={cn("shrink-0 px-2 py-1 font-chaleur-display text-[11px] tracking-[0.12em] text-chaleur-iron transition-colors duration-200 hover:text-chaleur-flame", focus)}
-                >
-                  {c.name || "Other"}
-                </a>
-              ))}
-            </nav>
-          )}
-          <span className={cn(caps, "ml-auto hidden shrink-0 text-chaleur-iron md:block")}>Builder catalog</span>
-        </div>
-      </header>
-
+    <>
       <section className="relative isolate overflow-hidden bg-chaleur-char text-white">
         <Image
           src={hero}
@@ -126,49 +88,30 @@ export default async function CatalogPage({ params }: { params: Promise<{ token:
               )}
               <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                 {cards.map(({ m, family }) => (
-                  <ModelCard key={m.key} model={m} family={family} />
+                  <ModelCard key={m.key} model={m} family={family} href={modelHref(token, m)} />
                 ))}
               </div>
             </section>
           );
         })}
       </main>
-
-      <footer className="bg-chaleur-char text-white">
-        <div className="mx-auto grid max-w-[1280px] gap-10 px-5 py-16 sm:grid-cols-[auto_1fr] sm:items-end sm:px-8">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={logoReversed.src} alt="Chaleur" className="h-10 w-auto" />
-          <div className="text-sm text-white/60 sm:text-right">
-            <p className="font-normal text-white">{data.company.name}</p>
-            {data.company.phone && (
-              <a href={`tel:${data.company.phone.replace(/[^\d+]/g, "")}`} className={cn("hover:text-white", focus)}>
-                {data.company.phone}
-              </a>
-            )}
-            <p className="mt-5 text-xs sm:ml-auto sm:max-w-[56ch]">
-              {priced && "Prices are for builders, in US dollars, and may change without notice. "}
-              Sizes are width × depth × height in inches.
-            </p>
-          </div>
-        </div>
-        <div className="h-1 bg-chaleur-flame" aria-hidden />
-      </footer>
-    </div>
+    </>
   );
 }
 
-function ModelCard({ model: m, family }: { model: SharedModel; family: string }) {
-  const specs = [
-    { label: "Dimensions", value: m.dimensions },
-    { label: "Cut-out", value: m.cutout },
-    { label: "Weight", value: m.weight },
-  ].filter((row) => row.value);
+/** The whole card opens the model's page; its photo squares and downloads stay clickable on top. */
+function ModelCard({ model: m, family, href }: { model: SharedModel; family: string; href: string }) {
+  const specs = specRows(m);
   return (
-    <article className="group flex flex-col overflow-hidden rounded-[2px] border border-chaleur-stone bg-white transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(.2,.7,.2,1)] hover:border-chaleur-steel hover:shadow-[0_18px_40px_-24px_rgba(22,21,20,0.35)]">
-      <ModelGallery images={m.images} title={m.title ?? ""} />
+    <article className="group relative flex flex-col overflow-hidden rounded-[2px] border border-chaleur-stone bg-white transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(.2,.7,.2,1)] hover:border-chaleur-steel hover:shadow-[0_18px_40px_-24px_rgba(22,21,20,0.35)]">
+      <ModelGallery images={m.images.map((image) => image.src)} title={m.title ?? ""} />
       <div className="flex flex-1 flex-col p-5 sm:p-6">
         {family && <p className={cn(caps, "mb-1.5 text-chaleur-iron")}>{family}</p>}
-        {m.title && <h3 className="font-chaleur-display text-[22px] leading-[1.05]">{m.title}</h3>}
+        <h3 className="font-chaleur-display text-[22px] leading-[1.05]">
+          <a href={href} className={cn("after:absolute after:inset-0 after:content-['']", focus)}>
+            {m.title ?? <span className="sr-only">View this model</span>}
+          </a>
+        </h3>
         {m.ids && <p className="mt-1.5 text-xs font-normal tracking-[0.06em] text-chaleur-steel tabular-nums">ID {m.ids}</p>}
         {specs.length > 0 && (
           <dl className="mt-5 divide-y divide-chaleur-stone border-y border-chaleur-stone">
@@ -180,7 +123,7 @@ function ModelCard({ model: m, family }: { model: SharedModel; family: string })
             ))}
           </dl>
         )}
-        {m.files.length > 0 && <Files files={m.files} className="mt-4" />}
+        {m.files.length > 0 && <Files files={m.files} className="relative z-10 mt-4" />}
         <div className="mt-auto flex items-end justify-between gap-4 pt-6">
           {m.price ? (
             <p>
@@ -190,36 +133,15 @@ function ModelCard({ model: m, family }: { model: SharedModel; family: string })
           ) : (
             <span />
           )}
-          <p className={cn("inline-flex items-center gap-2 pb-1 text-xs font-normal", m.inStock ? "text-chaleur-good" : "text-chaleur-warn")}>
-            <span className={cn("size-1.5 rounded-full", m.inStock ? "bg-chaleur-good" : "bg-chaleur-warn")} aria-hidden />
-            {m.inStock ? "In stock" : "Out of stock"}
-          </p>
+          <div className="flex flex-col items-end gap-2 pb-1">
+            <Stock inStock={m.inStock} />
+            <span className={cn(caps, "inline-flex items-center gap-1 text-chaleur-iron transition-colors group-hover:text-chaleur-flame")} aria-hidden>
+              Details
+              <ArrowUpRight className="size-3.5" />
+            </span>
+          </div>
         </div>
       </div>
     </article>
-  );
-}
-
-function Files({ files, className }: { files: SharedFile[]; className?: string }) {
-  return (
-    <ul className={cn("flex flex-wrap gap-2", className)}>
-      {files.map((file) => (
-        <li key={file.url}>
-          <a
-            href={file.url}
-            target="_blank"
-            rel="noreferrer"
-            download={file.fileName || undefined}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-[2px] border border-chaleur-stone px-2.5 py-1.5 text-xs font-normal text-chaleur-graphite transition-colors duration-200 hover:border-chaleur-char hover:text-chaleur-char",
-              focus,
-            )}
-          >
-            <ArrowDownToLine className="size-3.5" aria-hidden />
-            {file.name}
-          </a>
-        </li>
-      ))}
-    </ul>
   );
 }

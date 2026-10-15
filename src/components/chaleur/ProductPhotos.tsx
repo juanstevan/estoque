@@ -10,7 +10,6 @@ import {
   ImagePlus,
   Link2,
   Maximize2,
-  Star,
   Trash2,
   X,
 } from "lucide-react";
@@ -33,6 +32,8 @@ export type Photo = {
   height: number | null;
   /** Upload progress 0–1 while the file is still on its way. */
   pending?: number;
+  /** The name it was uploaded with, shown until it gets one of its own. */
+  originalName?: string;
 };
 
 export type PhotoStorage = "blob" | "oidc" | "local" | "none";
@@ -163,6 +164,7 @@ export function usePhotos({
         url,
         thumbUrl,
         tag: current.tag,
+        originalName: file.name,
         contentType: file.type,
         size: file.size,
         width,
@@ -210,6 +212,7 @@ export function usePhotos({
         thumbUrl: preview,
         tag: "",
         fileName: "",
+        originalName: file.name,
         contentType: file.type,
         size: file.size,
         width: null,
@@ -541,31 +544,30 @@ function StageArrow({ side, onClick }: { side: "left" | "right"; onClick: () => 
   );
 }
 
-/** The Photos tab. */
+/**
+ * The photos on the product card's Media tab: this product's own and the ones linked to it from
+ * the Media library (its Tag, family…). Drop or pick files to add; each name changes in place.
+ * Deleting a photo deletes the file, so it leaves the Tag and the library too.
+ */
 export function PhotoGallery({
-  productId,
   photos,
-  names,
-  onError,
   onPick,
   onFiles,
   onOpen,
-  onRetag,
-  onCover,
+  onRename,
   onRemove,
   onDownload,
+  children,
 }: {
-  productId: string | null;
   photos: Photo[];
-  names: string[];
-  onError: (message: string) => void;
   onPick: () => void;
   onFiles: (files: File[]) => void;
   onOpen: (i: number) => void;
-  onRetag: (id: string, tag: string) => void;
-  onCover: (id: string) => void;
+  onRename: (id: string, tag: string) => void;
+  /** Deletes the file, or stops an upload that hasn't finished. */
   onRemove: (id: string) => void;
-  onDownload: (photo: Photo, name: string) => void;
+  onDownload: (photo: Photo, i: number) => void;
+  children?: React.ReactNode;
 }) {
   const drop = useDrop(onFiles);
   return (
@@ -574,38 +576,34 @@ export function PhotoGallery({
         <div className="text-sm text-gray-600">
           {photos.length ? `${photos.length} photo${photos.length === 1 ? "" : "s"}` : "No photos yet"}
         </div>
-        <div className="flex items-center gap-2">
-          {productId && <ShareButton productId={productId} onError={onError} />}
-          <Button variant="secondary" size="sm" onClick={onPick}>
-            <ImagePlus />
-            Add photos
-          </Button>
-        </div>
+        <Button variant="secondary" size="sm" onClick={onPick}>
+          <ImagePlus />
+          Add photos
+        </Button>
       </div>
       <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
-        <div className="grid grid-cols-4 gap-x-4 gap-y-5">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-x-3 gap-y-4">
           {photos.map((photo, i) => (
             <PhotoTile
               key={photo.id}
               photo={photo}
-              cover={i === 0}
               onOpen={() => onOpen(i)}
-              onRetag={(tag) => onRetag(photo.id, tag)}
-              onCover={() => onCover(photo.id)}
+              onRename={(tag) => onRename(photo.id, tag)}
               onRemove={() => onRemove(photo.id)}
-              onDownload={() => onDownload(photo, names[i])}
+              onDownload={() => onDownload(photo, i)}
             />
           ))}
           <button
             type="button"
             onClick={onPick}
-            className="flex aspect-[4/3] flex-col items-center justify-center gap-1.5 rounded-[9px] border border-dashed border-gray-300 text-xs font-medium text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-900"
+            className="flex aspect-square flex-col items-center justify-center gap-1 rounded-md border border-dashed border-gray-300 px-2 text-center text-2xs font-medium text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-900"
           >
             <ImagePlus className="size-4" />
             Add photos
-            <span className="text-2xs font-normal text-gray-400">or drop files here</span>
+            <span className="font-normal text-gray-400">or drop here</span>
           </button>
         </div>
+        {children}
       </div>
       {drop.over && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[9px] border border-gray-900 bg-surface/85 text-sm font-medium text-gray-700">
@@ -618,18 +616,14 @@ export function PhotoGallery({
 
 function PhotoTile({
   photo,
-  cover,
   onOpen,
-  onRetag,
-  onCover,
+  onRename,
   onRemove,
   onDownload,
 }: {
   photo: Photo;
-  cover: boolean;
   onOpen: () => void;
-  onRetag: (tag: string) => void;
-  onCover: () => void;
+  onRename: (tag: string) => void;
   onRemove: () => void;
   onDownload: () => void;
 }) {
@@ -653,12 +647,12 @@ function PhotoTile({
     const tag = draft.trim();
     if (tag === sent.current) return;
     sent.current = tag;
-    onRetag(tag);
+    onRename(tag);
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <div className="group relative aspect-[4/3] overflow-hidden rounded-[9px] border border-border bg-sunken">
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="group relative aspect-square overflow-hidden rounded-md border border-border bg-sunken">
         <button
           type="button"
           className="flex h-full w-full cursor-zoom-in items-center justify-center"
@@ -668,55 +662,40 @@ function PhotoTile({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={photo.thumbUrl}
-            alt={photo.tag || "Product photo"}
+            alt={photo.tag || photo.originalName || "Product photo"}
             loading="lazy"
             className={cn("h-full w-full object-contain", uploading && "opacity-60")}
           />
         </button>
-        {cover && (
-          <span className="pointer-events-none absolute top-2 left-2 rounded-full bg-surface/90 px-2 py-0.5 text-2xs font-medium text-gray-700 shadow-xs">
-            Cover
-          </span>
-        )}
         {uploading && <PendingBar share={photo.pending!} />}
         <div
           className={cn(
-            "absolute top-2 right-2 flex gap-1 transition-opacity duration-[120ms] focus-within:opacity-100",
+            "absolute top-1 right-1 flex gap-1 transition-opacity duration-[120ms] focus-within:opacity-100",
             confirm ? "opacity-100" : "opacity-0 group-hover:opacity-100",
           )}
         >
-          {!uploading && (
-            <>
-              <IconAction label="Download full size" onClick={onDownload}>
-                <Download />
-              </IconAction>
-              {!cover && (
-                <IconAction label="Make cover" onClick={onCover}>
-                  <Star />
-                </IconAction>
-              )}
-            </>
-          )}
-          {confirm ? (
+          {uploading ? (
+            <IconAction label="Cancel upload" className="hover:text-danger-text" onClick={onRemove}>
+              <X />
+            </IconAction>
+          ) : confirm ? (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove();
-              }}
+              onClick={onRemove}
               className="flex h-7 items-center gap-1 rounded-md bg-danger-text px-2 text-2xs font-medium text-white shadow-xs"
             >
               <Trash2 className="size-3.5" />
               Delete
             </button>
           ) : (
-            <IconAction
-              label={uploading ? "Cancel upload" : "Delete"}
-              className="hover:text-danger-text"
-              onClick={() => (uploading ? onRemove() : setConfirm(true))}
-            >
-              {uploading ? <X /> : <Trash2 />}
-            </IconAction>
+            <>
+              <IconAction label="Download full size" onClick={onDownload}>
+                <Download />
+              </IconAction>
+              <IconAction label="Delete everywhere, Tag included" className="hover:text-danger-text" onClick={() => setConfirm(true)}>
+                <Trash2 />
+              </IconAction>
+            </>
           )}
         </div>
       </div>
@@ -739,15 +718,13 @@ function PhotoTile({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Add a tag, e.g. front"
-        aria-label="Photo tag"
+        placeholder={photo.originalName || "Name it, e.g. front"}
+        aria-label="Photo name"
         maxLength={80}
         style={{ boxShadow: "none" }}
-        className="h-[1.5rem] w-full min-w-0 rounded-md border border-transparent bg-transparent px-1.5 text-sm font-medium text-gray-900 outline-none placeholder:font-normal placeholder:text-gray-400 hover:bg-gray-100 focus:border-gray-400 focus:bg-surface"
+        className="h-6 w-full min-w-0 rounded-md border border-transparent bg-transparent px-1 text-xs font-medium text-gray-900 outline-none placeholder:font-normal placeholder:text-gray-400 hover:bg-gray-100 focus:border-gray-400 focus:bg-surface"
       />
-      <div className="px-1.5 text-2xs text-gray-400">
-        {uploading ? "Uploading…" : photoMeta(photo)}
-      </div>
+      {uploading && <div className="px-1 text-2xs text-gray-400">Uploading…</div>}
     </div>
   );
 }

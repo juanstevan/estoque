@@ -53,7 +53,8 @@ function ownedUrl(url: string) {
 }
 
 /** Only files this feature uploaded and nothing else still points at; /catalog images ship with the app. */
-async function deleteFiles(urls: string[]) {
+/** Removes stored files no record uses any more. */
+export async function deleteFiles(urls: string[]) {
   const candidates = [...new Set(urls)].filter(ownedUrl);
   const stillUsed = await prisma.productPhoto.findMany({
     where: { OR: [{ url: { in: candidates } }, { thumbUrl: { in: candidates } }] },
@@ -135,12 +136,8 @@ function sync(owner: Owner, removedUrl?: string) {
 
 export async function addAssets(owner: Owner, inputs: AssetInput[]) {
   inputs.forEach(checkInput);
-  const last = await prisma.productPhoto.findFirst({
-    where: ownerWhere(owner),
-    orderBy: { position: "desc" },
-    select: { position: true },
-  });
-  const start = (last?.position ?? -1) + 1;
+  // After everything already arranged, here and in the Media tab (library files use the same clock).
+  const start = Date.now();
   const created = await prisma.$transaction(
     inputs.map((asset, i) =>
       prisma.productPhoto.create({

@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { composeName, groupBase, mediaFileNames, photoBase, splitName } from "@/lib/photos/name";
 import { pushQuickBooksItem } from "@/lib/quickbooks/qbo";
-import { syncPhotos } from "@/lib/photos/service";
+import { deleteFiles, syncPhotos } from "@/lib/photos/service";
 import { VISIBILITY, type Visibility } from "@/lib/catalog/fields";
 
 const COLORS = ["#e11d48", "#ea580c", "#ca8a04", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#db2777", "#475569", "#b45309"];
@@ -100,6 +100,7 @@ export type ShownFile = {
   width: number | null;
   height: number | null;
   tag: string;
+  originalName: string;
   fileName: string;
   visibility: string;
   position: number;
@@ -135,6 +136,7 @@ function shown(photo: PhotoRow, scope: Scope): ShownFile {
     width: photo.width,
     height: photo.height,
     tag: photo.tag,
+    originalName: photo.originalName,
     fileName: photo.fileName,
     visibility: photo.visibility,
     position: photo.position,
@@ -347,10 +349,18 @@ export async function removeConnection(id: string) {
   await prisma.mediaLink.delete({ where: { id } });
 }
 
+/**
+ * Deletes files everywhere: their links go with them, the stored file too when nothing else uses
+ * it, and a product that owned one gets its cover and download names again.
+ */
 export async function deleteLibraryFiles(ids: string[]) {
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return;
+  const rows = await prisma.productPhoto.findMany({ where: { id: { in: unique } }, select: { url: true, thumbUrl: true, productId: true } });
   await prisma.productPhoto.deleteMany({ where: { id: { in: unique } } });
+  await deleteFiles(rows.flatMap((row) => [row.url, row.thumbUrl]));
+  const owners = new Map(rows.flatMap((row) => (row.productId ? [[row.productId, row.url] as const] : [])));
+  for (const [productId, url] of owners) await syncPhotos(productId, url);
 }
 
 /** Renames a tag, brand, category, or family everywhere it is used, including product names built from category and family. */
