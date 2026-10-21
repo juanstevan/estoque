@@ -886,3 +886,91 @@ export function SchedulePicker({
     </div>
   );
 }
+
+// ---------------------------------------------------------------- returns
+
+/**
+ * Units of a delivered invoice that physically came back. Good ones are available again;
+ * damaged or still to evaluate, they stay set aside until released or written off.
+ */
+export function ReturnDialog({ order, onClose, onDone }: { order: Order; onClose: () => void; onDone: (detail: Detail) => void }) {
+  const lines = order.lines.filter((line) => line.physical && line.deliveredQty - line.returnedQty > 0);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [condition, setCondition] = useState<"good" | "damaged">("damaged");
+  const [reason, setReason] = useState("");
+  const [date, setDate] = useState(todayDay());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  // One id per opening: a retried request is recorded once.
+  const [requestId] = useState(() => crypto.randomUUID());
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+
+  function submit() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    void post({ action: "return", orderId: order.id, lines: counts, condition, reason, date, requestId })
+      .then(
+        (detail) => {
+          onDone(detail);
+          onClose();
+        },
+        (e: Error) => setError(e.message),
+      )
+      .finally(() => setBusy(false));
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogContent className="sm:max-w-[520px]">
+        <Heading title="Record a return" order={order} />
+        <div className="flex flex-col gap-3">
+          {lines.map((line) => (
+            <div key={line.id} className="flex items-center gap-3">
+              <ItemName name={line.product.name} code={line.product.code} sku={line.product.sku} />
+              <Stepper
+                label={`${line.product.name} returned`}
+                value={counts[line.id] ?? 0}
+                max={line.deliveredQty - line.returnedQty}
+                onChange={(value) => setCounts((c) => ({ ...c, [line.id]: value }))}
+              />
+            </div>
+          ))}
+        </div>
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-sm font-medium text-gray-700">Condition</legend>
+          {(
+            [
+              ["good", "Good, back to available stock"],
+              ["damaged", "Damaged or to evaluate, set aside (not available)"],
+            ] as const
+          ).map(([id, label]) => (
+            <label key={id} className="flex h-7 cursor-pointer items-center gap-3 text-sm text-gray-900">
+              <input type="radio" name="return-condition" className="size-4 accent-[var(--primary)]" checked={condition === id} onChange={() => setCondition(id)} />
+              {label}
+            </label>
+          ))}
+        </fieldset>
+        <div className="grid grid-cols-[1fr_auto] gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="return-reason">Reason</Label>
+            <Input id="return-reason" value={reason} placeholder="Why it came back" onChange={(e) => setReason(e.target.value)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="return-date">Came back on</Label>
+            <Input id="return-date" type="date" className="w-40" value={date} max={todayDay()} onChange={(e) => setDate(e.target.value)} />
+          </div>
+        </div>
+        <Problem text={error} />
+        <DialogFooter>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={busy || !total || !reason.trim() || !date} onClick={submit}>
+            {total ? `Record ${total} returned` : "Record return"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

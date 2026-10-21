@@ -2,9 +2,12 @@ import { ImportKind, ImportStatus } from "@prisma/client";
 import {
   deleteImportation,
   listImportations,
+  receiveImportation,
   setImportStatus,
   upsertImportation,
 } from "@/lib/inventory/service";
+import { ownedProofUrl, removeLocalProofs, saveProofFile } from "@/lib/inventory/proof-file";
+import { photoStorage } from "@/lib/photos/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny, guard } from "@/lib/guard";
 
@@ -21,13 +24,34 @@ export async function GET() {
   }
 }
 
+/** A YYYY-MM-DD day at noon UTC, the same day in New York. */
+function day(value: string | null | undefined) {
+  return value ? new Date(`${value.slice(0, 10)}T12:00:00.000Z`) : null;
+}
+
 export async function POST(req: Request) {
   const me = await guard("imports", "edit");
   if (me instanceof Response) return me;
+  if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
+    // Local development: the photos come with the request and are saved here first.
+    if (photoStorage() !== "local") return jsonError("Photos upload to storage first", 400);
+    const form = await req.formData();
+    const id = String(form.get("id") ?? "");
+    const files = form.getAll("file").filter((file): file is File => file instanceof File);
+    const saved: string[] = [];
+    try {
+      for (const file of files) saved.push(await saveProofFile(`import-${id}`, file));
+      return jsonOk(await receiveImportation(id, { receivedAt: day(String(form.get("receivedAt") ?? "")) ?? new Date(NaN), photos: saved, actor: me }));
+    } catch (e) {
+      await removeLocalProofs(saved);
+      return jsonError(e instanceof Error ? e.message : "Couldn't receive it", 400);
+    }
+  }
   try {
     const body = await readJson<{
       id?: string;
-      action?: "save" | "status" | "delete";
+      action?: "save" | "status" | "delete" | "receive";
+      photos?: string[];
       reference?: string;
       kind?: ImportKind;
       status?: ImportStatus;
@@ -50,6 +74,14 @@ export async function POST(req: Request) {
         purchaseUnitCost: number;
       }>;
     }>(req);
+
+    if (body.action === "receive" && body.id) {
+      const photos = Array.isArray(body.photos) ? body.photos : [];
+      if (photos.some((url) => typeof url !== "string" || !ownedProofUrl(url, `import-${body.id}`))) {
+        return jsonError("Upload the photos through the app", 400);
+      }
+      return jsonOk(await receiveImportation(body.id, { receivedAt: day(body.receivedAt) ?? new Date(NaN), photos, actor: me }));
+    }
 
     if (body.action === "status" && body.id && body.status) {
       return jsonOk(await setImportStatus(body.id, body.status, me.id));
@@ -77,8 +109,6 @@ export async function POST(req: Request) {
       lines: body.lines,
       expectedDate: body.expectedDate ? new Date(body.expectedDate) : null,
       // A day (YYYY-MM-DD) at noon UTC, the same day in New York.
-      receivedAt:
-        body.receivedAt === undefined ? undefined : body.receivedAt ? new Date(`${body.receivedAt.slice(0, 10)}T12:00:00.000Z`) : null,
       historical: body.historical,
       userId: me.id,
     });

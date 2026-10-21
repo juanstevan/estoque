@@ -194,12 +194,17 @@ export async function removeAsset(owner: Owner, id: string) {
 }
 
 /** Uploads the app made but never saved (create cancelled, or add failed). */
+/** Deletes uploads nothing points to. Saved photos and delivery or arrival proofs are never touched. */
 export async function discardUploads(urls: string[]) {
-  const used = await prisma.productPhoto.findMany({
-    where: { OR: [{ url: { in: urls } }, { thumbUrl: { in: urls } }] },
-    select: { url: true, thumbUrl: true },
-  });
-  const keep = new Set(used.flatMap((p) => [p.url, p.thumbUrl]));
+  const [used, orderProofs, importProofs] = await Promise.all([
+    prisma.productPhoto.findMany({
+      where: { OR: [{ url: { in: urls } }, { thumbUrl: { in: urls } }] },
+      select: { url: true, thumbUrl: true },
+    }),
+    prisma.orderProof.findMany({ where: { url: { in: urls } }, select: { url: true } }),
+    prisma.importationProof.findMany({ where: { url: { in: urls } }, select: { url: true } }),
+  ]);
+  const keep = new Set([...used.flatMap((p) => [p.url, p.thumbUrl]), ...orderProofs.map((p) => p.url), ...importProofs.map((p) => p.url)]);
   await deleteFiles(urls.filter((u) => !keep.has(u)));
 }
 

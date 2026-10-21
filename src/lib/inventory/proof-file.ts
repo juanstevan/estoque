@@ -41,3 +41,24 @@ export async function readProofBytes(url: string) {
     type: res.headers.get("content-type") || "application/octet-stream",
   };
 }
+
+/** A photo URL the app's own storage gave out for `proofs/<folder>/…`, never an arbitrary address. */
+export function ownedProofUrl(url: string, folder?: string) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname.endsWith(".blob.vercel-storage.com") &&
+      parsed.pathname.startsWith(folder ? `/proofs/${folder}/` : "/proofs/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function removeLocalProofs(urls: string[]) {
+  const { rm } = await import("fs/promises");
+  for (const url of urls) {
+    const rel = url.startsWith("local:") ? url.slice("local:".length) : "";
+    if (rel && !rel.includes("..")) await rm(path.join(root, rel), { force: true });
+  }
+}

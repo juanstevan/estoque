@@ -24,6 +24,7 @@ export type OrderLine = {
   orderedQty: number;
   reservedQty: number;
   deliveredQty: number;
+  returnedQty: number;
   unitPrice: number;
   physical: boolean;
   product: Product;

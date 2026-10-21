@@ -71,6 +71,8 @@ export type ProductRow = {
   hsCode: string | null;
   physicalQty: number;
   availableQty: number;
+  /** On hand but set aside: returned damaged or awaiting evaluation. */
+  unavailableQty: number;
   reservedQty: number;
   avgCost: number;
   inventoryValue: number;
@@ -168,6 +170,7 @@ function blankDetail(): Detail {
     hsCode: null,
     physicalQty: 0,
     availableQty: 0,
+    unavailableQty: 0,
     reservedQty: 0,
     avgCost: 0,
     inventoryValue: 0,
@@ -1024,6 +1027,9 @@ export function ProductDialog({
                               {formatQty(detail.availableQty)}un
                               <Search className="size-3.5 text-gray-500" />
                             </div>
+                            {detail.unavailableQty > 0 && (
+                              <div className="text-2xs text-warning-text tabular-nums">{formatQty(detail.unavailableQty)} set aside</div>
+                            )}
                           </PopoverTrigger>
                             <PopoverContent
                               align="start"
@@ -1446,7 +1452,8 @@ function QuantityDialog({
   onSaved: () => void;
   onError: (message: string) => void;
 }) {
-  const [mode, setMode] = useState<"add" | "remove" | "cost">("add");
+  const [mode, setMode] = useState<"add" | "remove" | "cost" | "aside">("add");
+  const [aside, setAside] = useState<"release" | "write-off">("release");
   const [quantity, setQuantity] = useState(1);
   // Text, so a decimal point can be typed.
   const [cost, setCost] = useState(String(product.avgCost));
@@ -1464,7 +1471,10 @@ function QuantityDialog({
     requestId.current = crypto.randomUUID();
   }, [open, product.avgCost, reasons]);
 
-  const newQty = mode === "cost" ? product.physicalQty : product.physicalQty + (mode === "add" ? quantity : -quantity);
+  const newQty =
+    mode === "cost" || (mode === "aside" && aside === "release")
+      ? product.physicalQty
+      : product.physicalQty + (mode === "add" ? quantity : -quantity);
   const newCost = mode === "cost" ? Number(cost) || 0 : product.avgCost;
 
   async function save() {
@@ -1478,7 +1488,9 @@ function QuantityDialog({
         body: JSON.stringify(
           mode === "cost"
             ? { productId: product.id, mode, avgCost: Number(cost), reason }
-            : { productId: product.id, mode, quantity, reason, requestId: requestId.current },
+            : mode === "aside"
+              ? { productId: product.id, mode: aside, quantity, reason }
+              : { productId: product.id, mode, quantity, reason, requestId: requestId.current },
         ),
       });
       if (!res.ok) {
@@ -1495,15 +1507,34 @@ function QuantityDialog({
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent showCloseButton={false} className="gap-5">
-        <DialogTitle>{mode === "cost" ? "Correct cost" : "Change quantity"}</DialogTitle>
+        <DialogTitle>{mode === "cost" ? "Correct cost" : mode === "aside" ? "Units set aside" : "Change quantity"}</DialogTitle>
 
-        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove" | "cost")}>
-          <TabsList className="w-72">
+        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove" | "cost" | "aside")}>
+          <TabsList className={product.unavailableQty > 0 ? "w-96" : "w-72"}>
             <TabsTrigger value="remove">Remove</TabsTrigger>
             <TabsTrigger value="add">Add</TabsTrigger>
             <TabsTrigger value="cost">Cost</TabsTrigger>
+            {product.unavailableQty > 0 && <TabsTrigger value="aside">Set aside</TabsTrigger>}
           </TabsList>
         </Tabs>
+        {mode === "aside" && (
+          <div className="-mt-1 flex flex-col gap-2 text-sm text-gray-900">
+            <p className="text-xs text-gray-600">
+              {formatQty(product.unavailableQty)} {product.unavailableQty === 1 ? "unit is" : "units are"} on hand but not available (returned damaged or to evaluate).
+            </p>
+            {(
+              [
+                ["release", "Release to available stock"],
+                ["write-off", "Write off (leaves stock)"],
+              ] as const
+            ).map(([id, label]) => (
+              <label key={id} className="flex cursor-pointer items-center gap-3">
+                <input type="radio" name="aside-mode" className="size-4 accent-[var(--primary)]" checked={aside === id} onChange={() => setAside(id)} />
+                {label}
+              </label>
+            ))}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-end gap-3">
           {mode === "cost" ? (
@@ -1554,7 +1585,11 @@ function QuantityDialog({
         <p className="-mt-2 text-xs text-gray-500">
           {mode === "cost"
             ? "Only the cost changes. The quantity stays as it is."
-            : `Units ${mode === "add" ? "come in" : "go out"} at the current average cost, which stays as it is.`}
+            : mode === "aside"
+              ? aside === "release"
+                ? "The units become available again; the quantity on hand stays."
+                : "The units leave stock at the current average cost."
+              : `Units ${mode === "add" ? "come in" : "go out"} at the current average cost, which stays as it is.`}
         </p>
 
         <DialogFooter>
@@ -1562,7 +1597,7 @@ function QuantityDialog({
             Cancel
           </Button>
           <Button onClick={() => void save()}>
-            {mode === "cost" ? "Save cost" : mode === "add" ? "Add stock" : "Remove stock"}
+            {mode === "cost" ? "Save cost" : mode === "aside" ? (aside === "release" ? "Release" : "Write off") : mode === "add" ? "Add stock" : "Remove stock"}
           </Button>
         </DialogFooter>
       </DialogContent>

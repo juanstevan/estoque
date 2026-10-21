@@ -164,6 +164,7 @@ model Product {
   reservedQty        Float    @default(0)
   waitingPickupQty   Float    @default(0)
   waitingDeliveryQty Float    @default(0)
+  /// Units on hand that can't be sold: returned damaged or awaiting evaluation. Not available.
   unavailableQty     Float    @default(0)
   avgCost            Float    @default(0)
   inventoryValue     Float    @default(0)
@@ -359,7 +360,20 @@ model Importation {
   /// An importation from before the stock count: it sets the cost basis and never adds units.
   historical           Boolean      @default(false)
 
-  lines ImportationLine[]
+  lines  ImportationLine[]
+  proofs ImportationProof[]
+}
+
+/** A photo taken when an importation arrived. Receiving requires one (historical ones excepted). */
+model ImportationProof {
+  id            String      @id @default(cuid())
+  importationId String
+  url           String
+  actor         String
+  createdAt     DateTime    @default(now())
+  importation   Importation @relation(fields: [importationId], references: [id], onDelete: Cascade)
+
+  @@index([importationId])
 }
 
 model ImportationLine {
@@ -496,6 +510,8 @@ model OrderLine {
   physical         Boolean @default(true)
   /// The QuickBooks invoice line it came from, so the same item on two lines stays two lines.
   qbLineId         String?
+  /// Units of this line that came back (recorded returns). Delivered − returned is what the customer kept.
+  returnedQty      Float   @default(0)
 
   order      Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product    Product        @relation(fields: [productId], references: [id])

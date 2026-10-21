@@ -81,8 +81,10 @@ export async function appendTransaction(
     affectsPhysical?: boolean;
     affectsCost?: boolean;
     reason?: string | null;
-    /** A removal may not dip into units reserved for invoices. */
+    /** A removal may not dip into units reserved for invoices or set aside as unavailable. */
     keepReserved?: boolean;
+    /** Units that come in (or leave) as unavailable: damaged or awaiting evaluation. */
+    unavailableDelta?: number;
   },
 ) {
   await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
@@ -106,9 +108,10 @@ export async function appendTransaction(
     if (nextPhysical < 0) {
       throw new Error(`Insufficient quantity for ${product.sku}`);
     }
-    if (input.keepReserved && quantity < 0 && nextPhysical < product.reservedQty) {
+    const held = product.reservedQty + product.unavailableQty + Math.min(0, input.unavailableDelta ?? 0);
+    if (input.keepReserved && quantity < 0 && nextPhysical < held) {
       throw new Error(
-        `${product.name}: ${product.reservedQty} of its ${product.physicalQty} units are reserved for invoices, so only ${Math.max(0, roundMoney(product.physicalQty - product.reservedQty))} can be removed.`,
+        `${product.name}: ${held} of its ${product.physicalQty} units are reserved for invoices or set aside, so only ${Math.max(0, roundMoney(product.physicalQty - held))} can be removed.`,
       );
     }
   }
@@ -130,9 +133,12 @@ export async function appendTransaction(
     nextValue = roundMoney(product.inventoryValue + quantity * product.avgCost);
   }
 
+  const unavailableQty = roundMoney(product.unavailableQty + (input.unavailableDelta ?? 0));
+  if (unavailableQty < 0 || unavailableQty > nextPhysical) throw new Error(`${product.name}: that's more than the units set aside`);
   const availableQty = recomputeAvailable({
     physicalQty: nextPhysical,
     reservedQty: product.reservedQty,
+    unavailableQty,
   });
 
   const txn = await tx.inventoryTransaction.create({
@@ -150,7 +156,7 @@ export async function appendTransaction(
       metadata: JSON.stringify({
         ...input.metadata,
         before: snapshot(product),
-        after: { physicalQty: nextPhysical, avgCost: nextAvg, inventoryValue: nextValue },
+        after: { physicalQty: nextPhysical, avgCost: nextAvg, inventoryValue: nextValue, unavailableQty },
       }),
     },
   });
@@ -162,6 +168,7 @@ export async function appendTransaction(
       inventoryValue: nextValue,
       avgCost: nextAvg,
       availableQty,
+      unavailableQty,
       cifCost: affectsCost && quantity > 0 ? unitCost : product.cifCost,
     },
   });
@@ -185,11 +192,11 @@ export async function appendTransaction(
   return txn;
 }
 
-type Snapshot = { physicalQty: number; avgCost: number; inventoryValue: number; fobCost?: number; cifCost?: number };
+type Snapshot = { physicalQty: number; avgCost: number; inventoryValue: number; unavailableQty?: number; fobCost?: number; cifCost?: number };
 
 /** What a movement found, so its log shows before and after and a reversal can put it back. */
 function snapshot(p: Snapshot): Snapshot {
-  return { physicalQty: p.physicalQty, avgCost: p.avgCost, inventoryValue: p.inventoryValue, fobCost: p.fobCost, cifCost: p.cifCost };
+  return { physicalQty: p.physicalQty, avgCost: p.avgCost, inventoryValue: p.inventoryValue, unavailableQty: p.unavailableQty, fobCost: p.fobCost, cifCost: p.cifCost };
 }
 
 function readMeta(raw: string | null): Record<string, unknown> {
@@ -287,6 +294,36 @@ async function applyCostBasis(
     notes: opts.notes,
     metadata: { importationId: opts.importationId, action: "cost-basis", importedUnits: units },
   });
+}
+
+/**
+ * Units set aside (returned damaged or to evaluate) leave that state: released back to available
+ * stock after evaluation, or written off (they leave stock at the current average cost).
+ */
+export async function resolveSetAside(input: {
+  productId: string;
+  mode: "release" | "write-off";
+  quantity: number;
+  reason: string;
+  userId: string;
+}) {
+  if (!input.reason?.trim()) throw new Error("Reason is required");
+  if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("Quantity must be greater than 0");
+  const release = input.mode === "release";
+  if (!release && input.mode !== "write-off") throw new Error("Choose Release or Write off");
+  return prisma.$transaction((tx) =>
+    appendTransaction(tx, {
+      productId: input.productId,
+      type: TransactionType.ADJUSTMENT,
+      quantity: release ? 0 : -input.quantity,
+      affectsPhysical: !release,
+      affectsCost: false,
+      unavailableDelta: -input.quantity,
+      notes: input.reason.trim(),
+      userId: input.userId,
+      metadata: { reason: input.reason.trim(), mode: input.mode, setAside: input.quantity },
+    }),
+  );
 }
 
 /** IDs the app picks itself belong to the secondary line: three base-36 characters with at
@@ -649,7 +686,10 @@ async function lockImportation(tx: Tx, id: string) {
   return tx.importation.findUniqueOrThrow({ where: { id }, include: { lines: true } });
 }
 
-const importInclude = { lines: { include: { product: true } } } as const;
+const importInclude = {
+  lines: { include: { product: true } },
+  proofs: { select: { id: true, actor: true, createdAt: true }, orderBy: { createdAt: "asc" as const } },
+} as const;
 
 export async function upsertImportation(input: {
   id?: string;
@@ -658,8 +698,6 @@ export async function upsertImportation(input: {
   status?: ImportStatus;
   supplierName?: string | null;
   expectedDate?: Date | null;
-  /** The day it was actually received; completing it records the units on that day. */
-  receivedAt?: Date | null;
   historical?: boolean;
   notes?: string | null;
   transferFee?: number;
@@ -680,10 +718,6 @@ export async function upsertImportation(input: {
     otherCosts: input.otherCosts ?? 0,
   };
   if (Object.values(costs).some((v) => !Number.isFinite(v) || v < 0)) throw new Error("Costs must be 0 or more");
-  if (input.receivedAt && Number.isNaN(input.receivedAt.getTime())) throw new Error("Pick a valid received date");
-  if (input.receivedAt && input.receivedAt.getTime() > Date.now() + 24 * 60 * 60 * 1000) {
-    throw new Error("The received date can't be in the future");
-  }
   const totalAdditional = additionalImportCosts(costs);
   const productSubtotal = roundMoney(
     input.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
@@ -741,7 +775,6 @@ export async function upsertImportation(input: {
       status,
       delayOverridden,
       historical,
-      receivedAt: input.receivedAt === undefined ? existing?.receivedAt ?? null : input.receivedAt,
       supplierName: input.supplierName ?? null,
       expectedDate: input.expectedDate ?? null,
       notes: input.notes ?? null,
@@ -803,12 +836,16 @@ export async function setImportStatus(id: string, status: ImportStatus, userId: 
   return prisma.$transaction(async (tx) => {
     const current = await lockImportation(tx, id);
     if (status === ImportStatus.COMPLETED) {
-      if (current.status !== ImportStatus.COMPLETED) await completeLocked(tx, current, userId);
+      if (current.status !== ImportStatus.COMPLETED) {
+        if (!current.historical) throw new Error(RECEIVE_WITH_PHOTO);
+        await completeLocked(tx, current, userId, current.receivedAt ?? new Date());
+      }
       return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
     }
     if (current.status === ImportStatus.COMPLETED) {
       await reopenLocked(tx, current, userId);
-      return tx.importation.update({ where: { id }, data: { status }, include: importInclude });
+      // Not received any more. The expected date stays as it was; the receipt photos stay as history.
+      return tx.importation.update({ where: { id }, data: { status, receivedAt: null }, include: importInclude });
     }
     const delayOverridden =
       current.status === ImportStatus.DELAYED && status !== ImportStatus.DELAYED;
@@ -918,7 +955,7 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
         physicalQty,
         inventoryValue,
         avgCost,
-        availableQty: recomputeAvailable({ physicalQty, reservedQty: product.reservedQty }),
+        availableQty: recomputeAvailable({ ...product, physicalQty }),
         ...(before?.fobCost !== undefined ? { fobCost: before.fobCost } : {}),
         ...(before?.cifCost !== undefined ? { cifCost: before.cifCost } : {}),
       },
@@ -937,13 +974,29 @@ export async function deleteImportation(id: string) {
   });
 }
 
-export async function confirmImportation(importationId: string, userId: string) {
+export const RECEIVE_WITH_PHOTO = "Receive it with the arrival date and a photo of the products.";
+
+/**
+ * Receiving: the day it actually arrived (its expected date stays as it was) and at least one
+ * photo of the products, saved with the units in one transaction, so either all of it happens or
+ * none of it. Receiving again returns it as it is; nothing is added twice.
+ */
+export async function receiveImportation(
+  importationId: string,
+  input: { receivedAt: Date; photos: string[]; actor: { id: string; name: string } },
+) {
+  if (Number.isNaN(input.receivedAt.getTime())) throw new Error("Pick the day it arrived");
+  if (input.receivedAt.getTime() > Date.now() + 24 * 60 * 60 * 1000) throw new Error("The arrival date can't be in the future");
   return prisma.$transaction(async (tx) => {
     const importation = await lockImportation(tx, importationId);
     if (importation.status === ImportStatus.COMPLETED) {
-      throw new Error("Importation already received");
+      return tx.importation.findUniqueOrThrow({ where: { id: importationId }, include: importInclude });
     }
-    await completeLocked(tx, importation, userId);
+    if (!importation.historical && !input.photos.length) throw new Error("Add a photo of the products that arrived.");
+    await completeLocked(tx, importation, input.actor.id, input.receivedAt);
+    for (const url of input.photos) {
+      await tx.importationProof.create({ data: { importationId, url, actor: input.actor.name || input.actor.id } });
+    }
     return tx.importation.findUniqueOrThrow({ where: { id: importationId }, include: importInclude });
   });
 }
@@ -952,10 +1005,9 @@ export async function confirmImportation(importationId: string, userId: string) 
  * Receives a locked importation. A normal one adds its units at their landed (CIF) cost on the
  * received day. A historical one adds no units: it only feeds the cost basis of its products.
  */
-async function completeLocked(tx: Tx, importation: LockedImportation, userId: string) {
+async function completeLocked(tx: Tx, importation: LockedImportation, userId: string, receivedAt: Date) {
   if (importation.lines.length === 0) throw new Error("Importation has no products");
   checkImportLines(importation.lines, importation.historical);
-  const receivedAt = importation.receivedAt ?? new Date();
 
   const totalAdditional = additionalImportCosts(importation);
   const productSubtotal = roundMoney(
@@ -1054,15 +1106,19 @@ export async function listImportations() {
   await applyOverdueDelays();
   return prisma.importation.findMany({
     orderBy: { createdAt: "desc" },
-    include: { lines: { include: { product: true } } },
+    include: importInclude,
   });
 }
 
 export async function getImportation(id: string) {
   return prisma.importation.findUnique({
     where: { id },
-    include: { lines: { include: { product: true } } },
+    include: importInclude,
   });
+}
+
+export async function importationProof(id: string) {
+  return prisma.importationProof.findUnique({ where: { id } });
 }
 
 export function importationMetrics(imp: {

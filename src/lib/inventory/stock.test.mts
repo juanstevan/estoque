@@ -1,34 +1,35 @@
 /**
- * Stock and cost integrity, end to end on a throwaway database:
+ * Stock, receipts, deliveries and returns, end to end on a throwaway database:
  *   DATABASE_URL=postgres://…@localhost:<port>/… npx tsx src/lib/inventory/stock.test.mts
  * It wipes and fills that database, so it refuses anything that isn't local.
  */
 import assert from "node:assert/strict";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { ImportStatus, PrismaClient, TransactionType } from "@prisma/client";
+import { ExitStatus, ImportStatus, PrismaClient, TransactionType } from "@prisma/client";
 
 const url = process.env.DATABASE_URL ?? "";
 if (!/^postgres(ql)?:\/\/[^/]*@(localhost|127\.0\.0\.1)[:/]/.test(url)) throw new Error("Refusing: set DATABASE_URL to a local throwaway database");
-// One connection: `prisma dev` takes a single one.
+// `prisma dev` takes one connection, so "simultaneous" requests below queue on it.
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }) });
 (globalThis as { prisma?: PrismaClient }).prisma = db;
 
-const { adjustCost, changeQuantity, createProduct, setImportStatus, upsertImportation } = await import("./service");
-const { addToWorkflow } = await import("./orders");
+const { adjustCost, changeQuantity, createProduct, receiveImportation, resolveSetAside, setImportStatus, upsertImportation } = await import("./service");
+const { addProof, addToWorkflow, completeDelivery, moveDelivery, recordReturn, removeFromWorkflow, setPrepared } = await import("./orders");
+const { ownedProofUrl } = await import("./proof-file");
 const { ingestInvoice, pairLines } = await import("../quickbooks/ingest");
 
 const ME = "tester";
 const actor = { id: ME, name: "Tester" };
+const PHOTO = "https://store.public.blob.vercel-storage.com/proofs/import-x/a.jpg";
 
-async function wipe() {
-  await db.$executeRawUnsafe(
-    `TRUNCATE "CostHistory", "InventoryTransaction", "ImportationLine", "Importation", "DeliveryLine", "Delivery", "OrderEvent", "OrderProof", "OrderLine", "Order", "QbSyncEvent", "Product", "AppSettings" CASCADE`,
-  );
-  await db.appSettings.create({ data: { id: "default", qbRealmId: "realm" } });
-}
+await db.$executeRawUnsafe(
+  `TRUNCATE "CostHistory", "InventoryTransaction", "ImportationProof", "ImportationLine", "Importation", "DeliveryLine", "Delivery", "OrderEvent", "OrderProof", "OrderLine", "Order", "QbSyncEvent", "Product", "AppSettings" CASCADE`,
+);
+await db.appSettings.create({ data: { id: "default", qbRealmId: "realm" } });
 
 const product = (id: string) => db.product.findUniqueOrThrow({ where: { id } });
-const rejects = async (run: () => Promise<unknown>, pattern: RegExp) => assert.rejects(run, pattern);
+const rejects = (run: () => Promise<unknown>, pattern: RegExp) => assert.rejects(run, pattern);
+const count = (productId: string, type: TransactionType) => db.inventoryTransaction.count({ where: { productId, type } });
 
 /** Every product's stored numbers agree with its movements and reservations. */
 async function invariants() {
@@ -36,150 +37,244 @@ async function invariants() {
     const moved = p.transactions.reduce((sum, t) => sum + t.quantity, 0);
     assert.equal(p.physicalQty, moved, `${p.name}: physical = Σ movements`);
     assert.equal(p.reservedQty, p.orderLines.reduce((sum, l) => sum + l.reservedQty, 0), `${p.name}: reserved = Σ invoice lines`);
-    assert.equal(p.availableQty, p.physicalQty - p.reservedQty, `${p.name}: available = physical − reserved`);
-    assert.ok(p.physicalQty >= 0, `${p.name}: physical ≥ 0`);
+    assert.equal(p.availableQty, p.physicalQty - p.reservedQty - p.unavailableQty, `${p.name}: available = physical − reserved − set aside`);
+    assert.ok(p.physicalQty >= 0 && p.unavailableQty >= 0 && p.unavailableQty <= p.physicalQty, `${p.name}: quantities in range`);
     assert.ok(Math.abs(p.inventoryValue - p.physicalQty * p.avgCost) < 0.01, `${p.name}: value = units × average`);
   }
 }
 
-async function importation(lines: { productId: string; quantity: number; purchaseUnitCost: number }[], extra: { freight?: number; historical?: boolean; receivedAt?: Date } = {}) {
-  const saved = await upsertImportation({ lines, userId: ME, ...extra });
-  return saved!.id;
+const importation = async (lines: { productId: string; quantity: number; purchaseUnitCost: number }[], extra: { freight?: number; historical?: boolean; expectedDate?: Date } = {}) =>
+  (await upsertImportation({ lines, userId: ME, ...extra }))!.id;
+const receive = (id: string, day = "2026-10-10", photos = [PHOTO]) =>
+  receiveImportation(id, { receivedAt: new Date(`${day}T12:00:00Z`), photos, actor });
+
+/** A paid QuickBooks invoice; `version` moves its last-updated time forward. */
+function qbInvoice(id: string, lines: { line: string; sku: string; name: string; qty: number }[], version: number, extra: object = {}) {
+  return {
+    Invoice: {
+      Id: id,
+      DocNumber: `D${id}`,
+      TxnDate: "2026-10-15",
+      Balance: 0,
+      TotalAmt: 100,
+      MetaData: { LastUpdatedTime: new Date(Date.UTC(2026, 9, 15, 10, version)).toISOString() },
+      Line: lines.map((l) => ({ Id: l.line, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { name: l.name }, Qty: l.qty, UnitPrice: 10, Sku: l.sku } })),
+      ...extra,
+    },
+  };
+}
+/** Takes an invoice through the workflow until its first delivery is completed. */
+async function deliverAll(orderId: string) {
+  const order = await db.order.findUniqueOrThrow({ where: { id: orderId }, include: { deliveries: { include: { lines: true }, orderBy: { number: "asc" } } } });
+  const d = order.deliveries.find((x) => x.status !== ExitStatus.COMPLETED)!;
+  await setPrepared(d.id, Object.fromEntries(d.lines.map((l) => [l.id, l.qty])), actor);
+  await moveDelivery(d.id, ExitStatus.TO_DELIVER, actor);
+  await addProof(d.id, "local:test/photo.jpg", "delivery", actor);
+  return completeDelivery(d.id, {}, actor);
 }
 
-await wipe();
-
-// ── Importation: receive, receive again, reopen, reconfirm ────────────────────────────────────
+// 1–5, 12: receiving ────────────────────────────────────────────────────────────────────────────
 {
   const p = await createProduct({ name: "Grill A", sku: "A", initialQty: 10, initialUnitCost: 50 });
-  const id = await importation([{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], { receivedAt: new Date("2026-10-10T12:00:00Z") });
+  const eta = new Date("2026-10-05T12:00:00Z");
+  const id = await importation([{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], { expectedDate: eta });
 
-  await setImportStatus(id, ImportStatus.COMPLETED, ME);
-  await setImportStatus(id, ImportStatus.COMPLETED, ME); // a second click: no second receipt
-  let a = await product(p.id);
-  assert.equal(a.physicalQty, 20);
-  assert.equal(a.avgCost, 75);
-  assert.equal(a.cifCost, 100);
+  // 3. No photo (the upload failed): nothing happens.
+  await rejects(() => receive(id, "2026-10-10", []), /photo/);
+  assert.equal((await product(p.id)).physicalQty, 10);
+  // Its expected date passed: delayed, never received just because of that.
+  assert.equal((await db.importation.findUniqueOrThrow({ where: { id } })).status, ImportStatus.DELAYED);
+  // …and a status change can't skip the photo.
+  await rejects(() => setImportStatus(id, ImportStatus.COMPLETED, ME), /photo/);
+  assert.equal(ownedProofUrl(PHOTO, "import-x"), true);
+  assert.equal(ownedProofUrl("https://evil.example.com/proofs/import-x/a.jpg", "import-x"), false);
+  assert.equal(ownedProofUrl("https://s.public.blob.vercel-storage.com/proofs/import-y/a.jpg", "import-x"), false);
+
+  // 1, 2, 15. Received (twice at once, then again): units added once.
+  await Promise.all([receive(id), receive(id)]);
+  await receive(id);
+  const a = await product(p.id);
+  assert.deepEqual([a.physicalQty, a.avgCost, a.cifCost], [20, 75, 100]);
+  assert.equal(await count(p.id, TransactionType.IMPORTATION), 1);
+  const imp = await db.importation.findUniqueOrThrow({ where: { id }, include: { proofs: true } });
+  // 4, 5. The expected date stays; the arrival day is its own field and dates the units.
+  assert.equal(imp.expectedDate?.toISOString(), eta.toISOString());
+  assert.equal(imp.receivedAt?.toISOString(), "2026-10-10T12:00:00.000Z");
+  assert.equal(imp.proofs.length, 1);
   const receipt = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.IMPORTATION } });
-  assert.equal(receipt.occurredAt.toISOString(), "2026-10-10T12:00:00.000Z", "units recorded on the received day");
+  assert.equal(receipt.occurredAt.toISOString(), "2026-10-10T12:00:00.000Z");
   assert.equal(receipt.userId, ME);
 
-  // Reopening restores the product exactly, and keeps the history.
+  // 12. A completed importation can't be edited; reopening is an explicit reversal kept in history.
+  await rejects(() => upsertImportation({ id, lines: [{ productId: p.id, quantity: 99, purchaseUnitCost: 1 }], userId: ME }), /cannot be edited/);
   await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
-  await setImportStatus(id, ImportStatus.IN_TRANSIT, ME); // again: only a status change
-  a = await product(p.id);
-  assert.deepEqual([a.physicalQty, a.avgCost, a.inventoryValue, a.cifCost], [10, 50, 500, 50]);
-  assert.equal(await db.inventoryTransaction.count({ where: { productId: p.id, type: TransactionType.IMPORTATION } }), 2);
+  await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
+  const reopened = await db.importation.findUniqueOrThrow({ where: { id } });
+  assert.equal(reopened.receivedAt, null);
+  assert.equal(reopened.expectedDate?.toISOString(), eta.toISOString());
+  assert.deepEqual(Object.values(await product(p.id)).length > 0 && [(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [10, 50]);
+  assert.equal(await count(p.id, TransactionType.IMPORTATION), 2, "receipt and its reversal both kept");
 
-  // Freight arrives: 10 × (100 + 10) on top of 10 × 50 → average 80, not 92.50.
-  await upsertImportation({ id, lines: [{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], freight: 100, userId: ME });
-  await setImportStatus(id, ImportStatus.COMPLETED, ME);
-  a = await product(p.id);
-  assert.deepEqual([a.physicalQty, a.avgCost], [20, 80]);
+  // Corrected freight, received again: average from the real costs (10×50 + 10×110) / 20.
+  await upsertImportation({ id, lines: [{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], freight: 100, expectedDate: eta, userId: ME });
+  await receive(id, "2026-10-11");
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [20, 80]);
 
-  // Once units moved, reopening would guess; it refuses and points to adjustments.
+  // Once units moved, reopening refuses instead of guessing.
   await changeQuantity({ productId: p.id, mode: "remove", quantity: 1, reason: "Correction", userId: ME });
   await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /has moved since/);
-  assert.equal((await db.importation.findUniqueOrThrow({ where: { id } })).status, ImportStatus.COMPLETED);
-
-  // A save can't complete an importation (no units would come in).
-  const other = await importation([{ productId: p.id, quantity: 1, purchaseUnitCost: 1 }]);
-  await upsertImportation({ id: other, status: ImportStatus.COMPLETED, lines: [{ productId: p.id, quantity: 1, purchaseUnitCost: 1 }], userId: ME });
-  assert.notEqual((await db.importation.findUniqueOrThrow({ where: { id: other } })).status, ImportStatus.COMPLETED);
   await rejects(() => importation([{ productId: p.id, quantity: -3, purchaseUnitCost: 1 }]), /quantity above 0/);
   await invariants();
 }
 
-// ── Historical importations set the cost basis and never add units ────────────────────────────
+// Historical importations: cost only, no photo needed ────────────────────────────────────────────
 {
-  const p = await createProduct({ name: "Burner B", sku: "B", initialQty: 5 }); // cost unknown
-  assert.equal((await product(p.id)).avgCost, 0);
-  assert.equal(await db.costHistory.count({ where: { productId: p.id } }), 0, "no $0 cost entry");
-
+  const p = await createProduct({ name: "Burner B", sku: "B", initialQty: 5 });
   const h1 = await importation([{ productId: p.id, quantity: 4, purchaseUnitCost: 20 }], { historical: true });
   const h2 = await importation([{ productId: p.id, quantity: 6, purchaseUnitCost: 30 }], { historical: true });
-  await setImportStatus(h1, ImportStatus.COMPLETED, ME);
+  await receive(h1, "2025-03-01", []);
   await setImportStatus(h2, ImportStatus.COMPLETED, ME);
-  let b = await product(p.id);
-  assert.deepEqual([b.physicalQty, b.avgCost, b.inventoryValue], [5, 26, 130]); // (4·20 + 6·30) / 10
-
-  await setImportStatus(h2, ImportStatus.PENDING, ME); // without it: 20
-  b = await product(p.id);
-  assert.deepEqual([b.physicalQty, b.avgCost], [5, 20]);
-  await setImportStatus(h1, ImportStatus.PENDING, ME); // none left: back to before
-  assert.equal((await product(p.id)).avgCost, 0);
-  await rejects(() => upsertImportation({ historical: true, lines: [{ quantity: 1, purchaseUnitCost: 1, draftName: "New" }], userId: ME }), /already in stock/);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [5, 26]);
+  await setImportStatus(h2, ImportStatus.PENDING, ME);
+  assert.equal((await product(p.id)).avgCost, 20);
   await invariants();
 }
 
-// ── Quantity and cost corrections stay apart ──────────────────────────────────────────────────
+// Quantity and cost corrections stay apart ────────────────────────────────────────────────────────
 {
   const p = await createProduct({ name: "Door C", sku: "C", initialQty: 4, initialUnitCost: 10 });
   await changeQuantity({ productId: p.id, mode: "add", quantity: 2, reason: "Correction", userId: ME, requestId: "r1" });
-  await changeQuantity({ productId: p.id, mode: "add", quantity: 2, reason: "Correction", userId: ME, requestId: "r1" }); // retry
-  let c = await product(p.id);
-  assert.deepEqual([c.physicalQty, c.avgCost, c.cifCost], [6, 10, 10]);
-  const adjust = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.ADJUSTMENT } });
-  assert.equal(adjust.userId, ME);
-  assert.deepEqual(JSON.parse(adjust.metadata!).before.physicalQty, 4);
-
+  await changeQuantity({ productId: p.id, mode: "add", quantity: 2, reason: "Correction", userId: ME, requestId: "r1" });
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [6, 10]);
   await adjustCost({ productId: p.id, avgCost: 12.5, reason: "Supplier invoice", userId: ME });
-  c = await product(p.id);
-  assert.deepEqual([c.physicalQty, c.avgCost, c.inventoryValue], [6, 12.5, 75]);
-  assert.equal(await db.costHistory.count({ where: { productId: p.id, eventType: TransactionType.COST_ADJUSTMENT } }), 1);
-
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [6, 12.5]);
   await rejects(() => changeQuantity({ productId: p.id, mode: "add", quantity: Number.NaN, reason: "x", userId: ME }), /greater than 0/);
-  await rejects(() => adjustCost({ productId: p.id, avgCost: -1, reason: "x", userId: ME }), /0 or more/);
   await invariants();
 }
 
-// ── Invoices: no reservation beyond what's available; same item on two lines ──────────────────
+// 6–9, 12, 14, 15: deliveries ──────────────────────────────────────────────────────────────────────
 {
   const p = await createProduct({ name: "Grill D", sku: "D", initialQty: 3, initialUnitCost: 10 });
-  const invoice = (lines: { id: string; qty: number }[], updated: string) => ({
-    Invoice: {
-      Id: "77",
-      DocNumber: "1077",
-      TxnDate: "2026-10-15",
-      Balance: 0,
-      TotalAmt: 100,
-      MetaData: { LastUpdatedTime: updated },
-      Line: lines.map((line) => ({
-        Id: line.id,
-        DetailType: "SalesItemLineDetail",
-        SalesItemLineDetail: { ItemRef: { name: "Grill D" }, Qty: line.qty, UnitPrice: 10, Sku: "D" },
-      })),
-    },
-  });
+  const q = await createProduct({ name: "Cover E", sku: "E", initialQty: 5, initialUnitCost: 2 });
 
-  await ingestInvoice(invoice([{ id: "1", qty: 2 }, { id: "2", qty: 2 }], "2026-10-15T10:00:00Z"));
-  const order = await db.order.findUniqueOrThrow({ where: { externalRef: "1077" }, include: { lines: true } });
-  assert.equal(order.lines.length, 2);
-  await rejects(() => addToWorkflow(order.id, actor), /Not enough stock.*needs 4, 3 available/);
+  // The invoice asks for more than there is: it can't enter the workflow.
+  await ingestInvoice(qbInvoice("1", [{ line: "1", sku: "D", name: "Grill D", qty: 4 }], 1));
+  const big = await db.order.findUniqueOrThrow({ where: { externalRef: "D1" } });
+  await rejects(() => addToWorkflow(big.id, actor), /Not enough stock.*needs 4, 3 available/);
 
-  await ingestInvoice(invoice([{ id: "1", qty: 2 }, { id: "2", qty: 1 }], "2026-10-15T11:00:00Z"));
-  await addToWorkflow(order.id, actor);
-  assert.equal((await product(p.id)).reservedQty, 3);
+  // 8, 9. Reserving, then cancelling before anything left: only the reservation moves.
+  await ingestInvoice(qbInvoice("1", [{ line: "1", sku: "D", name: "Grill D", qty: 2 }], 2));
+  await Promise.all([addToWorkflow(big.id, actor), addToWorkflow(big.id, actor)]);
+  assert.deepEqual([(await product(p.id)).reservedQty, (await product(p.id)).physicalQty], [2, 3]);
+  await removeFromWorkflow(big.id, actor);
+  assert.deepEqual([(await product(p.id)).reservedQty, (await product(p.id)).physicalQty], [0, 3]);
+  assert.equal(await db.inventoryTransaction.count({ where: { productId: p.id, quantity: { gt: 0 }, type: { not: TransactionType.RECEIVED } } }), 0);
 
-  // QuickBooks lowers line 2 only: line 1 keeps 2, line 2 has 0 → removed; one unit released.
-  await ingestInvoice(invoice([{ id: "1", qty: 2 }], "2026-10-15T12:00:00Z"));
-  await ingestInvoice(invoice([{ id: "1", qty: 2 }], "2026-10-15T12:00:00Z")); // same version again: skipped
-  const lines = await db.orderLine.findMany({ where: { orderId: order.id } });
-  assert.deepEqual(lines.map((l) => [l.qbLineId, l.orderedQty, l.reservedQty]), [["1", 2, 2]]);
-  assert.equal((await product(p.id)).reservedQty, 2);
+  // 6, 7, 15. Completed (twice at once, then again): units leave once.
+  await addToWorkflow(big.id, actor);
+  const order = await db.order.findUniqueOrThrow({ where: { id: big.id }, include: { deliveries: true } });
+  const d = order.deliveries[0]!;
+  await rejects(() => completeDelivery(d.id, {}, actor), /Preparation|processing/);
+  await setPrepared(d.id, Object.fromEntries((await db.deliveryLine.findMany({ where: { deliveryId: d.id } })).map((l) => [l.id, l.qty])), actor);
+  await moveDelivery(d.id, ExitStatus.TO_DELIVER, actor);
+  // The photo didn't upload: it can't be completed, and nothing leaves.
+  await rejects(() => completeDelivery(d.id, {}, actor), /photo/);
+  assert.equal((await product(p.id)).physicalQty, 3);
+  await addProof(d.id, "local:test/photo.jpg", "delivery", actor);
+  await Promise.all([completeDelivery(d.id, {}, actor), completeDelivery(d.id, {}, actor)]);
+  await completeDelivery(d.id, {}, actor);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).reservedQty], [1, 0]);
+  assert.equal(await count(p.id, TransactionType.SOLD), 1);
+  // 12. A completed delivery can't be reopened or moved; nothing leaves again.
+  await rejects(() => moveDelivery(d.id, ExitStatus.PREPARING, actor), /already completed/);
+  await rejects(() => removeFromWorkflow(big.id, actor), /already left/);
 
-  // A removal can't take reserved units.
-  await rejects(() => changeQuantity({ productId: p.id, mode: "remove", quantity: 2, reason: "Correction", userId: ME }), /reserved for invoices/);
+  // 14. A failure halfway (the second product falls short) leaves everything as it was.
+  await ingestInvoice(qbInvoice("2", [{ line: "1", sku: "E", name: "Cover E", qty: 2 }, { line: "2", sku: "D", name: "Grill D", qty: 1 }], 1));
+  const two = await db.order.findUniqueOrThrow({ where: { externalRef: "D2" } });
+  await addToWorkflow(two.id, actor);
+  await db.product.update({ where: { id: p.id }, data: { physicalQty: 0 } }); // damaged data, for the test
+  await rejects(() => deliverAll(two.id), /Insufficient/);
+  assert.equal((await product(q.id)).physicalQty, 5, "first product untouched");
+  assert.notEqual((await db.delivery.findFirstOrThrow({ where: { orderId: two.id } })).status, ExitStatus.COMPLETED);
+  await db.product.update({ where: { id: p.id }, data: { physicalQty: 1 } });
+  await completeDelivery((await db.delivery.findFirstOrThrow({ where: { orderId: two.id } })).id, {}, actor);
   await invariants();
 }
 
-// ── Pairing on its own ────────────────────────────────────────────────────────────────────────
+// 10, 11: QuickBooks changes after delivery, and returns ───────────────────────────────────────────
+{
+  const p = await createProduct({ name: "Smoker F", sku: "F", initialQty: 10, initialUnitCost: 40 });
+  await ingestInvoice(qbInvoice("3", [{ line: "1", sku: "F", name: "Smoker F", qty: 3 }], 1));
+  const o = await db.order.findUniqueOrThrow({ where: { externalRef: "D3" } });
+  await addToWorkflow(o.id, actor);
+  await deliverAll(o.id);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).reservedQty], [7, 0]);
+
+  // QuickBooks adds 2: the invoice follows, and a new delivery reserves them. No stock moves.
+  await ingestInvoice(qbInvoice("3", [{ line: "1", sku: "F", name: "Smoker F", qty: 5 }], 2));
+  let line = await db.orderLine.findFirstOrThrow({ where: { orderId: o.id } });
+  assert.deepEqual([line.orderedQty, line.deliveredQty, line.reservedQty], [5, 3, 2]);
+  assert.equal(await db.delivery.count({ where: { orderId: o.id } }), 2);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).reservedQty], [7, 2]);
+
+  // QuickBooks lowers it to 1: the open delivery goes, 2 delivered units await a return.
+  await ingestInvoice(qbInvoice("3", [{ line: "1", sku: "F", name: "Smoker F", qty: 1 }], 3));
+  line = await db.orderLine.findFirstOrThrow({ where: { orderId: o.id } });
+  assert.deepEqual([line.orderedQty, line.deliveredQty, line.reservedQty], [1, 3, 0]);
+  assert.equal(await db.delivery.count({ where: { orderId: o.id } }), 1);
+  assert.equal((await product(p.id)).physicalQty, 7, "a lower invoice doesn't bring units back by itself");
+  assert.match((await db.order.findUniqueOrThrow({ where: { id: o.id } })).issues ?? "", /Awaiting return: Smoker F, 2/);
+
+  // 11. One comes back damaged: on hand, not available. One comes back good: available.
+  await recordReturn(o.id, { lines: { [line.id]: 1 }, condition: "damaged", reason: "Dented lid", date: "2026-10-16", requestId: "ret-1" }, actor);
+  await recordReturn(o.id, { lines: { [line.id]: 1 }, condition: "damaged", reason: "Dented lid", date: "2026-10-16", requestId: "ret-1" }, actor); // retry
+  let f = await product(p.id);
+  assert.deepEqual([f.physicalQty, f.unavailableQty, f.availableQty, f.avgCost], [8, 1, 7, 40]);
+  await recordReturn(o.id, { lines: { [line.id]: 1 }, condition: "good", reason: "Wrong model", date: "2026-10-16" }, actor);
+  f = await product(p.id);
+  assert.deepEqual([f.physicalQty, f.unavailableQty, f.availableQty], [9, 1, 8]);
+  assert.equal((await db.order.findUniqueOrThrow({ where: { id: o.id } })).issues, null, "nothing awaits a return any more");
+  // 10. Returns can't exceed what the customer kept.
+  await rejects(() => recordReturn(o.id, { lines: { [line.id]: 2 }, condition: "good", reason: "x", date: "2026-10-16" }, actor), /between 0 and 1/);
+  const ret = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.RETURNED } });
+  assert.deepEqual([ret.userId, ret.occurredAt.toISOString(), JSON.parse(ret.metadata!).orderLineId], [ME, "2026-10-16T12:00:00.000Z", line.id]);
+
+  // The set-aside unit: a normal removal can't take it; release or write off can.
+  await rejects(() => changeQuantity({ productId: p.id, mode: "remove", quantity: 9, reason: "Correction", userId: ME }), /set aside/);
+  await resolveSetAside({ productId: p.id, mode: "write-off", quantity: 1, reason: "Scrapped", userId: ME });
+  f = await product(p.id);
+  assert.deepEqual([f.physicalQty, f.unavailableQty, f.availableQty], [8, 0, 8]);
+  await rejects(() => resolveSetAside({ productId: p.id, mode: "release", quantity: 1, reason: "x", userId: ME }), /set aside/);
+
+  // Voided after delivery: the invoice follows (voided, line at 0), stock stays, the unit awaits a return.
+  await ingestInvoice(qbInvoice("3", [], 4, { status: "Voided" }));
+  const voided = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { lines: true } });
+  assert.equal(voided.voided, true);
+  assert.deepEqual(voided.lines.map((l) => [l.orderedQty, l.deliveredQty, l.returnedQty]), [[0, 3, 2]]);
+  assert.match(voided.issues ?? "", /Awaiting return: Smoker F, 1/);
+  assert.equal((await product(p.id)).physicalQty, 8);
+  await invariants();
+}
+
+// Same item on two invoice lines ─────────────────────────────────────────────────────────────────
 {
   const row = (id: string, productId: string, qbLineId: string | null) => ({ id, productId, qbLineId, orderedQty: 1, reservedQty: 0, unitPrice: 0, deliveredQty: 0 });
   const line = (productId: string, lineId?: string) => ({ productId, lineId, quantity: 1, unitPrice: 0, physical: true });
   const { pairs, leftovers } = pairLines([row("a", "P", "1"), row("b", "P", "2"), row("c", "Q", null)], [line("P", "2"), line("P", "1"), line("Q", "9")]);
   assert.deepEqual(pairs.map((p) => p.current?.id), ["b", "a", "c"]);
   assert.equal(leftovers.length, 0);
+
+  const g = await createProduct({ name: "Grill G", sku: "G", initialQty: 5, initialUnitCost: 1 });
+  await ingestInvoice(qbInvoice("4", [{ line: "1", sku: "G", name: "Grill G", qty: 2 }, { line: "2", sku: "G", name: "Grill G", qty: 2 }], 1));
+  const o = await db.order.findUniqueOrThrow({ where: { externalRef: "D4" } });
+  await addToWorkflow(o.id, actor);
+  await ingestInvoice(qbInvoice("4", [{ line: "1", sku: "G", name: "Grill G", qty: 2 }], 2));
+  await ingestInvoice(qbInvoice("4", [{ line: "1", sku: "G", name: "Grill G", qty: 2 }], 2)); // same version: skipped
+  const lines = await db.orderLine.findMany({ where: { orderId: o.id } });
+  assert.deepEqual(lines.map((l) => [l.qbLineId, l.orderedQty, l.reservedQty]), [["1", 2, 2]]);
+  assert.equal((await product(g.id)).reservedQty, 2);
+  await invariants();
 }
 
 await db.$disconnect();

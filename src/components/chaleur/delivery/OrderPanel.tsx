@@ -31,6 +31,7 @@ import {
   DelayDialog,
   PrepareDialog,
   ProcessingTypeDialog,
+  ReturnDialog,
   ScanDialog,
   SchedulePicker,
   SplitDialog,
@@ -62,7 +63,7 @@ import {
   type Prefs,
 } from "./model";
 
-type DialogName = "prepare" | "scan" | "complete" | "delay" | "split" | "type" | "back" | null;
+type DialogName = "prepare" | "scan" | "complete" | "delay" | "split" | "type" | "back" | "return" | null;
 
 const ITEMS_KEY = "delivery.items.open";
 
@@ -268,8 +269,11 @@ export function OrderPanel({
   const physicalUnits = order.lines.filter((l) => l.physical).reduce((sum, l) => sum + l.orderedQty, 0);
   const reserved = order.lines.reduce((sum, l) => sum + l.reservedQty, 0);
   const delivered = order.lines.reduce((sum, l) => sum + l.deliveredQty, 0);
+  const returned = order.lines.reduce((sum, l) => sum + l.returnedQty, 0);
   const busyDays = new Set(deliveries.flatMap((d) => (d.deliverBy && d.id !== active?.id ? [nyDay(d.deliverBy)] : [])));
   const editable = canEdit && !order.voided;
+  // Units that left can come back even after QuickBooks voided the invoice.
+  const returnable = order.lines.some((line) => line.physical && line.deliveredQty - line.returnedQty > 0);
   const open = active && active.status !== "COMPLETED" && editable;
   const delay = active?.delayReason ? DELAY_REASONS.find((r) => r.id === active.delayReason)?.label : null;
   const items = active
@@ -435,7 +439,7 @@ export function OrderPanel({
         <StatusChip chip={orderChip(order)} />
         <span className="flex-1" />
         {notice && <span className="text-xs text-success-text">{notice}</span>}
-        {editable && (
+        {(editable || (canEdit && returnable)) && (
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More actions" />}>
               <Ellipsis />
@@ -446,6 +450,7 @@ export function OrderPanel({
                 <DropdownMenuItem onClick={() => setDialog("split")}>Split delivery</DropdownMenuItem>
               )}
               {active && open && active.status !== "DELAYED" && <DropdownMenuItem onClick={() => setDialog("delay")}>Mark delayed</DropdownMenuItem>}
+              {returnable && <DropdownMenuItem onClick={() => setDialog("return")}>Record a return</DropdownMenuItem>}
               {deliveries.length > 0 && !leftStock && (
                 <>
                   <DropdownMenuSeparator />
@@ -477,7 +482,7 @@ export function OrderPanel({
             <span>
               {order.invoiceDate ? `Invoiced ${monthDay(nyDay(order.invoiceDate))}` : "Not invoiced"}
               {deliveries.length > 0 &&
-                ` · ${[delivered && `${delivered} delivered`, reserved && `${reserved} ${reserved === 1 ? "unit" : "units"} reserved`].filter(Boolean).join(" · ") || "nothing reserved"}`}
+                ` · ${[delivered && `${delivered} delivered`, returned && `${returned} returned`, reserved && `${reserved} ${reserved === 1 ? "unit" : "units"} reserved`].filter(Boolean).join(" · ") || "nothing reserved"}`}
               {!isPaid(order) && order.amountPaid > 0 && ` · ${money(order.amountPaid)} of ${money(order.totalAmount)} paid`}
             </span>
           </div>
@@ -773,6 +778,7 @@ export function OrderPanel({
       )}
       {active && dialog === "delay" && <DelayDialog order={order} delivery={active} onClose={() => setDialog(null)} onDone={apply} />}
       {active && dialog === "split" && <SplitDialog order={order} delivery={active} onClose={() => setDialog(null)} onDone={apply} />}
+      {dialog === "return" && <ReturnDialog order={order} onClose={() => setDialog(null)} onDone={apply} />}
       {dialog === "back" && (
         <Dialog open onOpenChange={(o) => !o && setDialog(null)}>
           <DialogContent className="sm:max-w-[400px]">

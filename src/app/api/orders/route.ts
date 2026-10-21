@@ -1,7 +1,7 @@
 import type { ExitStatus } from "@prisma/client";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { guard } from "@/lib/guard";
-import { saveProofFile } from "@/lib/inventory/proof-file";
+import { ownedProofUrl, saveProofFile } from "@/lib/inventory/proof-file";
 import {
   addNote,
   addProof,
@@ -13,6 +13,7 @@ import {
   getOrder,
   listOrders,
   moveDelivery,
+  recordReturn,
   removeFromWorkflow,
   removeProof,
   scanCode,
@@ -26,16 +27,6 @@ import {
 
 /** Sync now runs here. The first QuickBooks import takes minutes. */
 export const maxDuration = 300;
-
-/** Proof photos must come from the app's own storage, never an arbitrary address. */
-function ownedBlob(url: string) {
-  try {
-    const host = new URL(url).hostname;
-    return host.endsWith(".blob.vercel-storage.com") && new URL(url).pathname.startsWith("/proofs/");
-  } catch {
-    return false;
-  }
-}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -74,6 +65,9 @@ type Body = {
   counts?: Record<string, number>;
   keep?: Record<string, number>;
   proofId?: string;
+  lines?: Record<string, number>;
+  condition?: string;
+  requestId?: string;
   url?: string;
   kind?: string;
   auto?: boolean;
@@ -140,8 +134,16 @@ export async function POST(req: Request) {
       case "complete":
         return jsonOk(await completeDelivery(deliveryId, { note: body.note }, me));
       case "proof":
-        if (!body.url || !ownedBlob(body.url)) return jsonError("Upload the photo through the app", 400);
+        if (!body.url || !ownedProofUrl(body.url)) return jsonError("Upload the photo through the app", 400);
         return jsonOk(await addProof(deliveryId, body.url, body.kind === "signed" ? "signed" : "delivery", me));
+      case "return":
+        return jsonOk(
+          await recordReturn(
+            orderId,
+            { lines: body.lines ?? {}, condition: body.condition ?? "", reason: body.reason ?? "", date: body.date ?? "", requestId: body.requestId },
+            me,
+          ),
+        );
       case "remove-proof":
         return jsonOk(await removeProof(body.proofId ?? ""));
       default:

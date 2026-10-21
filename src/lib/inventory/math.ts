@@ -80,14 +80,13 @@ export function allocateAdditionalCosts(
   return results;
 }
 
+/** What can still be sold: units on hand, less those reserved for invoices and those that can't be sold. */
 export function recomputeAvailable(params: {
   physicalQty: number;
   reservedQty: number;
-  waitingPickupQty?: number;
-  waitingDeliveryQty?: number;
-  unavailableQty?: number;
+  unavailableQty: number;
 }): number {
-  return roundMoney(params.physicalQty - params.reservedQty);
+  return roundMoney(params.physicalQty - params.reservedQty - params.unavailableQty);
 }
 
 export function additionalImportCosts(c: {

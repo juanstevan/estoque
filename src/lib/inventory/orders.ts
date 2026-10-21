@@ -156,7 +156,7 @@ async function changeReserved(tx: Tx, productId: string, delta: number) {
   const reserved = roundMoney(Math.max(0, product.reservedQty + delta));
   await tx.product.update({
     where: { id: productId },
-    data: { reservedQty: reserved, availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }) },
+    data: { reservedQty: reserved, availableQty: recomputeAvailable({ ...product, reservedQty: reserved }) },
   });
   return product;
 }
@@ -258,7 +258,7 @@ async function stockOut(tx: Tx, deliveryId: string, actor: Actor) {
       where: { id: after.id },
       data: {
         reservedQty: reserved,
-        availableQty: recomputeAvailable({ physicalQty: after.physicalQty, reservedQty: reserved }),
+        availableQty: recomputeAvailable({ ...after, reservedQty: reserved }),
         lastSoldPrice: line.unitPrice || after.lastSoldPrice,
       },
     });
@@ -292,7 +292,7 @@ async function deliveryTag(tx: Tx, delivery: { orderId: string; number: number }
 const RANK: Record<string, number> = { PENDING: 0, PREPARING: 1, TO_DELIVER: 2, IN_TRANSIT: 3, COMPLETED: 4 };
 
 /** The invoice sums up its deliveries: completed once all are, else the one furthest behind. */
-async function syncOrder(tx: Tx, orderId: string, prefs: DeliveryPrefs) {
+export async function syncOrder(tx: Tx, orderId: string, prefs: DeliveryPrefs) {
   const deliveries = await tx.delivery.findMany({ where: { orderId } });
   if (!deliveries.length) return;
   const open = deliveries.filter((d) => d.status !== ExitStatus.COMPLETED);
@@ -313,9 +313,11 @@ async function syncOrder(tx: Tx, orderId: string, prefs: DeliveryPrefs) {
 }
 
 /**
- * After QuickBooks changes an invoice's items: open deliveries take the difference (the last
- * one first), so together they still cover each physical line. Returns the numbers of
- * processing deliveries that are now short and went back to Preparing.
+ * After QuickBooks changes an invoice's items: deliveries that haven't left take the difference
+ * (the last one first), so together with the ones that left they cover each physical line. More
+ * than they can take becomes a new delivery; less than already left stays as delivered (awaiting
+ * a return). Open deliveries left with nothing are removed. Returns the numbers of processing
+ * deliveries that are now short (back to Preparing) and of the delivery added, if any.
  */
 export async function fitDeliveries(tx: Tx, orderId: string) {
   const order = await tx.order.findUniqueOrThrow({
@@ -323,15 +325,25 @@ export async function fitDeliveries(tx: Tx, orderId: string) {
     include: { lines: true, deliveries: { include: { lines: true }, orderBy: { number: "asc" } } },
   });
   const open = order.deliveries.filter((d) => !d.stockOutAt && d.status !== ExitStatus.COMPLETED);
-  if (!open.length) return [];
+  let created: number | null = null;
   for (const line of order.lines) {
     const rows = order.deliveries.flatMap((d) => d.lines.filter((row) => row.orderLineId === line.id));
     let delta = (line.physical ? line.orderedQty : 0) - rows.reduce((sum, row) => sum + row.qty, 0);
     if (delta > 0) {
-      const target = open.at(-1)!;
+      let target = open.at(-1);
+      if (!target) {
+        const last = order.deliveries.at(-1);
+        target = await tx.delivery.create({
+          data: { orderId, number: (last?.number ?? 0) + 1, mode: last?.mode ?? "DELIVERY", assigneeId: last?.assigneeId ?? null },
+          include: { lines: true },
+        });
+        open.push(target);
+        order.deliveries.push(target);
+        created = target.number;
+      }
       const row = target.lines.find((r) => r.orderLineId === line.id);
       if (row) await tx.deliveryLine.update({ where: { id: row.id }, data: { qty: row.qty + delta } });
-      else await tx.deliveryLine.create({ data: { deliveryId: target.id, orderLineId: line.id, qty: delta } });
+      else target.lines.push(await tx.deliveryLine.create({ data: { deliveryId: target.id, orderLineId: line.id, qty: delta } }));
     }
     for (const d of [...open].reverse()) {
       if (delta >= 0) break;
@@ -351,6 +363,10 @@ export async function fitDeliveries(tx: Tx, orderId: string) {
   const reopened: number[] = [];
   for (const d of open) {
     const lines = await tx.deliveryLine.findMany({ where: { deliveryId: d.id } });
+    if (!lines.length) {
+      await tx.delivery.delete({ where: { id: d.id } });
+      continue;
+    }
     if (stageOf(d) !== ExitStatus.TO_DELIVER || d.dispatchedAt || preparationDone(lines)) continue;
     await tx.delivery.update({
       where: { id: d.id },
@@ -358,7 +374,29 @@ export async function fitDeliveries(tx: Tx, orderId: string) {
     });
     reopened.push(d.number);
   }
-  return reopened;
+  return { reopened, created };
+}
+
+/**
+ * Each line keeps reserved exactly the units of its deliveries that haven't left stock yet
+ * (none outside the workflow), and its products move by the difference.
+ */
+export async function reserveOpenDeliveries(tx: Tx, orderId: string) {
+  const order = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { lines: true, deliveries: { include: { lines: true } } },
+  });
+  for (const line of order.lines) {
+    const target = order.onKanban
+      ? order.deliveries
+          .filter((d) => !d.stockOutAt)
+          .flatMap((d) => d.lines.filter((row) => row.orderLineId === line.id))
+          .reduce((sum, row) => sum + row.qty, 0)
+      : 0;
+    if (target === line.reservedQty) continue;
+    await changeReserved(tx, line.productId, target - line.reservedQty);
+    await tx.orderLine.update({ where: { id: line.id }, data: { reservedQty: target } });
+  }
 }
 
 // ---------------------------------------------------------------- reads
@@ -806,6 +844,81 @@ export async function completeDelivery(deliveryId: string, input: { note?: strin
     if (input.note?.trim()) await log(tx, d.orderId, actor, "note", input.note.trim(), { public: true });
     await syncOrder(tx, d.orderId, prefs);
     return detail(tx, d.orderId);
+  });
+}
+
+// ---------------------------------------------------------------- returns
+
+export const RETURN_CONDITIONS = { good: "Good, back to stock", damaged: "Damaged or to evaluate, set aside" } as const;
+export type ReturnCondition = keyof typeof RETURN_CONDITIONS;
+
+/** "Awaiting return" notes follow what was delivered beyond the invoice, less what came back. */
+async function refreshAwaiting(tx: Tx, orderId: string) {
+  const order = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { lines: { include: { product: { select: { name: true } } } } },
+  });
+  const kept = (order.issues ?? "").split("\n").filter((note) => note && !note.startsWith("Awaiting return:"));
+  const awaiting = order.lines
+    .filter((line) => line.deliveredQty - line.returnedQty > line.orderedQty)
+    .map((line) => `Awaiting return: ${line.product.name}, ${line.deliveredQty - line.returnedQty - line.orderedQty} delivered beyond the invoice`);
+  await tx.order.update({ where: { id: orderId }, data: { issues: [...kept, ...awaiting].join("\n") || null } });
+}
+
+/**
+ * Units of a delivered invoice that physically came back. They come in at the current average
+ * cost (which doesn't change). In good condition they're available again; damaged or still to
+ * evaluate, they're on hand but set aside until released or written off. A repeated requestId
+ * (a retry) is recorded once.
+ */
+export async function recordReturn(
+  orderId: string,
+  input: { lines: Record<string, number>; condition: string; reason: string; date: string; requestId?: string },
+  actor: Actor,
+) {
+  const condition = input.condition as ReturnCondition;
+  if (!(condition in RETURN_CONDITIONS)) throw new Error("Choose the condition of the returned units.");
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("Write why it came back.");
+  const day = parseDay(input.date);
+  if (!day || day.getTime() > Date.now() + DAY) throw new Error("Pick the day it came back.");
+  return prisma.$transaction(async (tx) => {
+    await lockOrder(tx, orderId);
+    if (input.requestId && (await tx.orderEvent.findFirst({ where: { orderId, kind: "return", meta: input.requestId } }))) {
+      return detail(tx, orderId);
+    }
+    const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: { lines: { include: { product: { select: PRODUCT } } } } });
+    let total = 0;
+    for (const [lineId, raw] of Object.entries(input.lines)) {
+      const qty = Number(raw);
+      if (!qty) continue;
+      const line = order.lines.find((row) => row.id === lineId);
+      if (!line) throw new Error("That item isn't on this invoice.");
+      const kept = line.deliveredQty - line.returnedQty;
+      if (!Number.isInteger(qty) || qty < 0 || qty > kept) throw new Error(`${line.product.name}: between 0 and ${kept} can come back`);
+      await appendTransaction(tx, {
+        productId: line.productId,
+        type: TransactionType.RETURNED,
+        quantity: qty,
+        reference: order.externalRef,
+        clientName: order.customerName,
+        notes: `Returned · invoice ${order.externalRef} · ${reason}`,
+        affectsPhysical: true,
+        affectsCost: false,
+        unavailableDelta: condition === "damaged" ? qty : 0,
+        occurredAt: day,
+        userId: actor.id,
+        metadata: { orderId, orderLineId: line.id, condition, reason, requestId: input.requestId },
+      });
+      await tx.orderLine.update({ where: { id: line.id }, data: { returnedQty: line.returnedQty + qty } });
+      total += qty;
+    }
+    if (!total) throw new Error("Choose how many units came back.");
+    await log(tx, orderId, actor, "return", `${units(total)} returned (${RETURN_CONDITIONS[condition].toLowerCase()}) · ${reason}`, {
+      meta: input.requestId,
+    });
+    await refreshAwaiting(tx, orderId);
+    return detail(tx, orderId);
   });
 }
 

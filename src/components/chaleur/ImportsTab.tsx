@@ -53,7 +53,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { upload, uploadPresigned } from "@vercel/blob/client";
 import { DataGrid } from "@/components/chaleur/DataGrid";
+import { PHOTO_TYPES } from "@/lib/photos/name";
 import {
   KindBookmark,
   StatusBadge,
@@ -80,6 +82,7 @@ export type ImportRow = {
   expectedDate: string | null;
   receivedAt: string | null;
   historical: boolean;
+  proofs?: Array<{ id: string; actor: string; createdAt: string }>;
   transferFee: number;
   freight: number;
   delivery: number;
@@ -279,6 +282,7 @@ export function ImportsTab({
     extraId?: string;
   } | null>(null);
   const [doneFading, setDoneFading] = useState(false);
+  const [receiving, setReceiving] = useState<{ imp: ImportRow; extraId?: string } | null>(null);
   const doneTimer = useRef(0);
   const noticeTimer = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
@@ -423,18 +427,19 @@ export function ImportsTab({
     }, 3000);
   }
 
+  /** Receiving asks for the arrival day and a photo first (ReceiveDialog). */
   async function completeImport(imp: ImportRow, extraId?: string) {
-    const extraSnap = extras;
+    setReceiving({ imp, extraId });
+  }
+
+  function received(row: ImportRow) {
+    if (!receiving) return;
+    const { imp, extraId } = receiving;
+    setReceiving(null);
+    onImportsChange((rows) => rows.map((r) => (r.id === row.id ? row : r)));
+    saveExtras(pullFromExtras(row.id));
     showDone(imp, extraId);
-    saveExtras(pullFromExtras(imp.id));
-    try {
-      await move(imp.id, "COMPLETED");
-    } catch (err) {
-      saveExtras(extraSnap);
-      setDoneNotice(null);
-      setDoneFading(false);
-      throw err;
-    }
+    onProductsReload();
   }
 
   async function undoComplete() {
@@ -738,6 +743,10 @@ export function ImportsTab({
             >
               {notice}
             </div>
+          )}
+
+          {receiving && (
+            <ReceiveDialog imp={receiving.imp} onClose={() => setReceiving(null)} onReceived={received} />
           )}
 
           {doneNotice && !draggingId && (
@@ -1387,7 +1396,6 @@ function ImportDialog({
     reference: initial?.reference ?? "",
     supplierName: initial?.supplierName ?? "",
     expectedDate: initial?.expectedDate?.slice(0, 10) || toYmd(new Date()),
-    receivedAt: initial?.receivedAt?.slice(0, 10) ?? "",
     historical: initial?.historical ?? false,
     transferFee: initial?.transferFee ?? 0,
     freight: initial?.freight ?? 0,
@@ -1546,7 +1554,6 @@ function ImportDialog({
           reference: form.reference,
           supplierName: form.supplierName,
           expectedDate: form.expectedDate || null,
-          receivedAt: form.receivedAt || null,
           historical: form.historical,
           transferFee: form.transferFee,
           freight: form.freight,
@@ -1840,17 +1847,6 @@ function ImportDialog({
             </span>
           ) : (
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-700">
-              {/* Completing records the units on this day; empty means the day it's completed. */}
-              <label className="flex items-center gap-2">
-                Received on
-                <Input
-                  type="date"
-                  className="h-8 w-36 tabular-nums"
-                  value={form.receivedAt}
-                  max={toYmd(new Date())}
-                  onChange={(e) => setForm({ ...form, receivedAt: e.target.value })}
-                />
-              </label>
               <label className="flex items-center gap-2" title="For importations from before the stock count: they set the average cost and add no units.">
                 <Checkbox
                   checked={form.historical}
@@ -1859,6 +1855,17 @@ function ImportDialog({
                 />
                 Historical · cost only, adds no units
               </label>
+              {initial?.status === "COMPLETED" && initial.receivedAt && (
+                <span className="flex items-center gap-2">
+                  Arrived {new Date(initial.receivedAt).toLocaleDateString("en-US", { timeZone: "UTC" })}
+                  {initial.proofs?.map((proof) => (
+                    <a key={proof.id} href={`/api/importations/file?id=${proof.id}`} target="_blank" rel="noreferrer" title={`Photo by ${proof.actor}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={`/api/importations/file?id=${proof.id}`} alt="Arrival photo" className="size-8 rounded object-cover" />
+                    </a>
+                  ))}
+                </span>
+              )}
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -1897,6 +1904,7 @@ function ImportDialog({
                       hsCode: null,
                       physicalQty: 0,
                       availableQty: 0,
+                      unavailableQty: 0,
                       reservedQty: 0,
                       avgCost: 0,
                       inventoryValue: 0,
@@ -2450,5 +2458,165 @@ function ImportProgress({
         />
       ))}
     </svg>
+  );
+}
+
+/**
+ * Receives an importation: photos go to storage first (in local development they travel with
+ * the request), then one request records the day, the photos and the units together. If an
+ * upload fails nothing is sent, so stock stays as it was.
+ */
+async function receiveImport(id: string, day: string, files: File[]): Promise<ImportRow> {
+  for (const file of files) {
+    if (!PHOTO_TYPES[file.type]) throw new Error("Use a JPG, PNG, WebP, AVIF or GIF photo");
+  }
+  const { storage } = await fetch("/api/photos/upload").then((r) => r.json());
+  let res: Response;
+  if (storage === "local") {
+    const form = new FormData();
+    form.set("id", id);
+    form.set("receivedAt", day);
+    for (const file of files) form.append("file", file);
+    res = await fetch("/api/importations", { method: "POST", body: form });
+  } else {
+    const send = storage === "oidc" ? uploadPresigned : upload;
+    const photos: string[] = [];
+    try {
+      for (const file of files) {
+        const blob = await send(`proofs/import-${id}/${crypto.randomUUID()}.${PHOTO_TYPES[file.type]}`, file, {
+          access: "public",
+          handleUploadUrl: "/api/photos/upload",
+          contentType: file.type,
+        });
+        photos.push(blob.url);
+      }
+    } catch {
+      void discard(photos);
+      throw new Error("The photo didn't upload. Nothing was received; try again.");
+    }
+    res = await fetch("/api/importations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "receive", id, receivedAt: day, photos }),
+    });
+    if (!res.ok) void discard(photos);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? "Couldn't receive it");
+  return data as ImportRow;
+}
+
+function discard(urls: string[]) {
+  if (!urls.length) return Promise.resolve();
+  return fetch("/api/photos/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ discard: urls }),
+  }).catch(() => undefined);
+}
+
+function ReceiveDialog({
+  imp,
+  onClose,
+  onReceived,
+}: {
+  imp: ImportRow;
+  onClose: () => void;
+  onReceived: (row: ImportRow) => void;
+}) {
+  const [day, setDay] = useState(() => toYmd(new Date()));
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const previews = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
+  useEffect(() => () => previews.forEach((url) => URL.revokeObjectURL(url)), [previews]);
+  const units = imp.lines.reduce((sum, line) => sum + line.quantity, 0);
+  const needsPhoto = !imp.historical;
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onReceived(await receiveImport(imp.id, day, files));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't receive it");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>Receive {imp.reference}</DialogTitle>
+          <DialogDescription>
+            {imp.historical
+              ? "A historical importation sets the average cost and adds no units."
+              : `Adds ${units} ${units === 1 ? "unit" : "units"} to stock on the day it arrived.`}
+            {imp.expectedDate ? ` Expected ${new Date(imp.expectedDate).toLocaleDateString("en-US", { timeZone: "UTC" })}; that date stays as it is.` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <label className="grid gap-1 text-sm">
+          <span className="text-xs font-medium text-gray-700">Arrived on</span>
+          <Input type="date" className="w-40 tabular-nums" value={day} max={toYmd(new Date())} onChange={(e) => setDay(e.target.value)} />
+        </label>
+        <div className="grid gap-2">
+          <span className="text-xs font-medium text-gray-700">
+            Photo of the products{needsPhoto ? "" : " (optional)"}
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {previews.map((url, i) => (
+              <div key={url} className="relative size-20 overflow-hidden rounded-md bg-gray-100">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={url} alt="" className="size-full object-cover" />
+                <button
+                  type="button"
+                  aria-label="Remove photo"
+                  className="absolute top-1 right-1 rounded-full bg-white/90 p-0.5 text-gray-700"
+                  onClick={() => setFiles((list) => list.filter((_, j) => j !== i))}
+                >
+                  <Minus className="size-3" />
+                </button>
+              </div>
+            ))}
+            <label className="flex size-20 cursor-pointer items-center justify-center rounded-md border border-dashed border-gray-300 text-gray-500 hover:bg-gray-50">
+              <Plus className="size-4" />
+              <span className="sr-only">Add photos</span>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  const picked = [...(e.target.files ?? [])];
+                  e.target.value = "";
+                  setFiles((list) => [...list, ...picked]);
+                }}
+              />
+            </label>
+          </div>
+        </div>
+        <DialogFooter className="sm:justify-between">
+          {error ? (
+            <span className="flex items-center gap-1.5 text-xs text-danger-text">
+              <AlertCircle className="size-3.5 shrink-0" />
+              {error}
+            </span>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="secondary" disabled={busy} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button disabled={busy || !day || (needsPhoto && !files.length)} onClick={() => void submit()}>
+              {busy ? "Receiving…" : "Receive"}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

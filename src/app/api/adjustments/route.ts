@@ -1,15 +1,18 @@
-import { adjustCost, changeQuantity } from "@/lib/inventory/service";
+import { adjustCost, changeQuantity, resolveSetAside } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { guard } from "@/lib/guard";
 
-/** A quantity correction (add/remove, at the current average cost) or a cost correction (cost). */
+/**
+ * A quantity correction (add/remove, at the current average cost), a cost correction (cost), or
+ * units set aside leaving that state (release to stock, write off).
+ */
 export async function POST(req: Request) {
   const me = await guard(["storage", "imports"], "edit");
   if (me instanceof Response) return me;
   try {
     const body = await readJson<{
       productId: string;
-      mode: "add" | "remove" | "cost";
+      mode: "add" | "remove" | "cost" | "release" | "write-off";
       quantity?: number;
       avgCost?: number;
       reason: string;
@@ -18,6 +21,12 @@ export async function POST(req: Request) {
     if (body.mode === "cost") {
       return jsonOk(
         await adjustCost({ productId: body.productId, avgCost: Number(body.avgCost), reason: body.reason, userId: me.id }),
+        { status: 201 },
+      );
+    }
+    if (body.mode === "release" || body.mode === "write-off") {
+      return jsonOk(
+        await resolveSetAside({ productId: body.productId, mode: body.mode, quantity: Number(body.quantity), reason: body.reason, userId: me.id }),
         { status: 201 },
       );
     }

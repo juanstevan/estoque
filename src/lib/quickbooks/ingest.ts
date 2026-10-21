@@ -1,9 +1,9 @@
-import { ExitStatus, TransactionType, type Order, type Prisma } from "@prisma/client";
+import { ExitStatus, type Order, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createProduct, nextNumber } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
 import { isPhysicalLine } from "@/lib/inventory/delivery-rules";
-import { fitDeliveries } from "@/lib/inventory/orders";
+import { deliveryPrefs, fitDeliveries, reserveOpenDeliveries, syncOrder } from "@/lib/inventory/orders";
 import { recomputeAvailable, roundMoney } from "@/lib/inventory/math";
 import { storeQbSyncEvent } from "@/lib/quickbooks/adapter";
 import { pushQuickBooksItem, qbSettings } from "@/lib/quickbooks/qbo";
@@ -243,7 +243,7 @@ async function moveReserved(tx: Prisma.TransactionClient, productId: string, del
   const reserved = roundMoney(Math.max(0, product.reservedQty + delta));
   await tx.product.update({
     where: { id: productId },
-    data: { reservedQty: reserved, availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }) },
+    data: { reservedQty: reserved, availableQty: recomputeAvailable({ ...product, reservedQty: reserved }) },
   });
 }
 
@@ -337,128 +337,72 @@ export async function ingestInvoice(raw: unknown, retried = false): Promise<Inge
       return { skipped: true as const, reason: "unchanged", order: existing };
     }
 
-    // Once any delivery's units left, QuickBooks changes are flagged instead of applied.
-    const frozen =
-      existing.deliveries.some((d) => d.stockOutAt || d.dispatchedAt || d.status === ExitStatus.COMPLETED) ||
-      Boolean(existing.dispatchedAt) ||
-      existing.status === ExitStatus.COMPLETED;
+    // The invoice always follows QuickBooks. Stock only moves with what physically happens:
+    // reservations follow the deliveries that haven't left; units that already left stay out.
+    const voided = Boolean(invoice.deleted || invoice.voided);
+    const { pairs, leftovers } = pairLines(existing.lines, voided ? [] : matched);
+    const before = new Map(existing.lines.map((line) => [line.id, line.orderedQty]));
+    const changed: string[] = [];
 
-    if (invoice.deleted || invoice.voided) {
-      if (frozen) {
-        const order = await tx.order.update({
-          where: { id: existing.id },
-          data: {
-            ...header,
-            voided: true,
-            issues: "QuickBooks voided this invoice after it left the warehouse. Review it before changing stock.",
-          },
-        });
-        return { skipped: false as const, order, review: true as const };
-      }
-      for (const line of existing.lines) {
-        if (line.reservedQty <= 0) continue;
-        await moveReserved(tx, line.productId, -line.reservedQty);
-        await tx.orderLine.update({ where: { id: line.id }, data: { reservedQty: 0 } });
-        await tx.inventoryTransaction.create({
-          data: {
-            productId: line.productId,
-            type: TransactionType.RESERVED,
-            quantity: 0,
-            totalValue: 0,
-            reference: existing.externalRef,
-            notes: `Released reservation for voided invoice ${existing.externalRef}`,
-            userId: "quickbooks",
-            metadata: JSON.stringify({ orderId: existing.id, action: "release" }),
-          },
-        });
-      }
-      await tx.delivery.deleteMany({ where: { orderId: existing.id } });
-      const order = await tx.order.update({
-        where: { id: existing.id },
-        data: { ...header, voided: true, onKanban: false, status: ExitStatus.PENDING, issues: "Voided in QuickBooks" },
-      });
-      return { skipped: false as const, order };
-    }
-
-    const { pairs, leftovers } = pairLines(existing.lines, matched);
-
-    if (frozen) {
-      // A payment also updates the invoice in QuickBooks. Only changed items need a review.
-      const linesChanged = leftovers.length > 0 || pairs.some((pair) => pair.current?.orderedQty !== pair.line.quantity);
-      // Prices don't move stock, so they always follow QuickBooks. So does the product's last
-      // sold price when this invoice set it.
-      for (const { line, current } of pairs) {
-        if (!current || current.unitPrice === line.unitPrice) continue;
-        await tx.orderLine.update({ where: { id: current.id }, data: { unitPrice: line.unitPrice } });
-        if (current.deliveredQty > 0 && line.unitPrice) {
-          await tx.product.updateMany({
-            where: { id: line.productId, lastSoldPrice: current.unitPrice },
-            data: { lastSoldPrice: line.unitPrice },
-          });
-        }
-      }
-      const order = await tx.order.update({
-        where: { id: existing.id },
-        data: {
-          ...header,
-          ...(linesChanged
-            ? { issues: "QuickBooks changed this invoice after it left the warehouse. Stock and proof were left as recorded." }
-            : {}),
-        },
-      });
-      return { skipped: false as const, order, review: true as const };
-    }
-
-    const address = existing.address && existing.address !== existing.qbAddress ? existing.address : invoice.address ?? existing.address;
-
-    if (!existing.onKanban) {
-      await tx.orderLine.deleteMany({ where: { orderId: existing.id } });
-      const order = await tx.order.update({
-        where: { id: existing.id },
-        data: { ...header, issues, address, lines: { create: matched.map(lineData) } },
-      });
-      return { skipped: false as const, order, unmatched };
-    }
-
-    // In the workflow: each physical line keeps exactly its quantity reserved.
-    const touched = new Set<string>();
     for (const { line, current } of pairs) {
-      const target = line.physical ? line.quantity : 0;
+      const data = { ...lineData(line), remainingQty: Math.max(0, line.quantity - (current?.deliveredQty ?? 0)) };
       if (!current) {
-        await tx.orderLine.create({ data: { ...lineData(line), orderId: existing.id, reservedQty: target } });
-        await moveReserved(tx, line.productId, target);
-      } else {
-        await tx.orderLine.update({ where: { id: current.id }, data: { ...lineData(line), reservedQty: target } });
-        await moveReserved(tx, line.productId, target - current.reservedQty);
+        await tx.orderLine.create({ data: { ...data, orderId: existing.id } });
+        changed.push(`${line.name ?? "item"} added (${line.quantity})`);
+        continue;
       }
-      touched.add(line.productId);
+      await tx.orderLine.update({ where: { id: current.id }, data });
+      if (before.get(current.id) !== line.quantity) changed.push(`${line.name ?? "item"} ${before.get(current.id)} → ${line.quantity}`);
+      // Prices don't move stock. The product's last sold price follows when this invoice set it.
+      if (current.deliveredQty > 0 && line.unitPrice && current.unitPrice !== line.unitPrice) {
+        await tx.product.updateMany({
+          where: { id: line.productId, lastSoldPrice: current.unitPrice },
+          data: { lastSoldPrice: line.unitPrice },
+        });
+      }
     }
     for (const current of leftovers) {
-      await moveReserved(tx, current.productId, -current.reservedQty);
-      await tx.orderLine.delete({ where: { id: current.id } });
+      changed.push(`a line of ${current.orderedQty} removed`);
+      if (current.deliveredQty > 0) {
+        // Units already left for it: the line stays, at 0, so what was delivered stays on record.
+        await tx.orderLine.update({ where: { id: current.id }, data: { orderedQty: 0, remainingQty: 0 } });
+      } else {
+        await moveReserved(tx, current.productId, -current.reservedQty);
+        await tx.orderLine.delete({ where: { id: current.id } });
+      }
     }
-    // Deliveries follow the new quantities; a processing one that is now short goes back to Preparing.
-    const reopened = await fitDeliveries(tx, existing.id);
-    // QuickBooks can't be stopped, so a change that reserves more than there is gets flagged.
-    const short = await tx.product.findMany({
-      where: { id: { in: [...touched] }, availableQty: { lt: 0 } },
-      select: { name: true, availableQty: true },
-    });
-    const shortage = short.map((p) => `Not enough stock: ${p.name} is short ${-p.availableQty}`).join("\n");
+
+    // Deliveries follow the new quantities; reservations follow the deliveries.
+    const fit = existing.onKanban ? await fitDeliveries(tx, existing.id) : { reopened: [], created: null };
+    const deliveries = await tx.delivery.count({ where: { orderId: existing.id } });
+    if (existing.onKanban && !deliveries) {
+      await tx.order.update({ where: { id: existing.id }, data: { onKanban: false, status: ExitStatus.PENDING, completedAt: null } });
+    }
+    await reserveOpenDeliveries(tx, existing.id);
+    if (deliveries) await syncOrder(tx, existing.id, await deliveryPrefs(tx));
+
+    // What needs a person: lines QuickBooks has that aren't products here, stock reserved beyond
+    // what there is, and units delivered beyond the invoice that should come back.
+    const lines = await tx.orderLine.findMany({ where: { orderId: existing.id }, include: { product: { select: { name: true, availableQty: true } } } });
+    const awaiting = lines
+      .filter((line) => line.deliveredQty - line.returnedQty > line.orderedQty)
+      .map((line) => `Awaiting return: ${line.product.name}, ${line.deliveredQty - line.returnedQty - line.orderedQty} delivered beyond the invoice`);
+    const short = [...new Map(lines.filter((line) => line.product.availableQty < 0).map((line) => [line.productId, line.product])).values()]
+      .map((p) => `Not enough stock: ${p.name} is short ${-p.availableQty}`);
+    const notes = [voided ? "Voided in QuickBooks" : null, voided ? null : issues, ...short, ...awaiting].filter(Boolean);
+
+    const address = existing.address && existing.address !== existing.qbAddress ? existing.address : invoice.address ?? existing.address;
     const order = await tx.order.update({
       where: { id: existing.id },
-      data: { ...header, issues: [issues, shortage].filter(Boolean).join("\n") || null, address },
+      data: { ...header, voided, issues: notes.join("\n") || null, address },
     });
-    for (const number of reopened) {
-      await tx.orderEvent.create({
-        data: {
-          orderId: existing.id,
-          kind: "stage",
-          message: `QuickBooks changed the items. Delivery ${number} needs to be prepared again.`,
-          actor: "QuickBooks",
-        },
-      });
-    }
+
+    const say = (message: string) =>
+      tx.orderEvent.create({ data: { orderId: existing.id, kind: "quickbooks", message, actor: "QuickBooks" } });
+    if (voided && !existing.voided) await say("Voided in QuickBooks. Units that hadn't left were released.");
+    else if (changed.length) await say(`QuickBooks changed the items: ${changed.join(", ")}.`);
+    if (fit.created) await say(`Delivery ${fit.created} added for the units QuickBooks added.`);
+    for (const number of fit.reopened) await say(`Delivery ${number} needs to be prepared again.`);
     return { skipped: false as const, order, unmatched };
   });
 }

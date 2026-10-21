@@ -82,6 +82,7 @@ async function receive(
       availableQty: recomputeAvailable({
         physicalQty: calc.newQty,
         reservedQty: product.reservedQty,
+        unavailableQty: 0,
       }),
     },
   });
@@ -316,6 +317,7 @@ async function main() {
       availableQty: recomputeAvailable({
         physicalQty: g.physicalQty,
         reservedQty: 3,
+        unavailableQty: 0,
       }),
     },
   });
@@ -361,6 +363,7 @@ async function main() {
       availableQty: recomputeAvailable({
         physicalQty: h.physicalQty,
         reservedQty: 2,
+        unavailableQty: 0,
       }),
     },
   });
