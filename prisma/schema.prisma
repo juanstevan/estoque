@@ -362,6 +362,21 @@ model Importation {
 
   lines  ImportationLine[]
   proofs ImportationProof[]
+  events ImportationEvent[]
+}
+
+/** What changed on an importation after it was received: who, when, the values before and after. */
+model ImportationEvent {
+  id            String      @id @default(cuid())
+  importationId String
+  actor         String
+  message       String
+  /// JSON { reason, before, after }
+  meta          String?
+  createdAt     DateTime    @default(now())
+  importation   Importation @relation(fields: [importationId], references: [id], onDelete: Cascade)
+
+  @@index([importationId, createdAt])
 }
 
 /** A photo taken when an importation arrived. Receiving requires one (historical ones excepted). */
@@ -384,6 +399,8 @@ model ImportationLine {
   draftSku                String?
   quantity                Float
   purchaseUnitCost        Float   @default(0)
+  /// Import tax of this line, a percent of its cost (25 = 25%). It stays on this line's product.
+  taxRate                 Float   @default(0)
   allocatedAdditionalCost Float   @default(0)
   landedUnitCost          Float   @default(0)
   notes                   String?

@@ -3,6 +3,7 @@ import {
   deleteImportation,
   listImportations,
   receiveImportation,
+  reviseImportation,
   setImportStatus,
   upsertImportation,
 } from "@/lib/inventory/service";
@@ -50,8 +51,10 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{
       id?: string;
-      action?: "save" | "status" | "delete" | "receive";
+      action?: "save" | "status" | "delete" | "receive" | "revise";
       photos?: string[];
+      reason?: string;
+      lines?: Array<{ id?: string; productId?: string | null; draftName?: string | null; draftSku?: string | null; quantity: number; purchaseUnitCost: number; taxRate?: number }>;
       reference?: string;
       kind?: ImportKind;
       status?: ImportStatus;
@@ -66,13 +69,6 @@ export async function POST(req: Request) {
       duties?: number;
       customs?: number;
       otherCosts?: number;
-      lines?: Array<{
-        productId?: string | null;
-        draftName?: string | null;
-        draftSku?: string | null;
-        quantity: number;
-        purchaseUnitCost: number;
-      }>;
     }>(req);
 
     if (body.action === "receive" && body.id) {
@@ -81,6 +77,22 @@ export async function POST(req: Request) {
         return jsonError("Upload the photos through the app", 400);
       }
       return jsonOk(await receiveImportation(body.id, { receivedAt: day(body.receivedAt) ?? new Date(NaN), photos, actor: me }));
+    }
+
+    if (body.action === "revise" && body.id) {
+      // Received importations change only by the main user (full access).
+      if (!me.main) return jsonError("Only the main user can correct a received importation.", 403);
+      return jsonOk(
+        await reviseImportation(
+          body.id,
+          {
+            costs: { transferFee: body.transferFee, freight: body.freight, delivery: body.delivery, duties: body.duties, customs: body.customs, otherCosts: body.otherCosts },
+            lines: (body.lines ?? []).flatMap((line) => (line.id ? [{ id: line.id, purchaseUnitCost: line.purchaseUnitCost, taxRate: line.taxRate }] : [])),
+            reason: body.reason ?? "",
+          },
+          me,
+        ),
+      );
     }
 
     if (body.action === "status" && body.id && body.status) {

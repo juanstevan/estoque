@@ -13,7 +13,8 @@ if (!/^postgres(ql)?:\/\/[^/]*@(localhost|127\.0\.0\.1)[:/]/.test(url)) throw ne
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }) });
 (globalThis as { prisma?: PrismaClient }).prisma = db;
 
-const { adjustCost, changeQuantity, createProduct, receiveImportation, resolveSetAside, setImportStatus, upsertImportation } = await import("./service");
+const { adjustCost, changeQuantity, correctFob, createProduct, receiveImportation, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
+  await import("./service");
 const { addProof, addToWorkflow, completeDelivery, moveDelivery, recordReturn, removeFromWorkflow, setPrepared } = await import("./orders");
 const { ownedProofUrl } = await import("./proof-file");
 const { ingestInvoice, pairLines } = await import("../quickbooks/ingest");
@@ -23,10 +24,11 @@ const actor = { id: ME, name: "Tester" };
 const PHOTO = "https://store.public.blob.vercel-storage.com/proofs/import-x/a.jpg";
 
 await db.$executeRawUnsafe(
-  `TRUNCATE "CostHistory", "InventoryTransaction", "ImportationProof", "ImportationLine", "Importation", "DeliveryLine", "Delivery", "OrderEvent", "OrderProof", "OrderLine", "Order", "QbSyncEvent", "Product", "AppSettings" CASCADE`,
+  `TRUNCATE "CostHistory", "InventoryTransaction", "ImportationEvent", "ImportationProof", "ImportationLine", "Importation", "DeliveryLine", "Delivery", "OrderEvent", "OrderProof", "OrderLine", "Order", "QbSyncEvent", "Product", "AppSettings" CASCADE`,
 );
 await db.appSettings.create({ data: { id: "default", qbRealmId: "realm" } });
 
+const roundTo = (n: number, d: number) => Math.round(n * 10 ** d) / 10 ** d;
 const product = (id: string) => db.product.findUniqueOrThrow({ where: { id } });
 const rejects = (run: () => Promise<unknown>, pattern: RegExp) => assert.rejects(run, pattern);
 const count = (productId: string, type: TransactionType) => db.inventoryTransaction.count({ where: { productId, type } });
@@ -43,7 +45,7 @@ async function invariants() {
   }
 }
 
-const importation = async (lines: { productId: string; quantity: number; purchaseUnitCost: number }[], extra: { freight?: number; historical?: boolean; expectedDate?: Date } = {}) =>
+const importation = async (lines: { productId: string; quantity: number; purchaseUnitCost: number; taxRate?: number }[], extra: { freight?: number; duties?: number; historical?: boolean; expectedDate?: Date } = {}) =>
   (await upsertImportation({ lines, userId: ME, ...extra }))!.id;
 const receive = (id: string, day = "2026-10-10", photos = [PHOTO]) =>
   receiveImportation(id, { receivedAt: new Date(`${day}T12:00:00Z`), photos, actor });
@@ -274,6 +276,87 @@ async function deliverAll(orderId: string) {
   const lines = await db.orderLine.findMany({ where: { orderId: o.id } });
   assert.deepEqual(lines.map((l) => [l.qbLineId, l.orderedQty, l.reservedQty]), [["1", 2, 2]]);
   assert.equal((await product(g.id)).reservedQty, 2);
+  await invariants();
+}
+
+// Phase 3: costs ───────────────────────────────────────────────────────────────────────────────────
+{
+  const avg = async (id: string) => (await product(id)).avgCost;
+
+  // 1, 2, 3. Two historical lots: 13.33 on the units counted; none added, and twice is once.
+  const h = await createProduct({ name: "Lot H", sku: "H", initialQty: 40 });
+  const a = await importation([{ productId: h.id, quantity: 100, purchaseUnitCost: 10 }], { historical: true });
+  const b = await importation([{ productId: h.id, quantity: 200, purchaseUnitCost: 15 }], { historical: true });
+  await receive(a, "2025-01-10", []);
+  await Promise.all([receive(b, "2025-06-10", []), receive(b, "2025-06-10", [])]);
+  await setImportStatus(b, ImportStatus.COMPLETED, ME);
+  assert.equal((await product(h.id)).physicalQty, 40, "historical lots add no units");
+  assert.equal(await avg(h.id), 13.3333);
+  assert.equal(await db.inventoryTransaction.count({ where: { productId: h.id, type: TransactionType.COST_ADJUSTMENT } }), 2, "one cost basis per lot");
+  assert.equal(await count(h.id, TransactionType.IMPORTATION), 0);
+
+  // 4. Historical and current together: the basis weighs every received lot; a later normal
+  // receipt moves the average from that basis (moving average), adding its own units.
+  const n = await importation([{ productId: h.id, quantity: 10, purchaseUnitCost: 30 }]);
+  await receive(n, "2026-10-20");
+  // 40 units at 13.3333 (533.33) + 10 at 30 → 50 units, 833.33 → 16.67
+  assert.deepEqual([(await product(h.id)).physicalQty, roundTo(await avg(h.id), 2)], [50, 16.67]);
+
+  // 13. Correcting a historical lot recomputes the basis from all lots, with no units.
+  await reviseImportation(a, { lines: [{ id: (await db.importationLine.findFirstOrThrow({ where: { importationId: a } })).id, purchaseUnitCost: 13 }], reason: "Supplier invoice" }, actor);
+  // (100·13 + 200·15 + 10·30) / 310 = 14.84 on 50 units
+  assert.deepEqual([(await product(h.id)).physicalQty, roundTo(await avg(h.id), 2)], [50, 14.84]);
+
+  // 8, 9. Tax stays on its own line; what's stored is what the shared formula gives the screen.
+  const t = await createProduct({ name: "Taxed T", sku: "T" });
+  const u = await createProduct({ name: "Untaxed U", sku: "U" });
+  const ti = await importation(
+    [
+      { productId: t.id, quantity: 10, purchaseUnitCost: 100, taxRate: 25 },
+      { productId: u.id, quantity: 10, purchaseUnitCost: 100 },
+    ],
+    { duties: 200 },
+  );
+  await receive(ti, "2026-10-20");
+  const stored = await db.importationLine.findMany({ where: { importationId: ti }, orderBy: { landedUnitCost: "desc" } });
+  assert.deepEqual(stored.map((l) => [l.taxRate, l.landedUnitCost]), [[25, 135], [0, 110]]);
+  assert.equal((await db.importation.findUniqueOrThrow({ where: { id: ti } })).coefficient, 1.225);
+  assert.deepEqual([(await product(t.id)).cifCost, (await product(t.id)).fobCost, await avg(t.id)], [135, 100, 135]);
+
+  // 7, 11. A received importation's costs change (main user): no units move, the change is
+  // logged with before and after, CIF follows, and sending it again changes nothing.
+  const line = stored[0]!;
+  const revised = () => reviseImportation(ti, { costs: { freight: 100.5 }, lines: [{ id: line.id, purchaseUnitCost: 110.25 }], reason: "Freight invoice arrived" }, actor);
+  await revised();
+  await revised();
+  assert.deepEqual([(await product(t.id)).physicalQty, (await product(u.id)).physicalQty], [10, 10]);
+  assert.equal(await count(t.id, TransactionType.IMPORTATION), 1, "no second receipt");
+  const events = await db.importationEvent.findMany({ where: { importationId: ti } });
+  assert.equal(events.length, 1);
+  const meta = JSON.parse(events[0]!.meta!);
+  assert.deepEqual([meta.reason, meta.before.costs.freight, meta.after.costs.freight, meta.before.lines[line.id].cost, meta.after.lines[line.id].cost], ["Freight invoice arrived", 0, 100.5, 100, 110.25]);
+  const tLine = await db.importationLine.findUniqueOrThrow({ where: { id: line.id } });
+  assert.equal((await product(t.id)).cifCost, tLine.landedUnitCost, "CIF follows the latest received lot");
+  assert.equal(await avg(t.id), tLine.landedUnitCost, "only lot of the product: its CIF is the average");
+  await rejects(() => reviseImportation(ti, { costs: { freight: -1 }, reason: "x" }, actor), /0 or more/);
+  await rejects(() => reviseImportation(ti, { costs: { freight: 1 }, reason: " " }, actor), /why/);
+  await rejects(() => reviseImportation(a + "x", { reason: "x" }, actor), /./);
+
+  // 5, 6, 10, 11. FOB correction: only FOB, cents kept, logged before → after; again is nothing.
+  const before = await product(t.id);
+  await correctFob({ productId: t.id, fobCost: 99.99, reason: "Supplier price list", userId: ME });
+  await correctFob({ productId: t.id, fobCost: 99.99, reason: "Supplier price list", userId: ME });
+  const after = await product(t.id);
+  assert.deepEqual([after.fobCost, after.physicalQty, after.avgCost, after.cifCost], [99.99, before.physicalQty, before.avgCost, before.cifCost]);
+  const fobLog = await db.inventoryTransaction.findMany({ where: { productId: t.id, metadata: { contains: '"field":"fobCost"' } } });
+  assert.equal(fobLog.length, 1);
+  assert.deepEqual([fobLog[0]!.quantity, fobLog[0]!.userId, JSON.parse(fobLog[0]!.metadata!).before.fobCost, JSON.parse(fobLog[0]!.metadata!).after.fobCost, JSON.parse(fobLog[0]!.metadata!).reason], [0, ME, before.fobCost, 99.99, "Supplier price list"]);
+  await rejects(() => correctFob({ productId: t.id, fobCost: Number.NaN, reason: "x", userId: ME }), /0 or more/);
+
+  // 14. No importations: nothing makes an average up. FOB doesn't become a cost.
+  const z = await createProduct({ name: "Unknown Z", sku: "Z", initialQty: 3 });
+  await correctFob({ productId: z.id, fobCost: 50, reason: "Price list", userId: ME });
+  assert.deepEqual([(await product(z.id)).avgCost, (await product(z.id)).inventoryValue], [0, 0]);
   await invariants();
 }
 

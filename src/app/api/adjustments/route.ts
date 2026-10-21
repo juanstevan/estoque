@@ -1,9 +1,10 @@
-import { adjustCost, changeQuantity, resolveSetAside } from "@/lib/inventory/service";
+import { adjustCost, changeQuantity, correctFob, resolveSetAside } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { guard } from "@/lib/guard";
 
 /**
- * A quantity correction (add/remove, at the current average cost), a cost correction (cost), or
+ * A quantity correction (add/remove, at the current average cost), a cost correction (cost), an
+ * FOB correction (fob), or
  * units set aside leaving that state (release to stock, write off).
  */
 export async function POST(req: Request) {
@@ -12,7 +13,8 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{
       productId: string;
-      mode: "add" | "remove" | "cost" | "release" | "write-off";
+      mode: "add" | "remove" | "cost" | "fob" | "release" | "write-off";
+      fobCost?: number;
       quantity?: number;
       avgCost?: number;
       reason: string;
@@ -21,6 +23,12 @@ export async function POST(req: Request) {
     if (body.mode === "cost") {
       return jsonOk(
         await adjustCost({ productId: body.productId, avgCost: Number(body.avgCost), reason: body.reason, userId: me.id }),
+        { status: 201 },
+      );
+    }
+    if (body.mode === "fob") {
+      return jsonOk(
+        { changed: Boolean(await correctFob({ productId: body.productId, fobCost: Number(body.fobCost), reason: body.reason, userId: me.id })) },
         { status: 201 },
       );
     }

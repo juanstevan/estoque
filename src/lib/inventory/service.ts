@@ -15,6 +15,7 @@ import {
   additionalImportCosts,
   allocateAdditionalCosts,
   calcWeightedAverageCost,
+  importCoefficient,
   packageCbmM3,
   recomputeAvailable,
   roundMoney,
@@ -669,6 +670,7 @@ type ImportLineInput = {
   draftSku?: string | null;
   quantity: number;
   purchaseUnitCost: number;
+  taxRate?: number;
   notes?: string | null;
 };
 
@@ -676,6 +678,8 @@ function checkImportLines(lines: ImportLineInput[], historical: boolean) {
   for (const line of lines) {
     if (!Number.isFinite(line.quantity) || line.quantity <= 0) throw new Error("Each line needs a quantity above 0");
     if (!Number.isFinite(line.purchaseUnitCost) || line.purchaseUnitCost < 0) throw new Error("Costs must be 0 or more");
+    const tax = line.taxRate ?? 0;
+    if (!Number.isFinite(tax) || tax < 0 || tax > 1000) throw new Error("Tax is a percent between 0 and 1000");
     if (historical && !line.productId) throw new Error("A historical importation only has products already in stock");
   }
 }
@@ -688,6 +692,7 @@ async function lockImportation(tx: Tx, id: string) {
 
 const importInclude = {
   lines: { include: { product: true } },
+  events: { orderBy: { createdAt: "desc" as const } },
   proofs: { select: { id: true, actor: true, createdAt: true }, orderBy: { createdAt: "asc" as const } },
 } as const;
 
@@ -727,13 +732,11 @@ export async function upsertImportation(input: {
       id: String(i),
       quantity: l.quantity,
       purchaseUnitCost: l.purchaseUnitCost,
+      taxRate: l.taxRate ?? 0,
     })),
     totalAdditional,
   );
-  const coefficient =
-    productSubtotal > 0
-      ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
-      : 1;
+  const coefficient = importCoefficient(allocated);
 
   try {
     return await prisma.$transaction(async (tx) => {
@@ -805,6 +808,7 @@ export async function upsertImportation(input: {
           draftSku: line.draftSku || null,
           quantity: line.quantity,
           purchaseUnitCost: line.purchaseUnitCost,
+          taxRate: line.taxRate ?? 0,
           allocatedAdditionalCost: alloc.allocatedAdditionalCost,
           landedUnitCost: alloc.landedUnitCost,
           notes: line.notes || null,
@@ -964,6 +968,143 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
   }
 }
 
+type CostFields = { transferFee: number; freight: number; delivery: number; duties: number; customs: number; otherCosts: number };
+const COST_KEYS = ["transferFee", "freight", "delivery", "duties", "customs", "otherCosts"] as const;
+
+/**
+ * Corrects the costs of a received importation (main user only, checked by the route): its fees
+ * and each line's cost and tax. Quantities and products can't change here, so no units move. The
+ * lines get their new landed (CIF) cost, every product's average cost is recomputed from all its
+ * received importations (the cost basis rule), and the change is logged with the values before
+ * and after. Sending the same values again changes nothing.
+ */
+export async function reviseImportation(
+  id: string,
+  input: { costs?: Partial<CostFields>; lines?: Array<{ id: string; purchaseUnitCost?: number; taxRate?: number }>; reason: string },
+  actor: { id: string; name: string },
+) {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("Write why the costs change.");
+  return prisma.$transaction(async (tx) => {
+    const imp = await lockImportation(tx, id);
+    if (imp.status !== ImportStatus.COMPLETED) throw new Error("It isn't received yet; edit it normally.");
+    const costs = Object.fromEntries(COST_KEYS.map((key) => [key, input.costs?.[key] ?? imp[key]])) as CostFields;
+    if (Object.values(costs).some((v) => !Number.isFinite(v) || v < 0)) throw new Error("Costs must be 0 or more");
+    for (const change of input.lines ?? []) {
+      if (!imp.lines.some((line) => line.id === change.id)) throw new Error("That line isn't on this importation.");
+    }
+    const lines = imp.lines.map((line) => {
+      const change = input.lines?.find((c) => c.id === line.id);
+      return { ...line, purchaseUnitCost: change?.purchaseUnitCost ?? line.purchaseUnitCost, taxRate: change?.taxRate ?? line.taxRate };
+    });
+    checkImportLines(lines, imp.historical);
+
+    const totalAdditional = additionalImportCosts(costs);
+    const allocated = allocateAdditionalCosts(
+      lines.map((l) => ({ id: l.id, quantity: l.quantity, purchaseUnitCost: l.purchaseUnitCost, taxRate: l.taxRate })),
+      totalAdditional,
+    );
+    const changedCosts = COST_KEYS.filter((key) => costs[key] !== imp[key]);
+    const changedLines = lines.filter((line, i) => {
+      const was = imp.lines[i]!;
+      return line.purchaseUnitCost !== was.purchaseUnitCost || line.taxRate !== was.taxRate || allocated[i]!.landedUnitCost !== was.landedUnitCost;
+    });
+    if (!changedCosts.length && !changedLines.length) return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+
+    for (let i = 0; i < lines.length; i++) {
+      await tx.importationLine.update({
+        where: { id: lines[i]!.id },
+        data: {
+          purchaseUnitCost: lines[i]!.purchaseUnitCost,
+          taxRate: lines[i]!.taxRate,
+          allocatedAdditionalCost: allocated[i]!.allocatedAdditionalCost,
+          landedUnitCost: allocated[i]!.landedUnitCost,
+        },
+      });
+    }
+    await tx.importation.update({
+      where: { id },
+      data: {
+        ...costs,
+        totalAdditionalCosts: totalAdditional,
+        productSubtotal: roundMoney(lines.reduce((sum, l) => sum + l.quantity * l.purchaseUnitCost, 0)),
+        coefficient: importCoefficient(allocated),
+      },
+    });
+    const pick = (row: { purchaseUnitCost: number; taxRate: number; landedUnitCost: number }) => ({
+      cost: row.purchaseUnitCost,
+      taxRate: row.taxRate,
+      cif: row.landedUnitCost,
+    });
+    await tx.importationEvent.create({
+      data: {
+        importationId: id,
+        actor: actor.name || actor.id,
+        message: `Costs corrected: ${[...changedCosts, ...(changedLines.length ? [`${changedLines.length} line${changedLines.length === 1 ? "" : "s"}`] : [])].join(", ")} · ${reason}`,
+        meta: JSON.stringify({
+          reason,
+          before: {
+            costs: Object.fromEntries(changedCosts.map((key) => [key, imp[key]])),
+            lines: Object.fromEntries(imp.lines.map((line) => [line.id, pick(line)])),
+          },
+          after: {
+            costs: Object.fromEntries(changedCosts.map((key) => [key, costs[key]])),
+            lines: Object.fromEntries(lines.map((line, i) => [line.id, pick({ ...line, landedUnitCost: allocated[i]!.landedUnitCost })])),
+          },
+        }),
+      },
+    });
+
+    for (const productId of new Set(lines.flatMap((line) => (line.productId ? [line.productId] : [])))) {
+      await applyCostBasis(tx, productId, {
+        userId: actor.id,
+        notes: `Costs of import ${imp.reference} corrected · ${reason}`,
+        importationId: id,
+      });
+      // FOB and CIF are the latest received normal importation's; they follow when that's this one.
+      const latest = await tx.importationLine.findFirst({
+        where: { productId, importation: { status: ImportStatus.COMPLETED, historical: false } },
+        orderBy: [{ importation: { receivedAt: "desc" } }, { importation: { createdAt: "desc" } }],
+      });
+      if (latest?.importationId === id) {
+        await tx.product.update({ where: { id: productId }, data: { fobCost: roundMoney(latest.purchaseUnitCost), cifCost: latest.landedUnitCost } });
+      }
+    }
+    return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+  });
+}
+
+/**
+ * Corrects a product's FOB cost: what it costs to buy, used as the starting cost of new
+ * importations. It doesn't feed the average cost or CIF, so neither changes, and no units move.
+ * Logged as a cost correction with the value before and after; the same value again does nothing.
+ */
+export async function correctFob(input: { productId: string; fobCost: number; reason: string; userId: string }) {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("Reason is required");
+  if (!Number.isFinite(input.fobCost) || input.fobCost < 0) throw new Error("The cost must be 0 or more");
+  const fobCost = roundMoney(input.fobCost, 2);
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
+    const product = await tx.product.findUniqueOrThrow({ where: { id: input.productId } });
+    if (product.fobCost === fobCost) return null;
+    const txn = await tx.inventoryTransaction.create({
+      data: {
+        productId: product.id,
+        type: TransactionType.COST_ADJUSTMENT,
+        quantity: 0,
+        unitCost: fobCost,
+        totalValue: 0,
+        notes: `FOB ${product.fobCost} → ${fobCost} · ${reason}`,
+        userId: input.userId,
+        metadata: JSON.stringify({ field: "fobCost", reason, mode: "fob", before: { fobCost: product.fobCost }, after: { fobCost } }),
+      },
+    });
+    await tx.product.update({ where: { id: product.id }, data: { fobCost } });
+    return txn;
+  });
+}
+
 export async function deleteImportation(id: string) {
   await prisma.$transaction(async (tx) => {
     const current = await lockImportation(tx, id);
@@ -1013,18 +1154,16 @@ async function completeLocked(tx: Tx, importation: LockedImportation, userId: st
   const productSubtotal = roundMoney(
     importation.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
   );
-  const coefficient =
-    productSubtotal > 0
-      ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
-      : 1;
   const allocated = allocateAdditionalCosts(
     importation.lines.map((l) => ({
       id: l.id,
       quantity: l.quantity,
       purchaseUnitCost: l.purchaseUnitCost,
+      taxRate: l.taxRate,
     })),
     totalAdditional,
   );
+  const coefficient = importCoefficient(allocated);
 
   for (let i = 0; i < importation.lines.length; i++) {
     const line = importation.lines[i];

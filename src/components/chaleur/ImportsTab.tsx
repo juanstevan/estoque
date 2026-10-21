@@ -67,7 +67,9 @@ import { formatDayMonth, formatMoney, YEAR_COLORS } from "@/lib/format";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
+  importCoefficient,
   packageCbmM3,
+  readAmount,
   roundMoney,
 } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
@@ -83,6 +85,7 @@ export type ImportRow = {
   receivedAt: string | null;
   historical: boolean;
   proofs?: Array<{ id: string; actor: string; createdAt: string }>;
+  events?: Array<{ id: string; actor: string; message: string; createdAt: string }>;
   transferFee: number;
   freight: number;
   delivery: number;
@@ -93,10 +96,12 @@ export type ImportRow = {
   totalAdditionalCosts: number;
   coefficient: number;
   lines: Array<{
+    id?: string;
     productId: string | null;
     draftName: string | null;
     quantity: number;
     purchaseUnitCost: number;
+    taxRate?: number;
     product?: ProductRow | null;
   }>;
 };
@@ -231,7 +236,10 @@ export function ImportsTab({
   onProductsReload,
   seed,
   onSeedDone,
+  isMain = false,
 }: {
+  /** The main user (full access) may correct the costs of received importations. */
+  isMain?: boolean;
   imports: ImportRow[];
   products: ProductRow[];
   reasons: string[];
@@ -945,6 +953,7 @@ export function ImportsTab({
       {(editing || addingImport) && (
         <ImportDialog
           open
+          isMain={isMain}
           initial={editing}
           kind={editing?.kind ?? "INTERNATIONAL"}
           products={products}
@@ -1358,7 +1367,7 @@ function ImportCard({
 }
 
 const LINE_GRID =
-  "grid-cols-[104px_minmax(0,1fr)_72px_72px_104px_112px_36px]";
+  "grid-cols-[104px_minmax(0,1fr)_72px_72px_104px_72px_112px_36px]";
 
 const COST_FIELDS = [
   ["transferFee", "Transfer fee"],
@@ -1380,7 +1389,9 @@ function ImportDialog({
   onSaved,
   onCatalogChange,
   seedLines,
+  isMain,
 }: {
+  isMain: boolean;
   open: boolean;
   initial: ImportRow | null;
   kind: "DOMESTIC" | "INTERNATIONAL";
@@ -1397,26 +1408,35 @@ function ImportDialog({
     supplierName: initial?.supplierName ?? "",
     expectedDate: initial?.expectedDate?.slice(0, 10) || toYmd(new Date()),
     historical: initial?.historical ?? false,
-    transferFee: initial?.transferFee ?? 0,
-    freight: initial?.freight ?? 0,
-    delivery: initial?.delivery ?? 0,
-    duties: initial?.duties ?? 0,
-    customs: initial?.customs ?? 0,
-    otherCosts: initial?.otherCosts ?? 0,
+    // Money is kept as typed text, so "12." or "120+13" survive until the field is left.
+    transferFee: money(initial?.transferFee ?? 0),
+    freight: money(initial?.freight ?? 0),
+    delivery: money(initial?.delivery ?? 0),
+    duties: money(initial?.duties ?? 0),
+    customs: money(initial?.customs ?? 0),
+    otherCosts: money(initial?.otherCosts ?? 0),
     lines: (initial?.lines?.length
       ? initial.lines.map((l) => ({
+          id: l.id,
           productId: l.productId,
           name: l.product?.name ?? l.draftName ?? "",
           quantity: String(l.quantity),
-          purchaseUnitCost: String(l.purchaseUnitCost),
+          purchaseUnitCost: money(l.purchaseUnitCost),
+          taxRate: String(l.taxRate ?? 0),
         }))
       : (seedLines ?? []).map((l) => ({
+          id: undefined as string | undefined,
           productId: l.productId,
           name: l.name,
           quantity: String(l.quantity),
-          purchaseUnitCost: "0",
+          purchaseUnitCost: "0.00",
+          taxRate: "0",
         }))),
   }));
+  // Received: products and quantities are fixed. Only the main user corrects its costs.
+  const received = initial?.status === "COMPLETED";
+  const costsLocked = received && !isMain;
+  const [reason, setReason] = useState("");
   const [adding, setAdding] = useState(form.lines.length === 0);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
@@ -1424,7 +1444,7 @@ function ImportDialog({
   const [replacing, setReplacing] = useState<number | null>(null);
   const [editCell, setEditCell] = useState<{
     i: number;
-    field: "quantity" | "cost";
+    field: "quantity" | "cost" | "tax";
   } | null>(null);
   const [kind, setKind] = useState(initialKind);
   const [catalog, setCatalog] = useState(products);
@@ -1442,17 +1462,20 @@ function ImportDialog({
     (s, l) => s + numOrZero(l.quantity) * numOrZero(l.purchaseUnitCost),
     0,
   );
-  const additional = additionalImportCosts(form);
+  const additional = additionalImportCosts(
+    Object.fromEntries(COST_FIELDS.map(([key]) => [key, numOrZero(form[key])])),
+  );
   const allocated = allocateAdditionalCosts(
     form.lines.map((l, i) => ({
       id: String(i),
       quantity: numOrZero(l.quantity),
       purchaseUnitCost: numOrZero(l.purchaseUnitCost),
+      taxRate: numOrZero(l.taxRate),
     })),
     additional,
   );
-  const coefficient =
-    subtotal > 0 ? roundMoney((subtotal + additional) / subtotal, 3) : 1;
+  const taxes = allocated.reduce((sum, l) => sum + l.tax, 0);
+  const coefficient = importCoefficient(allocated);
   const cbm = useMemo(() => {
     return form.lines.reduce((s, l) => {
       const p = catalog.find((x) => x.id === l.productId);
@@ -1488,10 +1511,12 @@ function ImportDialog({
       lines: [
         ...f.lines,
         {
+          id: undefined,
           productId: product.id,
           name: product.name,
           quantity: "1",
-          purchaseUnitCost: String(priced?.fobCost || priced?.cifCost || 0),
+          purchaseUnitCost: money(priced?.fobCost || priced?.cifCost || 0),
+          taxRate: "0",
         },
       ],
     }));
@@ -1514,6 +1539,10 @@ function ImportDialog({
     }));
     setReplacing(null);
     setQuery("");
+  }
+
+  function setLine(index: number, patch: Partial<(typeof form.lines)[number]>) {
+    setForm((f) => ({ ...f, lines: f.lines.map((line, j) => (j === index ? { ...line, ...patch } : line)) }));
   }
 
   function removeLine(index: number) {
@@ -1542,6 +1571,10 @@ function ImportDialog({
 
   async function save() {
     if (busy.current) return;
+    if (received && !reason.trim()) {
+      setError("Write why the costs change.");
+      return;
+    }
     busy.current = true;
     setError(null);
     try {
@@ -1549,23 +1582,21 @@ function ImportDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...(received ? { action: "revise", reason } : {}),
           id: initial?.id,
           kind,
           reference: form.reference,
           supplierName: form.supplierName,
           expectedDate: form.expectedDate || null,
           historical: form.historical,
-          transferFee: form.transferFee,
-          freight: form.freight,
-          delivery: form.delivery,
-          duties: form.duties,
-          customs: form.customs,
-          otherCosts: form.otherCosts,
+          ...Object.fromEntries(COST_FIELDS.map(([key]) => [key, numOrZero(form[key])])),
           lines: form.lines.map((l) => ({
+            id: l.id,
             productId: l.productId,
             draftName: l.name,
             quantity: numOrZero(l.quantity),
             purchaseUnitCost: numOrZero(l.purchaseUnitCost),
+            taxRate: numOrZero(l.taxRate),
           })),
         }),
       });
@@ -1591,7 +1622,7 @@ function ImportDialog({
         <DialogTitle className="sr-only">
           {initial ? "Importation" : "New importation"}
         </DialogTitle>
-        <div className="absolute top-0 right-16 flex items-stretch gap-4">
+        <div className={cn("absolute top-0 right-16 flex items-stretch gap-4", received && "pointer-events-none")}>
           <ExpectedDateField
             value={form.expectedDate}
             onChange={(expectedDate) => setForm({ ...form, expectedDate })}
@@ -1606,7 +1637,7 @@ function ImportDialog({
           />
         </div>
 
-        <div className="flex items-center gap-3 pr-56">
+        <div className={cn("flex items-center gap-3 pr-56", received && "pointer-events-none")}>
           <HugInput
             mono
             placeholder="CODE"
@@ -1623,17 +1654,19 @@ function ImportDialog({
             onChange={(supplierName) => setForm({ ...form, supplierName })}
           />
           <ImportProgress status={initial?.status ?? "PENDING"} />
+          <span className="font-mono text-sm text-gray-600 tabular-nums" title="Coefficient: everything it cost ÷ what the products cost">
+            {coefficient.toFixed(3)}×
+          </span>
         </div>
 
         <ScrollArea className="h-[360px] rounded-lg border border-border bg-surface">
           <div className={cn("sticky top-0 z-10 grid h-9 border-b border-border bg-sunken pr-2.5 text-xs font-medium text-gray-600", LINE_GRID)}>
               <div className="flex items-center px-3">ID</div>
               <div className="flex items-center px-3">Name</div>
-              <div className="flex items-center justify-center px-3 font-mono tabular-nums">
-                {coefficient}×
-              </div>
+              <div className="flex items-center justify-center px-3">Coef</div>
               <div className="flex items-center justify-center px-3">Qnt</div>
               <div className="flex items-center justify-center px-3">Cost</div>
+              <div className="flex items-center justify-center px-3" title="Import tax, a percent of the cost. It stays on this product.">Tax %</div>
               <div className="flex items-center justify-end px-3">Total</div>
               <div />
             </div>
@@ -1698,7 +1731,7 @@ function ImportDialog({
                   ) : (
                     <div className="flex min-w-0 items-center gap-1.5 px-3">
                       <span className="min-w-0 truncate">{l.name}</span>
-                      <button
+                      {!received && <button
                         type="button"
                         aria-label={`Change ${l.name || code}`}
                         className="flex size-6 shrink-0 items-center justify-center text-gray-400 opacity-0 group-hover/line:opacity-100 hover:text-gray-700"
@@ -1711,7 +1744,7 @@ function ImportDialog({
                         }}
                       >
                         <Pencil className="size-3.5" />
-                      </button>
+                      </button>}
                     </div>
                   )}
                   <div className="px-3 text-center font-mono tabular-nums">
@@ -1721,44 +1754,40 @@ function ImportDialog({
                   </div>
                   <LineNum
                     value={l.quantity}
+                    format={(n) => String(n)}
+                    readOnly={received}
                     active={editCell?.i === i && editCell.field === "quantity"}
                     ariaLabel={`${l.name || code} quantity`}
-                    onActivate={() =>
-                      setEditCell({ i, field: "quantity" })
-                    }
-                    onDone={() =>
-                      setEditCell((cur) =>
-                        cur?.i === i && cur.field === "quantity" ? null : cur,
-                      )
-                    }
-                    onChange={(quantity) => {
-                      const lines = [...form.lines];
-                      lines[i] = { ...l, quantity };
-                      setForm({ ...form, lines });
-                    }}
+                    onActivate={() => setEditCell({ i, field: "quantity" })}
+                    onDone={() => setEditCell((cur) => (cur?.i === i && cur.field === "quantity" ? null : cur))}
+                    onChange={(quantity) => setLine(i, { quantity })}
                   />
                   <LineNum
                     value={l.purchaseUnitCost}
+                    format={money}
+                    readOnly={costsLocked}
                     active={editCell?.i === i && editCell.field === "cost"}
                     ariaLabel={`${l.name || code} cost`}
                     onActivate={() => setEditCell({ i, field: "cost" })}
-                    onDone={() =>
-                      setEditCell((cur) =>
-                        cur?.i === i && cur.field === "cost" ? null : cur,
-                      )
-                    }
-                    onChange={(purchaseUnitCost) => {
-                      const lines = [...form.lines];
-                      lines[i] = { ...l, purchaseUnitCost };
-                      setForm({ ...form, lines });
-                    }}
+                    onDone={() => setEditCell((cur) => (cur?.i === i && cur.field === "cost" ? null : cur))}
+                    onChange={(purchaseUnitCost) => setLine(i, { purchaseUnitCost })}
+                  />
+                  <LineNum
+                    value={l.taxRate}
+                    format={(n) => String(n)}
+                    readOnly={costsLocked}
+                    active={editCell?.i === i && editCell.field === "tax"}
+                    ariaLabel={`${l.name || code} tax percent`}
+                    onActivate={() => setEditCell({ i, field: "tax" })}
+                    onDone={() => setEditCell((cur) => (cur?.i === i && cur.field === "tax" ? null : cur))}
+                    onChange={(taxRate) => setLine(i, { taxRate })}
                   />
                   <div className="px-3 text-right font-mono tabular-nums">
                     {formatMoney(
                       numOrZero(l.quantity) * numOrZero(l.purchaseUnitCost),
                     )}
                   </div>
-                  <button
+                  {received ? <div /> : <button
                     type="button"
                     aria-label={`Remove ${l.name || code}`}
                     className="flex size-9 items-center justify-center text-gray-400 hover:text-danger-text"
@@ -1768,11 +1797,11 @@ function ImportDialog({
                     }}
                   >
                     <Trash2 className="size-3.5" />
-                  </button>
+                  </button>}
                 </div>
               );
             })}
-            {adding ? (
+            {received ? null : adding ? (
               <div className={cn("relative grid items-center border-b border-border py-1.5 pr-2.5", LINE_GRID)}>
                 <div />
                 <ProductPicker
@@ -1809,12 +1838,15 @@ function ImportDialog({
                 <Label htmlFor={`cost-${key}`}>{label}</Label>
                 <Input
                   id={`cost-${key}`}
-                  className="tabular-nums"
+                  className={cn("tabular-nums", readAmount(form[key]) === null && "text-[#e07a72]")}
                   inputMode="decimal"
+                  disabled={costsLocked}
                   value={form[key]}
-                  onChange={(e) =>
-                    setForm({ ...form, [key]: Number(e.target.value) || 0 })
-                  }
+                  onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                  onBlur={() => {
+                    const n = readAmount(form[key]);
+                    if (n !== null) setForm((f) => ({ ...f, [key]: money(n) }));
+                  }}
                 />
               </div>
             ))}
@@ -1831,13 +1863,24 @@ function ImportDialog({
               label="Additional costs"
               value={formatMoney(additional)}
             />
+            {taxes > 0 && <SummaryRow label="Line taxes" value={formatMoney(taxes)} />}
             <SummaryRow
               label="Total amount"
-              value={formatMoney(subtotal + additional)}
+              value={formatMoney(subtotal + taxes + additional)}
               strong
             />
           </div>
         </div>
+
+        {initial?.events?.length ? (
+          <ul className="max-h-20 overflow-y-auto text-xs text-gray-600" aria-label="Corrections">
+            {initial.events.map((event) => (
+              <li key={event.id} className="truncate">
+                {new Date(event.createdAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })} · {event.actor} · {event.message}
+              </li>
+            ))}
+          </ul>
+        ) : null}
 
         <DialogFooter className="sm:justify-between">
           {error ? (
@@ -1849,6 +1892,7 @@ function ImportDialog({
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-700">
               <label className="flex items-center gap-2" title="For importations from before the stock count: they set the average cost and add no units.">
                 <Checkbox
+                  disabled={received}
                   checked={form.historical}
                   onCheckedChange={(on) => setForm({ ...form, historical: Boolean(on) })}
                   className="size-4"
@@ -1869,10 +1913,20 @@ function ImportDialog({
             </div>
           )}
           <div className="flex items-center gap-2">
+            {received && isMain && (
+              <Input
+                aria-label="Reason for the correction"
+                placeholder="Why the costs change"
+                className="h-8 w-56"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+            )}
+            {costsLocked && <span className="text-xs text-gray-500">Received. Only the main user can correct its costs.</span>}
             <Button variant="secondary" onClick={onClose}>
-              Cancel
+              {costsLocked ? "Close" : "Cancel"}
             </Button>
-            <Button onClick={() => void save()}>Save</Button>
+            {!costsLocked && <Button onClick={() => void save()}>{received ? "Save corrections" : "Save"}</Button>}
           </div>
         </DialogFooter>
       </DialogContent>
@@ -2124,22 +2178,29 @@ function SupplierPicker({
   );
 }
 
+/** A typed amount ("12.5", "120+13") as a number; 0 when it isn't one yet. */
 function numOrZero(value: string) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return readAmount(value) ?? 0;
 }
 
 function isNumericText(value: string) {
-  return /^\d*\.?\d*$/.test(value.trim());
+  return !value.trim() || readAmount(value) !== null;
+}
+
+/** Money with cents, the way the fields show it: 12.5 → "12.50". */
+function money(n: number) {
+  return n.toFixed(2);
 }
 
 function LineNum({
   value,
-  active,
+  active: editing,
   ariaLabel,
   onActivate,
-  onDone,
+  onDone: done,
   onChange,
+  format,
+  readOnly = false,
 }: {
   value: string;
   active: boolean;
@@ -2147,8 +2208,17 @@ function LineNum({
   onActivate: () => void;
   onDone: () => void;
   onChange: (value: string) => void;
+  /** Tidies the value when the field is left ("120+13" → "133", "12.5" → "12.50"). */
+  format?: (n: number) => string;
+  readOnly?: boolean;
 }) {
+  const active = editing && !readOnly;
   const invalid = !isNumericText(value);
+  const onDone = () => {
+    const n = readAmount(value);
+    if (n !== null && format && format(n) !== value) onChange(format(n));
+    done();
+  };
   return (
     <div
       data-line-num=""
@@ -2156,7 +2226,7 @@ function LineNum({
       tabIndex={active ? undefined : 0}
       onClick={(e) => {
         e.stopPropagation();
-        if (!active) onActivate();
+        if (!active && !readOnly) onActivate();
       }}
       onBlur={
         active
@@ -2172,7 +2242,7 @@ function LineNum({
           onDone();
           return;
         }
-        if (!active && e.key === "Enter") {
+        if (!active && !readOnly && e.key === "Enter") {
           e.preventDefault();
           onActivate();
         }

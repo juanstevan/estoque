@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/tooltip";
 import { DataGrid, type GridCol } from "@/components/chaleur/DataGrid";
 import {
+  FobDialog,
   ProductDialog,
   uniqueProductTypes,
   type ProductRow,
@@ -275,6 +276,7 @@ export function StorageTab({
   onReload: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [fobFor, setFobFor] = useState<ProductRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
@@ -322,7 +324,28 @@ export function StorageTab({
 
   const columns = useMemo(() => {
     const shown = new Set(visibleKeys);
-    const cols = ALL_COLUMNS.filter((c) => shown.has(String(c.key)));
+    // FOB opens its correction instead of the product.
+    const cols = ALL_COLUMNS.filter((c) => shown.has(String(c.key))).map((c) =>
+      c.key === "fobCost"
+        ? {
+            ...c,
+            render: (p: ProductRow) => (
+              <button
+                type="button"
+                className="-mx-1 rounded px-1 tabular-nums underline decoration-gray-300 decoration-dotted underline-offset-2 hover:bg-gray-100"
+                aria-label={`Correct FOB cost of ${p.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFobFor(p);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                {money(p.fobCost)}
+              </button>
+            ),
+          }
+        : c,
+    );
     cols.push({
       key: "edit",
       label: "",
@@ -558,6 +581,8 @@ export function StorageTab({
         onClose={() => setSelected(null)}
         onSaved={onReload}
       />
+
+      {fobFor && <FobDialog product={fobFor} onClose={() => setFobFor(null)} onSaved={onReload} />}
 
       <ProductDialog
         open={creating}

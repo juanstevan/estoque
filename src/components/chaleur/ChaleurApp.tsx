@@ -176,6 +176,7 @@ export function ChaleurApp({ me }: { me: Me }) {
         {tab === "media" && <MediaLibrary products={products} reasons={reasons} onChanged={load} />}
         {tab === "imports" && (
           <ImportsTab
+            isMain={me.main}
             imports={imports}
             products={products}
             reasons={reasons}

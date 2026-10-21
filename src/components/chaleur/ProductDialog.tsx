@@ -53,6 +53,7 @@ import {
 } from "@/components/chaleur/ProductPhotos";
 import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
+import { readAmount } from "@/lib/inventory/math";
 import { commitMeasure } from "@/lib/measure";
 import { cn } from "@/lib/utils";
 
@@ -237,6 +238,7 @@ export function ProductDialog({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [qtyOpen, setQtyOpen] = useState(false);
+  const [fobOpen, setFobOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1014,11 +1016,14 @@ export function ProductDialog({
                         value={formatMoney(detail.cifCost)}
                         center
                       />
-                      <Stat
-                        label="FOB cost"
-                        value={formatMoney(detail.fobCost)}
-                        center
-                      />
+                      <button
+                        type="button"
+                        className="rounded-md outline-none hover:bg-gray-100"
+                        aria-label="Correct FOB cost"
+                        onClick={() => setFobOpen(true)}
+                      >
+                        <Stat label="FOB cost" value={formatMoney(detail.fobCost)} center />
+                      </button>
                       <div className="min-w-0 text-center">
                         <Popover>
                           <PopoverTrigger className="w-full rounded-md px-1.5 py-0.5 outline-none hover:bg-gray-100">
@@ -1411,6 +1416,21 @@ export function ProductDialog({
         onDownload={(photo, name) => void photoActions.download(photo, name)}
       />
 
+      {detail && !isCreate && fobOpen && (
+          <FobDialog
+            product={detail}
+            onClose={() => setFobOpen(false)}
+            onSaved={() => {
+              onSaved();
+              if (productId) {
+                fetch(`/api/products/${productId}`)
+                  .then((r) => r.json())
+                  .then(setDetail)
+                  .catch(() => undefined);
+              }
+            }}
+          />
+      )}
       {detail && !isCreate && (
         <QuantityDialog
           open={qtyOpen}
@@ -1598,6 +1618,88 @@ function QuantityDialog({
           </Button>
           <Button onClick={() => void save()}>
             {mode === "cost" ? "Save cost" : mode === "aside" ? (aside === "release" ? "Release" : "Write off") : mode === "add" ? "Add stock" : "Remove stock"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Corrects a product's FOB cost. Only FOB changes: the average cost, CIF and quantities stay, and
+ * the log keeps the value before and after with the reason.
+ */
+export function FobDialog({
+  product,
+  onClose,
+  onSaved,
+}: {
+  product: { id: string; name: string; fobCost: number };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState(product.fobCost.toFixed(2));
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const next = readAmount(value);
+
+  async function save() {
+    if (busy) return;
+    if (next === null || next < 0) return setError("Type a cost, like 12.50");
+    if (!reason.trim()) return setError("Write why it changes");
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/adjustments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: product.id, mode: "fob", fobCost: next, reason }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return setError(data.error ?? "Couldn't save the FOB cost");
+      onSaved();
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
+      <DialogContent showCloseButton={false} className="gap-5">
+        <DialogTitle>Correct FOB cost</DialogTitle>
+        <p className="-mt-3 text-sm text-gray-600">{product.name}</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="grid w-32 gap-1">
+            <Label htmlFor="fob-cost">New FOB</Label>
+            <Input
+              id="fob-cost"
+              className="tabular-nums"
+              inputMode="decimal"
+              value={value}
+              autoFocus
+              onChange={(e) => setValue(e.target.value)}
+              onBlur={() => next !== null && setValue(next.toFixed(2))}
+            />
+          </div>
+          <div className="grid min-w-45 flex-1 gap-1">
+            <Label htmlFor="fob-reason">Reason</Label>
+            <Input id="fob-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4 rounded-lg border border-border bg-sunken p-4">
+          <Stat label="Current FOB" value={formatMoney(product.fobCost)} />
+          <Stat label="New FOB" value={next === null ? "—" : formatMoney(next)} />
+        </div>
+        <p className="-mt-2 text-xs text-gray-500">Only the FOB cost changes. Average cost, CIF and quantities stay as they are.</p>
+        {error && <p className="text-xs text-danger-text">{error}</p>}
+        <DialogFooter>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={busy || next === null} onClick={() => void save()}>
+            Save FOB
           </Button>
         </DialogFooter>
       </DialogContent>
