@@ -46,6 +46,7 @@ import type { Me } from "@/lib/auth";
 import { formatSmartDate } from "@/lib/format";
 import { quickBooksName } from "@/lib/photos/name";
 import { cn } from "@/lib/utils";
+import { compareProductCodes } from "@/lib/products/code-sort";
 
 export type SettingsView = {
   companyName: string;
@@ -920,11 +921,12 @@ function Matching({
 
       <DataGrid
         rows={visible}
+        initialSort={{ key: "code", dir: "desc" }}
         getRowId={(row) => row.id}
         onRowClick={(row) => setCard(row.id)}
         empty={search ? `No matches for "${search}"` : "No products"}
         columns={[
-          { key: "code", label: "ID", mono: true, width: "72px" },
+          { key: "code", label: "ID", mono: true, width: "72px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir) },
           {
             key: "name",
             label: "Name",

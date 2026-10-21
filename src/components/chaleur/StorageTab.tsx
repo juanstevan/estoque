@@ -29,6 +29,7 @@ import {
 import { formatMoney, formatQty } from "@/lib/format";
 import { splitName } from "@/lib/photos/name";
 import { cn } from "@/lib/utils";
+import { compareProductCodes } from "@/lib/products/code-sort";
 
 const COLUMNS_KEY = "chaleur.storage.columns";
 const COLUMNS_MIGRATION_KEY = "chaleur.storage.columns.identity";
@@ -87,7 +88,7 @@ function supplierNames(raw: string | null) {
 }
 
 const ALL_COLUMNS: GridCol<ProductRow>[] = [
-  { key: "code", label: "ID", mono: true, width: "96px" },
+  { key: "code", label: "ID", mono: true, width: "96px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir) },
   {
     key: "name",
     label: "Name",
@@ -551,6 +552,7 @@ export function StorageTab({
 
       <DataGrid
         rows={visible}
+        initialSort={{ key: "code", dir: "desc" }}
         getRowId={(p) => p.id}
         onRowClick={(p) => setSelected(p.id)}
         selectedId={selected}

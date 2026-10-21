@@ -29,6 +29,7 @@ export type GridCol<T> = {
   render?: (row: T) => React.ReactNode;
   filterValue?: (row: T) => string;
   sortValue?: (row: T) => string | number;
+  sortCompare?: (a: T, b: T, dir: "asc" | "desc") => number;
   /** Decorative column (row actions) — no header menu. */
   plain?: boolean;
   width?: string;
@@ -84,6 +85,7 @@ export function DataGrid<T extends object>({
   onCheckedIdsChange,
   visibleIdsRef,
   rowClassName,
+  initialSort = null,
 }: {
   rows: T[];
   columns: GridCol<T>[];
@@ -101,8 +103,9 @@ export function DataGrid<T extends object>({
   visibleIdsRef?: { current: string[] | null };
   /** Extra classes per row, e.g. a tint for paid invoices. */
   rowClassName?: (row: T) => string | undefined;
+  initialSort?: Sort | null;
 }) {
-  const [sort, setSort] = useState<Sort | null>(null);
+  const [sort, setSort] = useState<Sort | null>(initialSort);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [exclude, setExclude] = useState<Record<string, boolean>>({});
   const [compare, setCompare] = useState<
@@ -152,6 +155,7 @@ export function DataGrid<T extends object>({
     const col = columns.find((c) => String(c.key) === sort.key);
     const copy = [...filtered];
     copy.sort((a, b) => {
+      if (col?.sortCompare) return col.sortCompare(a, b, sort.dir);
       const av = col?.sortValue
         ? col.sortValue(a)
         : (a as Record<string, unknown>)[sort.key];
