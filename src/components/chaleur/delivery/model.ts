@@ -3,7 +3,21 @@
 export type Status = "PENDING" | "PREPARING" | "TO_DELIVER" | "IN_TRANSIT" | "DELAYED" | "COMPLETED";
 export type Mode = "DELIVERY" | "PICKUP";
 
-export type Product = { id: string; name: string; sku: string; code: string; ean: string | null; secondarySku: string | null };
+export type Product = { id: string; name: string; sku: string; code: string; ean: string | null; secondarySku: string | null; availableQty: number };
+
+/** Products an invoice can't take yet: what its unreserved physical lines need beyond what's available. */
+export function shortages(lines: OrderLine[]) {
+  const need = new Map<string, { product: Product; qty: number }>();
+  for (const line of lines) {
+    if (!line.physical || line.reservedQty > 0) continue;
+    const row = need.get(line.productId) ?? { product: line.product, qty: 0 };
+    row.qty += line.orderedQty;
+    need.set(line.productId, row);
+  }
+  return [...need.values()]
+    .filter((row) => row.qty > row.product.availableQty)
+    .map((row) => `${row.product.name}: needs ${row.qty}, ${Math.max(0, row.product.availableQty)} available`);
+}
 export type OrderLine = {
   id: string;
   productId: string;

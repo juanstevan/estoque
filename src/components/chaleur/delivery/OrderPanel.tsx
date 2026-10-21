@@ -50,6 +50,7 @@ import {
   paymentChip,
   post,
   prepared,
+  shortages,
   stageOf,
   stamp,
   timeOf,
@@ -261,6 +262,7 @@ export function OrderPanel({
   const prep = active ? prepared(active) : null;
   const scan = prefs?.prepMethod === "scan";
   const blocked = waitingForPayment(order, prefs);
+  const short = order.deliveries.length ? [] : shortages(order.lines);
   const collectOnly = !isPaid(order) && prefs ? !prefs.allowUnpaid : false;
   const leftStock = deliveries.some((d) => d.stockOutAt || d.dispatchedAt || d.status === "COMPLETED");
   const physicalUnits = order.lines.filter((l) => l.physical).reduce((sum, l) => sum + l.orderedQty, 0);
@@ -541,11 +543,13 @@ export function OrderPanel({
             <Hint>
               {blocked
                 ? "Waiting for payment. Unpaid invoices are off in Settings › Preferences › Delivery, so this one can start as soon as QuickBooks marks it paid."
-                : "Reserves its units and moves it to Pending."}
+                : short.length
+                  ? `Not enough stock to reserve it. ${short.join(" · ")}`
+                  : "Reserves its units and moves it to Pending."}
             </Hint>
             {editable && (
               <Actions>
-                <Button size="sm" disabled={busy || blocked} onClick={() => void run({ action: "add", orderId: order.id })}>
+                <Button size="sm" disabled={busy || blocked || short.length > 0} onClick={() => void run({ action: "add", orderId: order.id })}>
                   Add to workflow
                 </Button>
               </Actions>

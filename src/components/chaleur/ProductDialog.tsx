@@ -54,7 +54,6 @@ import {
 import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
 import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
 import { commitMeasure } from "@/lib/measure";
-import { calcWeightedAverageCost } from "@/lib/inventory/math";
 import { cn } from "@/lib/utils";
 
 export type ProductRow = {
@@ -1428,6 +1427,10 @@ export function ProductDialog({
   );
 }
 
+/**
+ * Quantity corrections (units in or out at the current average cost) and cost corrections
+ * (the average cost changes, the units don't) are separate on purpose.
+ */
 function QuantityDialog({
   open,
   product,
@@ -1443,38 +1446,26 @@ function QuantityDialog({
   onSaved: () => void;
   onError: (message: string) => void;
 }) {
-  const [mode, setMode] = useState<"add" | "remove">("add");
+  const [mode, setMode] = useState<"add" | "remove" | "cost">("add");
   const [quantity, setQuantity] = useState(1);
-  const [price, setPrice] = useState(product.avgCost);
+  // Text, so a decimal point can be typed.
+  const [cost, setCost] = useState(String(product.avgCost));
   const [reason, setReason] = useState(reasons[0] ?? "Correction");
-  const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
+  // One id per opening: a retried request is recorded once.
+  const requestId = useRef("");
 
   useEffect(() => {
     if (!open) return;
     setMode("add");
     setQuantity(1);
-    setPrice(product.avgCost);
+    setCost(String(product.avgCost));
     setReason(reasons[0] ?? "Correction");
-    setError(null);
+    requestId.current = crypto.randomUUID();
   }, [open, product.avgCost, reasons]);
 
-  const preview = useMemo(
-    () =>
-      mode === "add"
-        ? calcWeightedAverageCost({
-            existingQty: product.physicalQty,
-            existingValue: product.inventoryValue,
-            incomingQty: quantity,
-            incomingUnitCost: price,
-          })
-        : {
-            newQty: product.physicalQty - quantity,
-            newAvgCost: product.avgCost,
-            newValue: (product.physicalQty - quantity) * product.avgCost,
-          },
-    [mode, product, quantity, price],
-  );
+  const newQty = mode === "cost" ? product.physicalQty : product.physicalQty + (mode === "add" ? quantity : -quantity);
+  const newCost = mode === "cost" ? Number(cost) || 0 : product.avgCost;
 
   async function save() {
     if (busy.current) return;
@@ -1484,16 +1475,14 @@ function QuantityDialog({
       const res = await fetch("/api/adjustments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productId: product.id,
-          mode,
-          quantity,
-          price,
-          reason,
-        }),
+        body: JSON.stringify(
+          mode === "cost"
+            ? { productId: product.id, mode, avgCost: Number(cost), reason }
+            : { productId: product.id, mode, quantity, reason, requestId: requestId.current },
+        ),
       });
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         onError(data.error ?? "Couldn't save the adjustment");
         return;
       }
@@ -1506,36 +1495,40 @@ function QuantityDialog({
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent showCloseButton={false} className="gap-5">
-        <DialogTitle>Change quantity</DialogTitle>
+        <DialogTitle>{mode === "cost" ? "Correct cost" : "Change quantity"}</DialogTitle>
 
-        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove")}>
-          <TabsList className="w-52">
+        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove" | "cost")}>
+          <TabsList className="w-72">
             <TabsTrigger value="remove">Remove</TabsTrigger>
             <TabsTrigger value="add">Add</TabsTrigger>
+            <TabsTrigger value="cost">Cost</TabsTrigger>
           </TabsList>
         </Tabs>
 
         <div className="flex flex-wrap items-end gap-3">
-          <div className="grid w-24 gap-1">
-            <Label htmlFor="adjust-qty">Quantity</Label>
-            <Input
-              id="adjust-qty"
-              className="tabular-nums"
-              inputMode="numeric"
-              value={String(quantity)}
-              onChange={(e) => setQuantity(Number(e.target.value) || 0)}
-            />
-          </div>
-          <div className="grid w-28 gap-1">
-            <Label htmlFor="adjust-price">Price</Label>
-            <Input
-              id="adjust-price"
-              className="tabular-nums"
-              inputMode="decimal"
-              value={String(price)}
-              onChange={(e) => setPrice(Number(e.target.value) || 0)}
-            />
-          </div>
+          {mode === "cost" ? (
+            <div className="grid w-32 gap-1">
+              <Label htmlFor="adjust-cost">Average cost</Label>
+              <Input
+                id="adjust-cost"
+                className="tabular-nums"
+                inputMode="decimal"
+                value={cost}
+                onChange={(e) => setCost(e.target.value)}
+              />
+            </div>
+          ) : (
+            <div className="grid w-24 gap-1">
+              <Label htmlFor="adjust-qty">Quantity</Label>
+              <Input
+                id="adjust-qty"
+                className="tabular-nums"
+                inputMode="numeric"
+                value={String(quantity)}
+                onChange={(e) => setQuantity(Number(e.target.value) || 0)}
+              />
+            </div>
+          )}
           <div className="grid min-w-45 flex-1 gap-1">
             <Label>Reason</Label>
             <Select value={reason} onValueChange={(v) => setReason(String(v))}>
@@ -1554,24 +1547,23 @@ function QuantityDialog({
         </div>
 
         <div className="grid grid-cols-3 gap-4 rounded-lg border border-border bg-sunken p-4">
-          <Stat
-            label="Old quantity"
-            value={`${formatQty(product.physicalQty)}un`}
-          />
-          <Stat label="New quantity" value={`${formatQty(preview.newQty)}un`} />
-          <Stat label="New cost" value={formatMoney(preview.newAvgCost)} />
+          <Stat label="Quantity" value={`${formatQty(newQty)}un`} />
+          <Stat label="Average cost" value={formatMoney(newCost)} />
+          <Stat label="Value" value={formatMoney(newQty * newCost)} />
         </div>
+        <p className="-mt-2 text-xs text-gray-500">
+          {mode === "cost"
+            ? "Only the cost changes. The quantity stays as it is."
+            : `Units ${mode === "add" ? "come in" : "go out"} at the current average cost, which stays as it is.`}
+        </p>
 
-        <DialogFooter className="sm:justify-between">
-          <ErrorText>{error}</ErrorText>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button onClick={() => void save()}>
-              {mode === "add" ? "Add stock" : "Remove stock"}
-            </Button>
-          </div>
+        <DialogFooter>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={() => void save()}>
+            {mode === "cost" ? "Save cost" : mode === "add" ? "Add stock" : "Remove stock"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

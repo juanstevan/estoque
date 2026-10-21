@@ -10,8 +10,10 @@
     "setup": "prisma migrate deploy && tsx prisma/seed.ts",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force",
+    "db:reset": "tsx prisma/local-only.ts && prisma migrate reset --force",
     "qb:sync": "tsx prisma/sync-qbo.ts",
+    "test": "export DATABASE_URL=postgres://unit@localhost:1/none && tsx src/lib/inventory/delivery-rules.test.ts && tsx src/lib/quickbooks/ingest.test.ts && tsx src/lib/catalog/rich-text.test.tsx",
+    "test:db": "tsx src/lib/inventory/stock.test.mts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

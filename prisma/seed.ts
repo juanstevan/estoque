@@ -9,6 +9,7 @@ import {
 } from "@prisma/client";
 import { createHash } from "crypto";
 import { databaseUrl } from "../src/lib/database-url";
+import { assertLocalDatabase } from "./local-only";
 import {
   allocateAdditionalCosts,
   calcWeightedAverageCost,
@@ -87,6 +88,7 @@ async function receive(
 }
 
 async function main() {
+  assertLocalDatabase();
   await prisma.qbSyncEvent.deleteMany();
   await prisma.orderLine.deleteMany();
   await prisma.order.deleteMany();

@@ -81,6 +81,8 @@ export async function appendTransaction(
     affectsPhysical?: boolean;
     affectsCost?: boolean;
     reason?: string | null;
+    /** A removal may not dip into units reserved for invoices. */
+    keepReserved?: boolean;
   },
 ) {
   await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
@@ -90,6 +92,8 @@ export async function appendTransaction(
 
   const quantity = input.quantity;
   const unitCost = roundMoney(input.unitCost ?? product.avgCost);
+  if (!Number.isFinite(quantity)) throw new Error("The quantity isn't a number");
+  if (!Number.isFinite(unitCost) || unitCost < 0) throw new Error("The cost must be 0 or more");
   const affectsPhysical = input.affectsPhysical ?? true;
   const affectsCost = input.affectsCost ?? false;
 
@@ -101,6 +105,11 @@ export async function appendTransaction(
     nextPhysical = roundMoney(product.physicalQty + quantity);
     if (nextPhysical < 0) {
       throw new Error(`Insufficient quantity for ${product.sku}`);
+    }
+    if (input.keepReserved && quantity < 0 && nextPhysical < product.reservedQty) {
+      throw new Error(
+        `${product.name}: ${product.reservedQty} of its ${product.physicalQty} units are reserved for invoices, so only ${Math.max(0, roundMoney(product.physicalQty - product.reservedQty))} can be removed.`,
+      );
     }
   }
 
@@ -138,7 +147,11 @@ export async function appendTransaction(
       clientName: input.clientName ?? null,
       userId: input.userId ?? currentUserId(),
       occurredAt: input.occurredAt ?? new Date(),
-      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+      metadata: JSON.stringify({
+        ...input.metadata,
+        before: snapshot(product),
+        after: { physicalQty: nextPhysical, avgCost: nextAvg, inventoryValue: nextValue },
+      }),
     },
   });
 
@@ -170,6 +183,110 @@ export async function appendTransaction(
   }
 
   return txn;
+}
+
+type Snapshot = { physicalQty: number; avgCost: number; inventoryValue: number; fobCost?: number; cifCost?: number };
+
+/** What a movement found, so its log shows before and after and a reversal can put it back. */
+function snapshot(p: Snapshot): Snapshot {
+  return { physicalQty: p.physicalQty, avgCost: p.avgCost, inventoryValue: p.inventoryValue, fobCost: p.fobCost, cifCost: p.cifCost };
+}
+
+function readMeta(raw: string | null): Record<string, unknown> {
+  try {
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Sets a product's average cost without touching its quantity: the value becomes units × cost.
+ * Logged as COST_ADJUSTMENT with the values before and after.
+ */
+async function setAverageCost(
+  tx: Tx,
+  input: { productId: string; avgCost: number; userId: string; notes: string; occurredAt?: Date; metadata?: Record<string, unknown> },
+) {
+  if (!Number.isFinite(input.avgCost) || input.avgCost < 0) throw new Error("The cost must be 0 or more");
+  await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
+  const product = await tx.product.findUniqueOrThrow({ where: { id: input.productId } });
+  const avgCost = roundMoney(input.avgCost);
+  const inventoryValue = roundMoney(product.physicalQty * avgCost);
+  const txn = await tx.inventoryTransaction.create({
+    data: {
+      productId: product.id,
+      type: TransactionType.COST_ADJUSTMENT,
+      quantity: 0,
+      unitCost: avgCost,
+      totalValue: roundMoney(inventoryValue - product.inventoryValue),
+      notes: input.notes,
+      userId: input.userId,
+      occurredAt: input.occurredAt ?? new Date(),
+      metadata: JSON.stringify({
+        ...input.metadata,
+        before: snapshot(product),
+        after: { physicalQty: product.physicalQty, avgCost, inventoryValue },
+      }),
+    },
+  });
+  await tx.product.update({ where: { id: product.id }, data: { avgCost, inventoryValue } });
+  await tx.costHistory.create({
+    data: {
+      productId: product.id,
+      transactionId: txn.id,
+      eventType: TransactionType.COST_ADJUSTMENT,
+      quantityDelta: 0,
+      unitCost: avgCost,
+      resultingAvgCost: avgCost,
+      resultingQty: product.physicalQty,
+      resultingValue: inventoryValue,
+      occurredAt: txn.occurredAt,
+    },
+  });
+  return txn;
+}
+
+/** A manual cost correction: the quantity stays, the average cost and value change. */
+export async function adjustCost(input: { productId: string; avgCost: number; reason: string; userId: string }) {
+  if (!input.reason?.trim()) throw new Error("Reason is required");
+  return prisma.$transaction((tx) =>
+    setAverageCost(tx, {
+      productId: input.productId,
+      avgCost: input.avgCost,
+      userId: input.userId,
+      notes: input.reason.trim(),
+      metadata: { reason: input.reason.trim(), mode: "cost" },
+    }),
+  );
+}
+
+/**
+ * The cost basis from importations: every completed importation line of the product (historical
+ * or not), weighted by quantity, applied to the units on hand. Products without any keep their cost,
+ * unless `fallback` gives the one to go back to.
+ */
+async function applyCostBasis(
+  tx: Tx,
+  productId: string,
+  opts: { userId: string; notes: string; importationId: string; fallback?: number },
+) {
+  const lines = await tx.importationLine.findMany({
+    where: { productId, importation: { status: ImportStatus.COMPLETED } },
+    select: { quantity: true, landedUnitCost: true },
+  });
+  const units = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const avgCost =
+    units > 0 ? roundMoney(lines.reduce((sum, line) => sum + line.quantity * line.landedUnitCost, 0) / units) : opts.fallback;
+  if (avgCost === undefined) return;
+  await setAverageCost(tx, {
+    productId,
+    avgCost,
+    userId: opts.userId,
+    notes: opts.notes,
+    metadata: { importationId: opts.importationId, action: "cost-basis", importedUnits: units },
+  });
 }
 
 /** IDs the app picks itself belong to the secondary line: three base-36 characters with at
@@ -229,6 +346,7 @@ export async function createProduct(input: {
   tagId?: string | null;
   initialQty?: number;
   initialUnitCost?: number;
+  userId?: string;
 }) {
   await assertCodeFree(input.code?.trim().toUpperCase().slice(0, 3));
   return prisma.$transaction(async (tx) => {
@@ -268,15 +386,19 @@ export async function createProduct(input: {
 
     const qty = input.initialQty ?? 0;
     if (qty > 0) {
+      // Without a cost (QuickBooks items) the units come in at no cost instead of a $0 cost
+      // that would drag every later average down; importations set the cost basis.
+      const costed = input.initialUnitCost !== undefined;
       await appendTransaction(tx, {
         productId: product.id,
         type: TransactionType.RECEIVED,
         quantity: qty,
         unitCost: input.initialUnitCost ?? 0,
         reference: "INITIAL",
-        notes: "Initial stock",
+        notes: costed ? "Initial stock" : "Initial stock (cost unknown)",
         affectsPhysical: true,
-        affectsCost: true,
+        affectsCost: costed,
+        userId: input.userId,
       });
     }
 
@@ -464,78 +586,70 @@ export async function getProductDetail(id: string) {
   };
 }
 
+/**
+ * A quantity correction: units in or out at the current average cost, which stays as it is.
+ * Costs change through importations or `adjustCost`. A repeated `requestId` (a retry) counts once.
+ */
 export async function changeQuantity(input: {
   productId: string;
   mode: "add" | "remove";
   quantity: number;
-  price: number;
   reason: string;
+  userId: string;
+  requestId?: string;
 }) {
   if (!input.reason?.trim()) throw new Error("Reason is required");
-  if (input.quantity <= 0) throw new Error("Quantity must be greater than 0");
+  if (input.mode !== "add" && input.mode !== "remove") throw new Error("Choose Add or Remove");
+  if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("Quantity must be greater than 0");
   const delta = input.mode === "add" ? input.quantity : -input.quantity;
   return prisma.$transaction(async (tx) => {
-    const type =
-      input.reason.toLowerCase() === "return"
-        ? TransactionType.RETURNED
-        : input.mode === "add"
-          ? TransactionType.ADJUSTMENT
-          : TransactionType.ADJUSTMENT;
+    if (input.requestId) {
+      await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
+      const done = await tx.inventoryTransaction.findFirst({
+        where: { productId: input.productId, metadata: { contains: `"requestId":${JSON.stringify(input.requestId)}` } },
+      });
+      if (done) return done;
+    }
+    const type = input.reason.toLowerCase() === "return" ? TransactionType.RETURNED : TransactionType.ADJUSTMENT;
     return appendTransaction(tx, {
       productId: input.productId,
       type,
       quantity: delta,
-      unitCost: input.price,
       reason: input.reason,
       notes: input.reason,
       affectsPhysical: true,
-      affectsCost: input.mode === "add",
-      metadata: { reason: input.reason, mode: input.mode },
+      affectsCost: false,
+      keepReserved: true,
+      userId: input.userId,
+      metadata: { reason: input.reason, mode: input.mode, requestId: input.requestId },
     });
   });
 }
 
-export async function adjustInventory(input: {
-  productId: string;
-  quantityDelta: number;
-  reason: string;
+type ImportLineInput = {
+  productId?: string | null;
+  draftName?: string | null;
+  draftSku?: string | null;
+  quantity: number;
+  purchaseUnitCost: number;
   notes?: string | null;
-  type?: "ADJUSTMENT" | "CORRECTION";
-}) {
-  const product = await prisma.product.findUniqueOrThrow({
-    where: { id: input.productId },
-  });
-  return changeQuantity({
-    productId: input.productId,
-    mode: input.quantityDelta >= 0 ? "add" : "remove",
-    quantity: Math.abs(input.quantityDelta),
-    price: product.avgCost,
-    reason: input.reason || input.type || "Correction",
-  });
+};
+
+function checkImportLines(lines: ImportLineInput[], historical: boolean) {
+  for (const line of lines) {
+    if (!Number.isFinite(line.quantity) || line.quantity <= 0) throw new Error("Each line needs a quantity above 0");
+    if (!Number.isFinite(line.purchaseUnitCost) || line.purchaseUnitCost < 0) throw new Error("Costs must be 0 or more");
+    if (historical && !line.productId) throw new Error("A historical importation only has products already in stock");
+  }
 }
 
-export function previewQuantityChange(product: {
-  physicalQty: number;
-  inventoryValue: number;
-  avgCost: number;
-}, input: { mode: "add" | "remove"; quantity: number; price: number }) {
-  const delta = input.mode === "add" ? input.quantity : -input.quantity;
-  if (input.mode === "add") {
-    return calcWeightedAverageCost({
-      existingQty: product.physicalQty,
-      existingValue: product.inventoryValue,
-      incomingQty: input.quantity,
-      incomingUnitCost: input.price,
-    });
-  }
-  const newQty = product.physicalQty + delta;
-  return {
-    newQty,
-    newValue: roundMoney(newQty * product.avgCost),
-    newAvgCost: product.avgCost,
-    incomingValue: roundMoney(input.quantity * input.price),
-  };
+/** Locks the importation row, so completing, reopening and saving it happen one at a time. */
+async function lockImportation(tx: Tx, id: string) {
+  await tx.$queryRaw`SELECT 1 FROM "Importation" WHERE id = ${id} FOR UPDATE`;
+  return tx.importation.findUniqueOrThrow({ where: { id }, include: { lines: true } });
 }
+
+const importInclude = { lines: { include: { product: true } } } as const;
 
 export async function upsertImportation(input: {
   id?: string;
@@ -544,6 +658,9 @@ export async function upsertImportation(input: {
   status?: ImportStatus;
   supplierName?: string | null;
   expectedDate?: Date | null;
+  /** The day it was actually received; completing it records the units on that day. */
+  receivedAt?: Date | null;
+  historical?: boolean;
   notes?: string | null;
   transferFee?: number;
   freight?: number;
@@ -551,14 +668,8 @@ export async function upsertImportation(input: {
   duties?: number;
   customs?: number;
   otherCosts?: number;
-  lines: Array<{
-    productId?: string | null;
-    draftName?: string | null;
-    draftSku?: string | null;
-    quantity: number;
-    purchaseUnitCost: number;
-    notes?: string | null;
-  }>;
+  lines: ImportLineInput[];
+  userId: string;
 }) {
   const costs = {
     transferFee: input.transferFee ?? 0,
@@ -568,6 +679,11 @@ export async function upsertImportation(input: {
     customs: input.customs ?? 0,
     otherCosts: input.otherCosts ?? 0,
   };
+  if (Object.values(costs).some((v) => !Number.isFinite(v) || v < 0)) throw new Error("Costs must be 0 or more");
+  if (input.receivedAt && Number.isNaN(input.receivedAt.getTime())) throw new Error("Pick a valid received date");
+  if (input.receivedAt && input.receivedAt.getTime() > Date.now() + 24 * 60 * 60 * 1000) {
+    throw new Error("The received date can't be in the future");
+  }
   const totalAdditional = additionalImportCosts(costs);
   const productSubtotal = roundMoney(
     input.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
@@ -588,20 +704,21 @@ export async function upsertImportation(input: {
   try {
     return await prisma.$transaction(async (tx) => {
     let importationId = input.id;
-    const existing = importationId
-      ? await tx.importation.findUniqueOrThrow({ where: { id: importationId } })
-      : null;
+    const existing = importationId ? await lockImportation(tx, importationId) : null;
     if (existing?.status === ImportStatus.COMPLETED) {
       throw new Error("Completed importations cannot be edited");
     }
+    const historical = input.historical ?? existing?.historical ?? false;
+    checkImportLines(input.lines, historical);
     const dateChanged =
       (existing?.expectedDate?.getTime() ?? null) !==
       (input.expectedDate?.getTime() ?? null);
     const delayOverridden = dateChanged
       ? false
       : (existing?.delayOverridden ?? false);
-    const nextStatus =
-      input.status ?? existing?.status ?? ImportStatus.PENDING;
+    // Completing goes through setImportStatus, which adds the units; a save never does.
+    const asked = input.status === ImportStatus.COMPLETED ? undefined : input.status;
+    const nextStatus = asked ?? existing?.status ?? ImportStatus.PENDING;
     const status = shouldAutoDelay(
       input.expectedDate,
       nextStatus,
@@ -623,6 +740,8 @@ export async function upsertImportation(input: {
       kind: input.kind ?? existing?.kind ?? ImportKind.INTERNATIONAL,
       status,
       delayOverridden,
+      historical,
+      receivedAt: input.receivedAt === undefined ? existing?.receivedAt ?? null : input.receivedAt,
       supplierName: input.supplierName ?? null,
       expectedDate: input.expectedDate ?? null,
       notes: input.notes ?? null,
@@ -637,7 +756,7 @@ export async function upsertImportation(input: {
       await tx.importation.update({ where: { id: importationId }, data });
     } else {
       const created = await tx.importation.create({
-        data: { ...data, createdBy: currentUserId() },
+        data: { ...data, createdBy: input.userId },
       });
       importationId = created.id;
     }
@@ -671,7 +790,7 @@ export async function upsertImportation(input: {
 
     return tx.importation.findUniqueOrThrow({
       where: { id: importationId! },
-      include: { lines: { include: { product: true } } },
+      include: importInclude,
     });
     });
   } catch (e) {
@@ -679,189 +798,256 @@ export async function upsertImportation(input: {
   }
 }
 
-export async function setImportStatus(id: string, status: ImportStatus) {
-  const current = await prisma.importation.findUniqueOrThrow({ where: { id } });
-  if (status === ImportStatus.COMPLETED) {
+/** Every status change, completing and reopening included, under the importation's lock. */
+export async function setImportStatus(id: string, status: ImportStatus, userId: string) {
+  return prisma.$transaction(async (tx) => {
+    const current = await lockImportation(tx, id);
+    if (status === ImportStatus.COMPLETED) {
+      if (current.status !== ImportStatus.COMPLETED) await completeLocked(tx, current, userId);
+      return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+    }
     if (current.status === ImportStatus.COMPLETED) {
-      return prisma.importation.findUniqueOrThrow({
-        where: { id },
-        include: { lines: { include: { product: true } } },
-      });
+      await reopenLocked(tx, current, userId);
+      return tx.importation.update({ where: { id }, data: { status }, include: importInclude });
     }
-    if (current.receivedAt) {
-      return prisma.importation.update({
-        where: { id },
-        data: { status: ImportStatus.COMPLETED },
-        include: { lines: { include: { product: true } } },
-      });
-    }
-    return confirmImportation(id);
-  }
-  if (current.status === ImportStatus.COMPLETED) {
-    return reopenImportation(id, status);
-  }
-  const delayOverridden =
-    current.status === ImportStatus.DELAYED && status !== ImportStatus.DELAYED;
-  return prisma.importation.update({
-    where: { id },
-    data: {
-      status,
-      ...(current.status === ImportStatus.DELAYED || status === ImportStatus.DELAYED
-        ? { delayOverridden }
-        : {}),
-    },
-    include: { lines: { include: { product: true } } },
+    const delayOverridden =
+      current.status === ImportStatus.DELAYED && status !== ImportStatus.DELAYED;
+    return tx.importation.update({
+      where: { id },
+      data: {
+        status,
+        ...(current.status === ImportStatus.DELAYED || status === ImportStatus.DELAYED
+          ? { delayOverridden }
+          : {}),
+      },
+      include: importInclude,
+    });
   });
 }
 
-async function reopenImportation(id: string, status: ImportStatus) {
-  return prisma.$transaction(async (tx) => {
-    const importation = await tx.importation.findUniqueOrThrow({
-      where: { id },
-      include: { lines: true },
-    });
-    for (const line of importation.lines) {
-      if (!line.productId) continue;
-      await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${line.productId} FOR UPDATE`;
-      const product = await tx.product.findUniqueOrThrow({
-        where: { id: line.productId },
+type LockedImportation = Awaited<ReturnType<typeof lockImportation>>;
+
+/**
+ * Takes back what completing added. A normal importation's units leave at the cost they came in
+ * at, restoring the product exactly as it was; that's only possible while nothing else moved its
+ * stock since. A historical one recomputes the cost basis without it. History stays: each
+ * reversal is its own transaction.
+ */
+async function reopenLocked(tx: Tx, importation: LockedImportation, userId: string) {
+  if (importation.historical) {
+    const products = [...new Set(importation.lines.flatMap((line) => (line.productId ? [line.productId] : [])))];
+    // Not completed any more, so the basis leaves it out.
+    await tx.importation.update({ where: { id: importation.id }, data: { status: ImportStatus.PENDING } });
+    for (const productId of products) {
+      const set = await tx.inventoryTransaction.findFirst({
+        where: { productId, type: TransactionType.COST_ADJUSTMENT, metadata: { contains: `"importationId":"${importation.id}"` } },
+        orderBy: { createdAt: "asc" },
       });
-      const nextPhysical = roundMoney(product.physicalQty - line.quantity);
-      await tx.product.update({
-        where: { id: product.id },
-        data: {
-          physicalQty: nextPhysical,
-          inventoryValue: roundMoney(nextPhysical * product.avgCost),
-          availableQty: recomputeAvailable({
-            physicalQty: nextPhysical,
-            reservedQty: product.reservedQty,
-          }),
-        },
+      const before = readMeta(set?.metadata ?? null).before as Snapshot | undefined;
+      await applyCostBasis(tx, productId, {
+        userId,
+        notes: `Reopened historical import ${importation.reference}`,
+        importationId: importation.id,
+        fallback: before?.avgCost,
       });
     }
-    const receipts = await tx.inventoryTransaction.findMany({
-      where: {
-        type: TransactionType.IMPORTATION,
-        OR: [
-          { metadata: { contains: `"importationId":"${importation.id}"` } },
-          { reference: importation.reference },
-        ],
-      },
-      select: { id: true },
-    });
-    const txnIds = receipts.map((r) => r.id);
-    if (txnIds.length) {
-      await tx.costHistory.deleteMany({
-        where: { transactionId: { in: txnIds } },
-      });
-      await tx.inventoryTransaction.deleteMany({ where: { id: { in: txnIds } } });
-    }
-    return tx.importation.update({
-      where: { id },
-      data: { status, receivedAt: null },
-      include: { lines: { include: { product: true } } },
-    });
+    return;
+  }
+
+  const receipts = await tx.inventoryTransaction.findMany({
+    where: {
+      type: TransactionType.IMPORTATION,
+      OR: [
+        { metadata: { contains: `"importationId":"${importation.id}"` } },
+        { reference: importation.reference },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    include: { product: { select: { name: true } } },
   });
+  const reversed = new Set(receipts.map((r) => readMeta(r.metadata).reversalOf).filter(Boolean));
+  // Newest first, so each product steps back through its receipts in order.
+  const open = receipts.filter((r) => r.quantity > 0 && !reversed.has(r.id)).reverse();
+  const own = receipts.map((r) => r.id);
+
+  for (const receipt of open) {
+    const moved = await tx.inventoryTransaction.count({
+      where: {
+        productId: receipt.productId,
+        createdAt: { gt: receipt.createdAt },
+        id: { notIn: own },
+        OR: [{ quantity: { not: 0 } }, { type: TransactionType.COST_ADJUSTMENT }],
+      },
+    });
+    if (moved) {
+      throw new Error(
+        `${receipt.product.name} has moved since this import was received, so it can't be reopened. Correct the quantity or cost with an adjustment instead.`,
+      );
+    }
+    await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${receipt.productId} FOR UPDATE`;
+    const product = await tx.product.findUniqueOrThrow({ where: { id: receipt.productId } });
+    const physicalQty = roundMoney(product.physicalQty - receipt.quantity);
+    if (physicalQty < product.reservedQty) {
+      throw new Error(`${product.name}: its units are reserved for invoices, so this import can't be reopened.`);
+    }
+    // Nothing moved since, so the product goes back to exactly what the receipt found.
+    const before = readMeta(receipt.metadata).before as Snapshot | undefined;
+    const inventoryValue = before ? before.inventoryValue : Math.max(0, roundMoney(product.inventoryValue - receipt.quantity * receipt.unitCost));
+    const avgCost = before ? before.avgCost : physicalQty > 0 ? roundMoney(inventoryValue / physicalQty) : 0;
+    const reversal = await tx.inventoryTransaction.create({
+      data: {
+        productId: product.id,
+        type: TransactionType.IMPORTATION,
+        quantity: -receipt.quantity,
+        unitCost: receipt.unitCost,
+        totalValue: roundMoney(receipt.quantity * receipt.unitCost),
+        reference: importation.reference,
+        notes: `Reopened import ${importation.reference}`,
+        userId,
+        metadata: JSON.stringify({
+          importationId: importation.id,
+          reversalOf: receipt.id,
+          before: snapshot(product),
+          after: { physicalQty, avgCost, inventoryValue },
+        }),
+      },
+    });
+    await tx.product.update({
+      where: { id: product.id },
+      data: {
+        physicalQty,
+        inventoryValue,
+        avgCost,
+        availableQty: recomputeAvailable({ physicalQty, reservedQty: product.reservedQty }),
+        ...(before?.fobCost !== undefined ? { fobCost: before.fobCost } : {}),
+        ...(before?.cifCost !== undefined ? { cifCost: before.cifCost } : {}),
+      },
+    });
+    own.push(reversal.id);
+  }
 }
 
 export async function deleteImportation(id: string) {
-  const current = await prisma.importation.findUniqueOrThrow({ where: { id } });
-  if (current.status === ImportStatus.COMPLETED) {
-    throw new Error("Completed importations cannot be deleted");
-  }
-  await prisma.importation.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    const current = await lockImportation(tx, id);
+    if (current.status === ImportStatus.COMPLETED) {
+      throw new Error("Completed importations cannot be deleted");
+    }
+    await tx.importation.delete({ where: { id } });
+  });
 }
 
-export async function confirmImportation(importationId: string) {
+export async function confirmImportation(importationId: string, userId: string) {
   return prisma.$transaction(async (tx) => {
-    const importation = await tx.importation.findUniqueOrThrow({
-      where: { id: importationId },
-      include: { lines: true },
-    });
+    const importation = await lockImportation(tx, importationId);
     if (importation.status === ImportStatus.COMPLETED) {
       throw new Error("Importation already received");
     }
-    if (importation.lines.length === 0) throw new Error("Importation has no products");
+    await completeLocked(tx, importation, userId);
+    return tx.importation.findUniqueOrThrow({ where: { id: importationId }, include: importInclude });
+  });
+}
 
-    const totalAdditional = additionalImportCosts(importation);
-    const productSubtotal = roundMoney(
-      importation.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
-    );
-    const coefficient =
-      productSubtotal > 0
-        ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
-        : 1;
-    const allocated = allocateAdditionalCosts(
-      importation.lines.map((l) => ({
-        id: l.id,
-        quantity: l.quantity,
-        purchaseUnitCost: l.purchaseUnitCost,
-      })),
-      totalAdditional,
-    );
+/**
+ * Receives a locked importation. A normal one adds its units at their landed (CIF) cost on the
+ * received day. A historical one adds no units: it only feeds the cost basis of its products.
+ */
+async function completeLocked(tx: Tx, importation: LockedImportation, userId: string) {
+  if (importation.lines.length === 0) throw new Error("Importation has no products");
+  checkImportLines(importation.lines, importation.historical);
+  const receivedAt = importation.receivedAt ?? new Date();
 
-    for (let i = 0; i < importation.lines.length; i++) {
-      const line = importation.lines[i];
-      const alloc = allocated[i];
-      const fobCost = roundMoney(line.purchaseUnitCost);
-      const cifCost = alloc.landedUnitCost;
-      let productId = line.productId;
-      if (!productId) {
-        const sku =
-          line.draftSku?.trim() ||
-          `SKU-${Date.now().toString(36).toUpperCase()}-${i}`;
-        const created = await tx.product.create({
-          data: {
-            name: line.draftName?.trim() || sku,
-            sku,
-            code: await nextCode(tx),
-          },
-        });
-        productId = created.id;
-      }
-      await tx.importationLine.update({
-        where: { id: line.id },
+  const totalAdditional = additionalImportCosts(importation);
+  const productSubtotal = roundMoney(
+    importation.lines.reduce((s, l) => s + l.quantity * l.purchaseUnitCost, 0),
+  );
+  const coefficient =
+    productSubtotal > 0
+      ? roundMoney((productSubtotal + totalAdditional) / productSubtotal, 3)
+      : 1;
+  const allocated = allocateAdditionalCosts(
+    importation.lines.map((l) => ({
+      id: l.id,
+      quantity: l.quantity,
+      purchaseUnitCost: l.purchaseUnitCost,
+    })),
+    totalAdditional,
+  );
+
+  for (let i = 0; i < importation.lines.length; i++) {
+    const line = importation.lines[i];
+    const alloc = allocated[i];
+    const fobCost = roundMoney(line.purchaseUnitCost);
+    const cifCost = alloc.landedUnitCost;
+    let productId = line.productId;
+    if (!productId) {
+      const sku =
+        line.draftSku?.trim() ||
+        `SKU-${Date.now().toString(36).toUpperCase()}-${i}`;
+      const created = await tx.product.create({
         data: {
-          productId,
-          allocatedAdditionalCost: alloc.allocatedAdditionalCost,
-          landedUnitCost: cifCost,
+          name: line.draftName?.trim() || sku,
+          sku,
+          code: await nextCode(tx),
         },
       });
-      await appendTransaction(tx, {
+      productId = created.id;
+    }
+    await tx.importationLine.update({
+      where: { id: line.id },
+      data: {
         productId,
-        type: TransactionType.IMPORTATION,
-        quantity: line.quantity,
-        unitCost: cifCost,
-        reference: importation.reference,
-        notes: `Import ${importation.reference}`,
-        affectsPhysical: true,
-        affectsCost: true,
-        metadata: {
-          importationId: importation.id,
-          purchaseUnitCost: line.purchaseUnitCost,
-          coefficient,
-          cifCost,
-          fobCost,
-        },
-      });
-      await tx.product.update({
-        where: { id: productId },
-        data: { cifCost, fobCost },
+        allocatedAdditionalCost: alloc.allocatedAdditionalCost,
+        landedUnitCost: cifCost,
+      },
+    });
+    if (importation.historical) continue;
+    await appendTransaction(tx, {
+      productId,
+      type: TransactionType.IMPORTATION,
+      quantity: line.quantity,
+      unitCost: cifCost,
+      reference: importation.reference,
+      notes: `Import ${importation.reference}`,
+      affectsPhysical: true,
+      affectsCost: true,
+      occurredAt: receivedAt,
+      userId,
+      metadata: {
+        importationId: importation.id,
+        purchaseUnitCost: line.purchaseUnitCost,
+        coefficient,
+        cifCost,
+        fobCost,
+      },
+    });
+    await tx.product.update({
+      where: { id: productId },
+      data: { cifCost, fobCost },
+    });
+  }
+
+  await tx.importation.update({
+    where: { id: importation.id },
+    data: {
+      status: ImportStatus.COMPLETED,
+      receivedAt,
+      totalAdditionalCosts: totalAdditional,
+      productSubtotal,
+      coefficient,
+    },
+  });
+
+  if (importation.historical) {
+    const products = [...new Set(importation.lines.map((line) => line.productId!))];
+    for (const productId of products) {
+      await applyCostBasis(tx, productId, {
+        userId,
+        notes: `Cost basis from historical import ${importation.reference}`,
+        importationId: importation.id,
       });
     }
-
-    return tx.importation.update({
-      where: { id: importation.id },
-      data: {
-        status: ImportStatus.COMPLETED,
-        receivedAt: new Date(),
-        totalAdditionalCosts: totalAdditional,
-        productSubtotal,
-        coefficient,
-      },
-      include: { lines: { include: { product: true } } },
-    });
-  });
+  }
 }
 
 export async function listImportations() {

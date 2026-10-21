@@ -1,7 +1,7 @@
 import { createProduct, listProducts } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { addPhotos, type PhotoInput } from "@/lib/photos/service";
-import { deny } from "@/lib/guard";
+import { deny, guard } from "@/lib/guard";
 
 export async function GET(req: Request) {
   const denied = await deny(["storage", "media", "imports", "settings"], "view");
@@ -12,8 +12,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const denied = await deny(["storage", "imports"], "edit");
-  if (denied) return denied;
+  const me = await guard(["storage", "imports"], "edit");
+  if (me instanceof Response) return me;
   try {
     const body = await readJson<{
       name: string;
@@ -49,7 +49,7 @@ export async function POST(req: Request) {
       return jsonError("Name and SKU are required");
     }
     const { photos, ...fields } = body;
-    const product = await createProduct(fields);
+    const product = await createProduct({ ...fields, userId: me.id });
     if (photos?.length) await addPhotos(product.id, photos);
     return jsonOk(product, { status: 201 });
   } catch (e) {

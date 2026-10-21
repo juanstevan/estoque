@@ -18,6 +18,8 @@ enum TransactionType {
   RETURNED
   TRANSFER
   IMPORTATION
+  /// Changes the cost only, never the quantity: a manual cost correction or a recomputed cost basis.
+  COST_ADJUSTMENT
 }
 
 enum ImportKind {
@@ -354,6 +356,8 @@ model Importation {
   updatedAt            DateTime     @updatedAt
   receivedAt           DateTime?
   delayOverridden      Boolean      @default(false)
+  /// An importation from before the stock count: it sets the cost basis and never adds units.
+  historical           Boolean      @default(false)
 
   lines ImportationLine[]
 }
@@ -490,6 +494,8 @@ model OrderLine {
   unitPrice        Float  @default(0)
   scannedQty       Float  @default(0)
   physical         Boolean @default(true)
+  /// The QuickBooks invoice line it came from, so the same item on two lines stays two lines.
+  qbLineId         String?
 
   order      Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product    Product        @relation(fields: [productId], references: [id])

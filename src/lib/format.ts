@@ -74,6 +74,7 @@ export const TRANSACTION_TYPE_LABELS: Record<string, string> = {
   RETURNED: "Return",
   TRANSFER: "Transfer",
   IMPORTATION: "Import",
+  COST_ADJUSTMENT: "Cost",
 };
 
 /** Reason shown in the product log — invoice, import, or the qty-change reason. */
@@ -84,10 +85,11 @@ export function movementReason(t: {
   reference?: string | null;
 }) {
   if (t.type === "SOLD") return "Invoice";
-  if (t.type === "IMPORTATION") return "Import";
   if (t.reference === "INITIAL") return "Initial";
   try {
     const meta = t.metadata ? JSON.parse(t.metadata) : null;
+    if (t.type === "IMPORTATION") return meta?.reversalOf ? "Import reopened" : "Import";
+    if (meta?.action === "cost-basis") return "Cost basis";
     if (meta && typeof meta === "object" && "reason" in meta && meta.reason) {
       return String(meta.reason);
     }

@@ -6,7 +6,7 @@ import {
   upsertImportation,
 } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { deny } from "@/lib/guard";
+import { deny, guard } from "@/lib/guard";
 
 export async function GET() {
   const denied = await deny("imports", "view");
@@ -22,8 +22,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const denied = await deny("imports", "edit");
-  if (denied) return denied;
+  const me = await guard("imports", "edit");
+  if (me instanceof Response) return me;
   try {
     const body = await readJson<{
       id?: string;
@@ -33,6 +33,8 @@ export async function POST(req: Request) {
       status?: ImportStatus;
       supplierName?: string | null;
       expectedDate?: string | null;
+      receivedAt?: string | null;
+      historical?: boolean;
       notes?: string | null;
       transferFee?: number;
       freight?: number;
@@ -50,7 +52,7 @@ export async function POST(req: Request) {
     }>(req);
 
     if (body.action === "status" && body.id && body.status) {
-      return jsonOk(await setImportStatus(body.id, body.status));
+      return jsonOk(await setImportStatus(body.id, body.status, me.id));
     }
 
     if (body.action === "delete" && body.id) {
@@ -74,6 +76,11 @@ export async function POST(req: Request) {
       otherCosts: body.otherCosts,
       lines: body.lines,
       expectedDate: body.expectedDate ? new Date(body.expectedDate) : null,
+      // A day (YYYY-MM-DD) at noon UTC, the same day in New York.
+      receivedAt:
+        body.receivedAt === undefined ? undefined : body.receivedAt ? new Date(`${body.receivedAt.slice(0, 10)}T12:00:00.000Z`) : null,
+      historical: body.historical,
+      userId: me.id,
     });
     return jsonOk(saved, { status: 201 });
   } catch (e) {

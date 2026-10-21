@@ -1,6 +1,6 @@
 import { confirmImportation, getImportation } from "@/lib/inventory/service";
 import { jsonError, jsonOk } from "@/lib/api";
-import { deny } from "@/lib/guard";
+import { deny, guard } from "@/lib/guard";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -14,11 +14,11 @@ export async function GET(_req: Request, ctx: Ctx) {
 }
 
 export async function POST(_req: Request, ctx: Ctx) {
-  const denied = await deny("imports", "edit");
-  if (denied) return denied;
+  const me = await guard("imports", "edit");
+  if (me instanceof Response) return me;
   try {
     const { id } = await ctx.params;
-    return jsonOk(await confirmImportation(id));
+    return jsonOk(await confirmImportation(id, me.id));
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Error", 400);
   }

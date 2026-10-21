@@ -1,4 +1,4 @@
-import { ExitStatus, TransactionType } from "@prisma/client";
+import { ExitStatus, TransactionType, type Order, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createProduct, nextNumber } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
@@ -12,6 +12,8 @@ import { pushQuickBooksItem, qbSettings } from "@/lib/quickbooks/qbo";
 export const INVOICES_FROM = "2026-10-01";
 
 export type QbLineIn = {
+  /** QuickBooks' own id of the invoice line. */
+  lineId?: string;
   sku?: string;
   quantity: number;
   itemId?: string;
@@ -89,6 +91,7 @@ export function parseQbInvoice(raw: unknown): QbInvoiceIn | null {
     const qty = num(detail.Qty ?? line.quantity);
     if (qty <= 0) continue;
     lines.push({
+      lineId: str(line.Id) || undefined,
       sku: str(line.sku) || str(detail.Sku) || undefined,
       quantity: qty,
       itemId: str(item?.value) || str(line.itemId) || undefined,
@@ -160,8 +163,10 @@ function issueText(unmatched: QbLineIn[]) {
     .join("\n");
 }
 
+type Matched = { lineId?: string; productId: string; quantity: number; unitPrice: number; physical: boolean; name?: string };
+
 async function matchedLines(invoice: QbInvoiceIn) {
-  const matched: Array<{ productId: string; quantity: number; unitPrice: number; physical: boolean; name?: string }> = [];
+  const matched: Matched[] = [];
   const unmatched: QbLineIn[] = [];
   for (const line of invoice.lines) {
     const product = await findProduct(line);
@@ -170,6 +175,7 @@ async function matchedLines(invoice: QbInvoiceIn) {
       continue;
     }
     matched.push({
+      lineId: line.lineId,
       productId: product.id,
       quantity: line.quantity,
       unitPrice: line.unitPrice ?? 0,
@@ -187,18 +193,20 @@ function invoiceDate(txnDate?: string) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-async function findExisting(invoice: QbInvoiceIn) {
+type Db = Prisma.TransactionClient | typeof prisma;
+
+async function findExisting(invoice: QbInvoiceIn, db: Db = prisma) {
   if (invoice.realmId && invoice.id) {
-    const byQb = await prisma.order.findUnique({
+    const byQb = await db.order.findUnique({
       where: { qbRealmId_qbInvoiceId: { qbRealmId: invoice.realmId, qbInvoiceId: invoice.id } },
-      include: { lines: true, deliveries: true },
+      include: { lines: { orderBy: { id: "asc" } }, deliveries: true },
     });
     if (byQb) return byQb;
   }
   if (!invoice.docNumber) return null;
-  const byDoc = await prisma.order.findUnique({
+  const byDoc = await db.order.findUnique({
     where: { externalRef: invoice.docNumber },
-    include: { lines: true, deliveries: true },
+    include: { lines: { orderBy: { id: "asc" } }, deliveries: true },
   });
   if (!byDoc) return null;
   if (invoice.id && byDoc.qbInvoiceId && byDoc.qbInvoiceId !== invoice.id) return null;
@@ -206,7 +214,51 @@ async function findExisting(invoice: QbInvoiceIn) {
   return byDoc;
 }
 
-export async function ingestInvoice(raw: unknown) {
+type ExistingLine = { id: string; productId: string; orderedQty: number; reservedQty: number; unitPrice: number; deliveredQty: number; qbLineId: string | null };
+
+/**
+ * Pairs QuickBooks lines with the invoice's lines: by QuickBooks line id first, then by product
+ * for lines saved before ids were kept. Each line pairs once, so the same item on two lines stays
+ * two lines. Leftovers are lines QuickBooks no longer has.
+ */
+export function pairLines<L extends ExistingLine>(existing: L[], matched: Matched[]) {
+  const free = [...existing];
+  const take = (test: (row: L) => boolean) => {
+    const i = free.findIndex(test);
+    return i < 0 ? undefined : free.splice(i, 1)[0];
+  };
+  const pairs: { line: Matched; current?: L }[] = matched.map((line) => ({
+    line,
+    current: line.lineId ? take((row) => row.qbLineId === line.lineId && row.productId === line.productId) : undefined,
+  }));
+  for (const pair of pairs) pair.current ??= take((row) => row.productId === pair.line.productId);
+  return { pairs, leftovers: free };
+}
+
+/** Moves a product's reservation by `delta` units, under its lock. */
+async function moveReserved(tx: Prisma.TransactionClient, productId: string, delta: number) {
+  if (!delta) return;
+  await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+  const product = await tx.product.findUniqueOrThrow({ where: { id: productId } });
+  const reserved = roundMoney(Math.max(0, product.reservedQty + delta));
+  await tx.product.update({
+    where: { id: productId },
+    data: { reservedQty: reserved, availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }) },
+  });
+}
+
+function lineData(line: Matched) {
+  return {
+    productId: line.productId,
+    qbLineId: line.lineId ?? null,
+    orderedQty: line.quantity,
+    remainingQty: line.quantity,
+    unitPrice: line.unitPrice,
+    physical: line.physical,
+  };
+}
+
+export async function ingestInvoice(raw: unknown, retried = false): Promise<IngestResult> {
   const invoice = parseQbInvoice(raw);
   if (!invoice) throw new Error("Not a QuickBooks invoice payload");
   if (invoice.rejected === "estimate") {
@@ -214,13 +266,13 @@ export async function ingestInvoice(raw: unknown) {
   }
 
   invoice.realmId ||= (await qbSettings()).realmId || undefined;
-  const existing = await findExisting(invoice);
+  const found = await findExisting(invoice);
   const updatedAt = invoice.updatedAt ? new Date(invoice.updatedAt) : null;
-  if (existing?.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt) {
-    return { skipped: true as const, reason: "unchanged", order: existing };
+  if (found?.qbUpdatedAt && updatedAt && updatedAt <= found.qbUpdatedAt) {
+    return { skipped: true as const, reason: "unchanged", order: found };
   }
   // Only invoices dated from INVOICES_FROM become orders. A deleted or voided one we never had stays out.
-  if (!existing && (invoice.deleted || invoice.voided || !invoice.txnDate || invoice.txnDate < INVOICES_FROM)) {
+  if (!found && (invoice.deleted || invoice.voided || !invoice.txnDate || invoice.txnDate < INVOICES_FROM)) {
     return { skipped: true as const, reason: "not imported" };
   }
 
@@ -247,222 +299,155 @@ export async function ingestInvoice(raw: unknown) {
     source: "quickbooks",
   };
 
-  if (!existing) {
+  if (!found) {
     const taken = invoice.docNumber
       ? await prisma.order.findUnique({ where: { externalRef: invoice.docNumber } })
       : null;
     const externalRef = !invoice.docNumber || taken ? `qb:${invoice.realmId ?? "qb"}:${invoice.id}` : invoice.docNumber;
-    const order = await prisma.order.create({
-      data: {
-        ...header,
-        externalRef,
-        status: ExitStatus.PENDING,
-        onKanban: false,
-        address: invoice.address ?? null,
-        voided: Boolean(invoice.voided || invoice.deleted),
-        issues,
-        lines: {
-          create: matched.map((line) => ({
-            productId: line.productId,
-            orderedQty: line.quantity,
-            remainingQty: line.quantity,
-            unitPrice: line.unitPrice,
-            physical: line.physical,
-          })),
-        },
-      },
-    });
-    return { skipped: false as const, order, unmatched };
-  }
-
-  // Once any delivery's units left, QuickBooks changes are flagged instead of applied.
-  const frozen =
-    existing.deliveries.some((d) => d.stockOutAt || d.dispatchedAt || d.status === ExitStatus.COMPLETED) ||
-    Boolean(existing.dispatchedAt) ||
-    existing.status === ExitStatus.COMPLETED;
-  if (invoice.deleted || invoice.voided) {
-    if (frozen) {
-      const order = await prisma.order.update({
-        where: { id: existing.id },
+    try {
+      const order = await prisma.order.create({
         data: {
           ...header,
-          voided: true,
-          issues: "QuickBooks voided this invoice after it left the warehouse. Review it before changing stock.",
+          externalRef,
+          status: ExitStatus.PENDING,
+          onKanban: false,
+          address: invoice.address ?? null,
+          voided: Boolean(invoice.voided || invoice.deleted),
+          issues,
+          lines: { create: matched.map(lineData) },
         },
       });
-      return { skipped: false as const, order, review: true as const };
+      return { skipped: false as const, order, unmatched };
+    } catch (error) {
+      // Another run created it a moment ago: apply this version to that one instead.
+      if (!retried && typeof error === "object" && error && "code" in error && error.code === "P2002") return ingestInvoice(raw, true);
+      throw error;
     }
-    await prisma.$transaction(async (tx) => {
-      for (const line of existing.lines) {
-        if (line.reservedQty <= 0) continue;
-        await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${line.productId} FOR UPDATE`;
-        const product = await tx.product.findUniqueOrThrow({ where: { id: line.productId } });
-        const reserved = roundMoney(Math.max(0, product.reservedQty - line.reservedQty));
-        await tx.product.update({
-          where: { id: product.id },
+  }
+
+  // Everything below happens under the invoice's lock, on a fresh read, so a second sync, the
+  // webhook and the people working the invoice take turns instead of overwriting each other.
+  return prisma.$transaction(async (tx): Promise<IngestResult> => {
+    await tx.$queryRaw`SELECT 1 FROM "Order" WHERE id = ${found.id} FOR UPDATE`;
+    const existing = (await tx.order.findUniqueOrThrow({
+      where: { id: found.id },
+      include: { lines: { orderBy: { id: "asc" } }, deliveries: true },
+    }));
+    if (existing.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt) {
+      return { skipped: true as const, reason: "unchanged", order: existing };
+    }
+
+    // Once any delivery's units left, QuickBooks changes are flagged instead of applied.
+    const frozen =
+      existing.deliveries.some((d) => d.stockOutAt || d.dispatchedAt || d.status === ExitStatus.COMPLETED) ||
+      Boolean(existing.dispatchedAt) ||
+      existing.status === ExitStatus.COMPLETED;
+
+    if (invoice.deleted || invoice.voided) {
+      if (frozen) {
+        const order = await tx.order.update({
+          where: { id: existing.id },
           data: {
-            reservedQty: reserved,
-            availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }),
+            ...header,
+            voided: true,
+            issues: "QuickBooks voided this invoice after it left the warehouse. Review it before changing stock.",
           },
         });
+        return { skipped: false as const, order, review: true as const };
+      }
+      for (const line of existing.lines) {
+        if (line.reservedQty <= 0) continue;
+        await moveReserved(tx, line.productId, -line.reservedQty);
         await tx.orderLine.update({ where: { id: line.id }, data: { reservedQty: 0 } });
         await tx.inventoryTransaction.create({
           data: {
-            productId: product.id,
+            productId: line.productId,
             type: TransactionType.RESERVED,
             quantity: 0,
-            unitCost: product.avgCost,
             totalValue: 0,
             reference: existing.externalRef,
             notes: `Released reservation for voided invoice ${existing.externalRef}`,
             userId: "quickbooks",
+            metadata: JSON.stringify({ orderId: existing.id, action: "release" }),
           },
         });
       }
-    });
-    await prisma.delivery.deleteMany({ where: { orderId: existing.id } });
-    const order = await prisma.order.update({
-      where: { id: existing.id },
-      data: { ...header, voided: true, onKanban: false, status: ExitStatus.PENDING, issues: "Voided in QuickBooks" },
-    });
-    return { skipped: false as const, order };
-  }
-
-  if (frozen) {
-    // A payment also updates the invoice in QuickBooks. Only changed items need a review.
-    const linesChanged =
-      matched.length !== existing.lines.length ||
-      matched.some((line) => existing.lines.find((row) => row.productId === line.productId)?.orderedQty !== line.quantity);
-    // Prices don't move stock, so they always follow QuickBooks. So does the product's last
-    // sold price when this invoice set it.
-    for (const line of matched) {
-      const current = existing.lines.find((row) => row.productId === line.productId);
-      if (!current || current.unitPrice === line.unitPrice) continue;
-      await prisma.orderLine.update({ where: { id: current.id }, data: { unitPrice: line.unitPrice } });
-      if (current.deliveredQty > 0 && line.unitPrice) {
-        await prisma.product.updateMany({
-          where: { id: line.productId, lastSoldPrice: current.unitPrice },
-          data: { lastSoldPrice: line.unitPrice },
-        });
-      }
+      await tx.delivery.deleteMany({ where: { orderId: existing.id } });
+      const order = await tx.order.update({
+        where: { id: existing.id },
+        data: { ...header, voided: true, onKanban: false, status: ExitStatus.PENDING, issues: "Voided in QuickBooks" },
+      });
+      return { skipped: false as const, order };
     }
-    const order = await prisma.order.update({
-      where: { id: existing.id },
-      data: {
-        ...header,
-        ...(linesChanged
-          ? { issues: "QuickBooks changed this invoice after it left the warehouse. Stock and proof were left as recorded." }
-          : {}),
-      },
-    });
-    return { skipped: false as const, order, review: true as const };
-  }
 
-  const quiet = !existing.onKanban && existing.lines.every((line) => line.scannedQty === 0);
-  if (quiet) {
-    await prisma.orderLine.deleteMany({ where: { orderId: existing.id } });
-    const order = await prisma.order.update({
-      where: { id: existing.id },
-      data: {
-        ...header,
-        issues,
-        address: existing.address && existing.address !== existing.qbAddress ? existing.address : invoice.address ?? existing.address,
-        lines: {
-          create: matched.map((line) => ({
-            productId: line.productId,
-            orderedQty: line.quantity,
-            remainingQty: line.quantity,
-            unitPrice: line.unitPrice,
-            physical: line.physical,
-          })),
-        },
-      },
-    });
-    return { skipped: false as const, order, unmatched };
-  }
+    const { pairs, leftovers } = pairLines(existing.lines, matched);
 
-  await prisma.$transaction(async (tx) => {
-    const seen = new Set<string>();
-    for (const line of matched) {
-      seen.add(line.productId);
-      const current = existing.lines.find((row) => row.productId === line.productId);
-      if (!current) {
-        const created = await tx.orderLine.create({
-          data: {
-            orderId: existing.id,
-            productId: line.productId,
-            orderedQty: line.quantity,
-            remainingQty: line.quantity,
-            unitPrice: line.unitPrice,
-            physical: line.physical,
-            reservedQty: existing.onKanban && line.physical ? line.quantity : 0,
-          },
-        });
-        if (existing.onKanban && line.physical) {
-          await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${line.productId} FOR UPDATE`;
-          const product = await tx.product.findUniqueOrThrow({ where: { id: line.productId } });
-          const reserved = roundMoney(product.reservedQty + line.quantity);
-          await tx.product.update({
-            where: { id: product.id },
-            data: {
-              reservedQty: reserved,
-              availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }),
-            },
+    if (frozen) {
+      // A payment also updates the invoice in QuickBooks. Only changed items need a review.
+      const linesChanged = leftovers.length > 0 || pairs.some((pair) => pair.current?.orderedQty !== pair.line.quantity);
+      // Prices don't move stock, so they always follow QuickBooks. So does the product's last
+      // sold price when this invoice set it.
+      for (const { line, current } of pairs) {
+        if (!current || current.unitPrice === line.unitPrice) continue;
+        await tx.orderLine.update({ where: { id: current.id }, data: { unitPrice: line.unitPrice } });
+        if (current.deliveredQty > 0 && line.unitPrice) {
+          await tx.product.updateMany({
+            where: { id: line.productId, lastSoldPrice: current.unitPrice },
+            data: { lastSoldPrice: line.unitPrice },
           });
         }
-        void created;
-        continue;
       }
-      const delta = line.quantity - current.orderedQty;
-      await tx.orderLine.update({
-        where: { id: current.id },
+      const order = await tx.order.update({
+        where: { id: existing.id },
         data: {
-          orderedQty: line.quantity,
-          remainingQty: line.quantity,
-          unitPrice: line.unitPrice,
-          physical: line.physical,
-          scannedQty: Math.min(current.scannedQty, line.quantity),
-          reservedQty: existing.onKanban && line.physical ? line.quantity : current.reservedQty,
+          ...header,
+          ...(linesChanged
+            ? { issues: "QuickBooks changed this invoice after it left the warehouse. Stock and proof were left as recorded." }
+            : {}),
         },
       });
-      if (existing.onKanban && line.physical && delta !== 0) {
-        await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${line.productId} FOR UPDATE`;
-        const product = await tx.product.findUniqueOrThrow({ where: { id: line.productId } });
-        const reserved = roundMoney(Math.max(0, product.reservedQty + delta));
-        await tx.product.update({
-          where: { id: product.id },
-          data: {
-            reservedQty: reserved,
-            availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }),
-          },
-        });
-      }
+      return { skipped: false as const, order, review: true as const };
     }
-    for (const current of existing.lines) {
-      if (seen.has(current.productId) || current.scannedQty > 0) continue;
-      if (current.reservedQty > 0) {
-        await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${current.productId} FOR UPDATE`;
-        const product = await tx.product.findUniqueOrThrow({ where: { id: current.productId } });
-        const reserved = roundMoney(Math.max(0, product.reservedQty - current.reservedQty));
-        await tx.product.update({
-          where: { id: product.id },
-          data: {
-            reservedQty: reserved,
-            availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }),
-          },
-        });
+
+    const address = existing.address && existing.address !== existing.qbAddress ? existing.address : invoice.address ?? existing.address;
+
+    if (!existing.onKanban) {
+      await tx.orderLine.deleteMany({ where: { orderId: existing.id } });
+      const order = await tx.order.update({
+        where: { id: existing.id },
+        data: { ...header, issues, address, lines: { create: matched.map(lineData) } },
+      });
+      return { skipped: false as const, order, unmatched };
+    }
+
+    // In the workflow: each physical line keeps exactly its quantity reserved.
+    const touched = new Set<string>();
+    for (const { line, current } of pairs) {
+      const target = line.physical ? line.quantity : 0;
+      if (!current) {
+        await tx.orderLine.create({ data: { ...lineData(line), orderId: existing.id, reservedQty: target } });
+        await moveReserved(tx, line.productId, target);
+      } else {
+        await tx.orderLine.update({ where: { id: current.id }, data: { ...lineData(line), reservedQty: target } });
+        await moveReserved(tx, line.productId, target - current.reservedQty);
       }
+      touched.add(line.productId);
+    }
+    for (const current of leftovers) {
+      await moveReserved(tx, current.productId, -current.reservedQty);
       await tx.orderLine.delete({ where: { id: current.id } });
     }
     // Deliveries follow the new quantities; a processing one that is now short goes back to Preparing.
     const reopened = await fitDeliveries(tx, existing.id);
-    await tx.order.update({
+    // QuickBooks can't be stopped, so a change that reserves more than there is gets flagged.
+    const short = await tx.product.findMany({
+      where: { id: { in: [...touched] }, availableQty: { lt: 0 } },
+      select: { name: true, availableQty: true },
+    });
+    const shortage = short.map((p) => `Not enough stock: ${p.name} is short ${-p.availableQty}`).join("\n");
+    const order = await tx.order.update({
       where: { id: existing.id },
-      data: {
-        ...header,
-        issues,
-        address: existing.address && existing.address !== existing.qbAddress ? existing.address : invoice.address ?? existing.address,
-      },
+      data: { ...header, issues: [issues, shortage].filter(Boolean).join("\n") || null, address },
     });
     for (const number of reopened) {
       await tx.orderEvent.create({
@@ -474,10 +459,13 @@ export async function ingestInvoice(raw: unknown) {
         },
       });
     }
+    return { skipped: false as const, order, unmatched };
   });
-  const order = await prisma.order.findUniqueOrThrow({ where: { id: existing.id } });
-  return { skipped: false as const, order, unmatched };
 }
+
+type IngestResult =
+  | { skipped: true; reason: string; order?: Order }
+  | { skipped: false; order: Order; unmatched?: QbLineIn[]; review?: true };
 
 export async function ingestItems(raw: unknown) {
   const items = parseQbItems(raw);
@@ -523,6 +511,7 @@ export async function ingestItems(raw: unknown) {
         secondarySku: `qb:${id}`,
         initialQty: Math.max(0, num(item.QtyOnHand ?? item.qtyOnHand)),
         notes: "Imported from QuickBooks (qty is owned here after this)",
+        userId: "quickbooks",
       });
       if (codeTaken) await pushQuickBooksItem(product).catch(() => undefined);
       created.push(sku);

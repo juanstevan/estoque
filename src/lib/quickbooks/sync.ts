@@ -41,7 +41,7 @@ async function withRetry<T>(run: () => Promise<T>) {
 /**
  * Central sync: Sync now, the once-a-minute tick from open browsers, the daily cron and
  * `npm run qb:sync`. The claim on AppSettings.qbSyncAt is atomic, so any number of callers
- * still means one run per window. `auto` runs stay quiet while QuickBooks isn't connected.
+ * still means one run at a time, and one per window. `auto` runs stay quiet while QuickBooks isn't connected.
  */
 export async function syncQuickBooks({ auto = false } = {}) {
   const settings = await prisma.appSettings.findUnique({
@@ -53,9 +53,12 @@ export async function syncQuickBooks({ auto = false } = {}) {
     throw new Error(NOT_CONNECTED);
   }
   const gap = auto ? 55 : 5;
-  const claimed = await prisma.$executeRaw`UPDATE "AppSettings" SET "qbSyncAt" = NOW()
+  // While a run lasts, qbSyncAt sits 5 minutes ahead (the longest a run can take), so no other run
+  // starts however long this one is. It ends at the finish time, so the gap counts from there.
+  const claimed = await prisma.$executeRaw`UPDATE "AppSettings" SET "qbSyncAt" = NOW() + INTERVAL '5 minutes'
     WHERE id = 'default' AND ("qbSyncAt" IS NULL OR "qbSyncAt" < NOW() - ${gap} * INTERVAL '1 second')`;
   if (!claimed) return { skipped: true as const };
+  const release = () => prisma.$executeRaw`UPDATE "AppSettings" SET "qbSyncAt" = NOW() WHERE id = 'default'`;
   try {
     const result = await runSync();
     await prisma.appSettings.update({
@@ -67,6 +70,8 @@ export async function syncQuickBooks({ auto = false } = {}) {
     const message = error instanceof Error ? error.message : "QuickBooks sync failed";
     await prisma.appSettings.update({ where: { id: "default" }, data: { qbSyncError: message } });
     throw error;
+  } finally {
+    await release();
   }
 }
 

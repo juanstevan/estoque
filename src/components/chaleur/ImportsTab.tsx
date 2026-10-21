@@ -23,6 +23,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -77,6 +78,8 @@ export type ImportRow = {
   status: "PENDING" | "IN_TRANSIT" | "DELAYED" | "COMPLETED";
   supplierName: string | null;
   expectedDate: string | null;
+  receivedAt: string | null;
+  historical: boolean;
   transferFee: number;
   freight: number;
   delivery: number;
@@ -1303,6 +1306,11 @@ function ImportCard({
           <div className="tabular-nums text-gray-400">
             {imp.coefficient.toFixed(2)}×
           </div>
+          {imp.historical && (
+            <div className="font-sans text-[10px] font-medium tracking-caps text-gray-500 uppercase" title="Sets the average cost; adds no units">
+              Historical
+            </div>
+          )}
         </div>
         <div className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-[18px] font-medium text-gray-900">
           {imp.supplierName ?? "Unassigned"}
@@ -1379,6 +1387,8 @@ function ImportDialog({
     reference: initial?.reference ?? "",
     supplierName: initial?.supplierName ?? "",
     expectedDate: initial?.expectedDate?.slice(0, 10) || toYmd(new Date()),
+    receivedAt: initial?.receivedAt?.slice(0, 10) ?? "",
+    historical: initial?.historical ?? false,
     transferFee: initial?.transferFee ?? 0,
     freight: initial?.freight ?? 0,
     delivery: initial?.delivery ?? 0,
@@ -1536,6 +1546,8 @@ function ImportDialog({
           reference: form.reference,
           supplierName: form.supplierName,
           expectedDate: form.expectedDate || null,
+          receivedAt: form.receivedAt || null,
+          historical: form.historical,
           transferFee: form.transferFee,
           freight: form.freight,
           delivery: form.delivery,
@@ -1827,7 +1839,27 @@ function ImportDialog({
               {error}
             </span>
           ) : (
-            <span />
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-700">
+              {/* Completing records the units on this day; empty means the day it's completed. */}
+              <label className="flex items-center gap-2">
+                Received on
+                <Input
+                  type="date"
+                  className="h-8 w-36 tabular-nums"
+                  value={form.receivedAt}
+                  max={toYmd(new Date())}
+                  onChange={(e) => setForm({ ...form, receivedAt: e.target.value })}
+                />
+              </label>
+              <label className="flex items-center gap-2" title="For importations from before the stock count: they set the average cost and add no units.">
+                <Checkbox
+                  checked={form.historical}
+                  onCheckedChange={(on) => setForm({ ...form, historical: Boolean(on) })}
+                  className="size-4"
+                />
+                Historical · cost only, adds no units
+              </label>
+            </div>
           )}
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={onClose}>

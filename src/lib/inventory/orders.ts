@@ -29,7 +29,7 @@ export type Actor = { id: string; name: string };
 type Tx = Prisma.TransactionClient;
 
 const DAY = 24 * 60 * 60 * 1000;
-const PRODUCT = { id: true, name: true, sku: true, code: true, ean: true, secondarySku: true } as const;
+const PRODUCT = { id: true, name: true, sku: true, code: true, ean: true, secondarySku: true, availableQty: true } as const;
 const PROOF = { id: true, kind: true, createdAt: true, actor: true, deliveryId: true, public: true } as const;
 
 const listInclude = {
@@ -159,6 +159,21 @@ async function changeReserved(tx: Tx, productId: string, delta: number) {
     data: { reservedQty: reserved, availableQty: recomputeAvailable({ physicalQty: product.physicalQty, reservedQty: reserved }) },
   });
   return product;
+}
+
+/** An invoice only enters the workflow when every physical line has the units available. */
+async function assertAvailable(tx: Tx, lines: { productId: string; orderedQty: number; reservedQty: number; physical: boolean }[]) {
+  const needed = new Map<string, number>();
+  for (const line of lines) {
+    if (line.physical && line.reservedQty <= 0) needed.set(line.productId, (needed.get(line.productId) ?? 0) + line.orderedQty);
+  }
+  const short: string[] = [];
+  for (const [productId, qty] of needed) {
+    await lockProduct(tx, productId);
+    const product = await tx.product.findUniqueOrThrow({ where: { id: productId }, select: { name: true, availableQty: true } });
+    if (product.availableQty < qty) short.push(`${product.name}: needs ${qty}, ${Math.max(0, product.availableQty)} available`);
+  }
+  if (short.length) throw new Error(`Not enough stock for this invoice. ${short.join(" · ")}`);
 }
 
 async function reserveOrder(
@@ -392,6 +407,7 @@ export async function addToWorkflow(orderId: string, actor: Actor) {
     const blocked = workflowError(order, prefs);
     if (blocked) throw new Error(blocked);
     assertWhole(order.lines);
+    await assertAvailable(tx, order.lines);
     const reserved = await reserveOrder(tx, order, actor);
     // Unpaid with unpaid deliveries off: it can only be collected.
     const mode = order.paymentStatus !== "Paid" && !prefs.allowUnpaid ? "PICKUP" : "DELIVERY";

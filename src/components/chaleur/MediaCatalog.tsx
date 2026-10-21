@@ -300,7 +300,7 @@ export function MediaCatalog({
                                 onRename={b.key && category.key && f.key ? (name) => rename("family", `${b.key}\0${category.key}\0${f.key}`, name) : null}
                               >
                                 {f.models.map((m) => (
-                                  <ModelCard key={m.key} model={m} image={modelImage(m)} onOpen={() => setModelKey(m.key)} />
+                                  <ModelCard key={m.key} model={m} image={modelImage(m)} fill onOpen={() => setModelKey(m.key)} />
                                 ))}
                               </FamilyBlock>
                             </ViewTransition>
@@ -577,25 +577,39 @@ function FamilyBlock({
       </button>
     );
   }
-  return (
-    // One model fits one column; more get two, so their cards keep a useful size.
-    <section aria-label={name} className={cn("@container flex flex-col gap-3 rounded-[12px] bg-sunken p-3", single ? "col-span-1" : "col-span-2")}>
-      <div className="flex items-center justify-between gap-2">
+  const body = (
+    <>
+      <div className="flex shrink-0 items-center justify-between gap-2">
         <Title value={family.name} empty="No family" editable={Boolean(onRename)} className="text-sm" fill onSave={(next) => onRename?.(next) ?? Promise.resolve()} />
         <Button variant="ghost" size="icon-sm" aria-label="Close family" onClick={onClose}>
           <X />
         </Button>
       </div>
-      <div className={cn("grid gap-2", single ? "grid-cols-1" : "grid-cols-2 @lg:grid-cols-3")}>{children}</div>
+      <div className={cn("flex min-h-0 flex-1 gap-2", single ? "[&>*]:flex-1" : "no-scrollbar overflow-x-auto [&>*]:shrink-0 [&>*]:basis-[calc(50%-4px)]")}>{children}</div>
+    </>
+  );
+  // Open, the block keeps a closed tile's height (p-2, 4/3 photo, one line), so rows stay aligned.
+  // One model takes one column; more take two, side by side, scrolling sideways past two.
+  // 100cqw is the block's width; a column is that less the grid gap, split by the span.
+  const span = single ? 1 : 2;
+  return (
+    <section aria-label={name} className={cn("@container", single ? "col-span-1" : "col-span-2")}>
+      <div
+        className="flex min-h-0 flex-col gap-3 overflow-hidden rounded-[12px] bg-sunken p-3"
+        style={{ height: `calc(((100cqw - ${(span - 1) * 8}px) / ${span} - 16px) * 0.75 + 46px)` }}
+      >
+        {body}
+      </div>
     </section>
   );
 }
 
-function ModelCard({ model, image, onOpen }: { model: M; image: string | null; onOpen: () => void }) {
+/** `fill`: sized by the height its family block leaves rather than a square. */
+function ModelCard({ model, image, fill = false, onOpen }: { model: M; image: string | null; fill?: boolean; onOpen: () => void }) {
   return (
-    <button type="button" onClick={onOpen} className="flex flex-col gap-1.5 rounded-[10px] bg-surface p-1.5 text-left transition-shadow hover:shadow-sm">
-      <Thumb src={image} className="aspect-square w-full rounded-[7px]" />
-      <span className="line-clamp-2 px-1 pb-0.5 text-xs font-medium text-gray-900">{model.name}</span>
+    <button type="button" onClick={onOpen} className={cn("flex flex-col gap-1.5 rounded-[10px] bg-surface p-1.5 text-left transition-shadow hover:shadow-sm", fill && "min-h-0 overflow-hidden")}>
+      <Thumb src={image} className={cn("w-full rounded-[7px]", fill ? "min-h-0 flex-1" : "aspect-square")} />
+      <span className={cn("px-1 pb-0.5 text-xs font-medium text-gray-900", fill ? "shrink-0 truncate" : "line-clamp-2")}>{model.name}</span>
     </button>
   );
 }
