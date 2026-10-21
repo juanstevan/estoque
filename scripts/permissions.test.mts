@@ -16,6 +16,9 @@ const calls: Array<[string, object]> = [
   ["/api/adjustments", { productId: "x", mode: "write-off", quantity: 1, reason: "Correction" }],
   ["/api/adjustments", { productId: "x", mode: "fob", fobCost: 1, reason: "Correction" }],
   ["/api/importations", { action: "revise", id: "x", reason: "Correction", freight: 1 }],
+  ["/api/adjustments", { mode: "edit-log", transactionId: "x", notes: "x", reason: "Correction" }],
+  ["/api/adjustments", { mode: "edit-log", transactionId: "x", quantity: 2, reason: "Correction" }],
+  ["/api/adjustments", { mode: "remove-log", transactionId: "x", reason: "Correction" }],
   ["/api/importations", { action: "receive", id: "x", receivedAt: "2026-10-10", photos: [] }],
   ["/api/importations", { action: "status", id: "x", status: "COMPLETED" }],
   ["/api/importations", { action: "delete", id: "x" }],
@@ -44,11 +47,22 @@ for (const [path, body] of calls) {
   // Error answers carry a message, not internals.
   assert.ok(!/at .*\.ts:\d+|prisma\.|SELECT /i.test(owner.text), `${label}: no internals in ${owner.text.slice(0, 120)}`);
 }
-// Received importations change only by the main user, even for people who can edit importations.
+// People who can edit stock and importations but aren't the main user: costs, received
+// importations and log changes that move units are refused; quantity corrections and notes aren't.
 if (tokens.editor) {
-  const revise = await status("/api/importations", { action: "revise", id: "x", reason: "x" }, tokens.editor);
-  assert.equal(revise.code, 403, "editor can't correct a received importation");
-  const fob = await status("/api/adjustments", { productId: "x", mode: "fob", fobCost: 1, reason: "x" }, tokens.editor);
-  assert.ok(![401, 403].includes(fob.code), "editor can correct FOB");
+  const refused: Array<[string, object]> = [
+    ["/api/importations", { action: "revise", id: "x", reason: "x" }],
+    ["/api/adjustments", { productId: "x", mode: "fob", fobCost: 1, reason: "x" }],
+    ["/api/adjustments", { productId: "x", mode: "cost", avgCost: 1, reason: "x" }],
+    ["/api/adjustments", { mode: "edit-log", transactionId: "x", quantity: 2, reason: "x" }],
+    ["/api/adjustments", { mode: "edit-log", transactionId: "x", occurredAt: "2026-10-01", reason: "x" }],
+    ["/api/adjustments", { mode: "remove-log", transactionId: "x", reason: "x" }],
+  ];
+  for (const [path, body] of refused) assert.equal((await status(path, body, tokens.editor)).code, 403, `editor refused: ${JSON.stringify(body)}`);
+  const allowed: Array<[string, object]> = [
+    ["/api/adjustments", { productId: "x", mode: "add", quantity: 1, reason: "x" }],
+    ["/api/adjustments", { mode: "edit-log", transactionId: "x", notes: "x", reason: "x" }],
+  ];
+  for (const [path, body] of allowed) assert.ok(![401, 403].includes((await status(path, body, tokens.editor)).code), `editor allowed: ${JSON.stringify(body)}`);
 }
 console.log(`permissions.test: ok (${calls.length} operations × signed out, view-only, owner)`);

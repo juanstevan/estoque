@@ -96,7 +96,7 @@ export async function POST(req: Request) {
     }
 
     if (body.action === "status" && body.id && body.status) {
-      return jsonOk(await setImportStatus(body.id, body.status, me.id));
+      return jsonOk(await setImportStatus(body.id, body.status, me.id, { canReopen: me.main }));
     }
 
     if (body.action === "delete" && body.id) {

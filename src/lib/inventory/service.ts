@@ -86,6 +86,11 @@ export async function appendTransaction(
     keepReserved?: boolean;
     /** Units that come in (or leave) as unavailable: damaged or awaiting evaluation. */
     unavailableDelta?: number;
+    /**
+     * Moves units only (corrections, returns, write-offs): no price is recorded on the movement.
+     * The stock's value still follows at the average cost, which doesn't change.
+     */
+    quantityOnly?: boolean;
   },
 ) {
   await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
@@ -147,8 +152,8 @@ export async function appendTransaction(
       productId: product.id,
       type: input.type,
       quantity,
-      unitCost,
-      totalValue: roundMoney(Math.abs(quantity) * unitCost),
+      unitCost: input.quantityOnly ? 0 : unitCost,
+      totalValue: input.quantityOnly ? 0 : roundMoney(Math.abs(quantity) * unitCost),
       reference: input.reference ?? null,
       notes: input.notes ?? input.reason ?? null,
       clientName: input.clientName ?? null,
@@ -156,6 +161,7 @@ export async function appendTransaction(
       occurredAt: input.occurredAt ?? new Date(),
       metadata: JSON.stringify({
         ...input.metadata,
+        ...(input.quantityOnly ? { quantityOnly: true } : {}),
         before: snapshot(product),
         after: { physicalQty: nextPhysical, avgCost: nextAvg, inventoryValue: nextValue, unavailableQty },
       }),
@@ -298,6 +304,133 @@ async function applyCostBasis(
 }
 
 /**
+ * Log entries a person can change: manual quantity corrections (added from the product, not
+ * from an invoice or importation) that weren't removed. Others change through where they came from.
+ */
+function manualEntry(txn: { type: TransactionType; metadata: string | null }) {
+  const meta = readMeta(txn.metadata);
+  return (
+    (txn.type === TransactionType.ADJUSTMENT || txn.type === TransactionType.RETURNED || txn.type === TransactionType.CORRECTION) &&
+    !meta.orderId &&
+    !meta.importationId &&
+    !meta.setAside &&
+    !meta.removed &&
+    !meta.editOf &&
+    !meta.reversalOf
+  );
+}
+
+type LogActor = { id: string; name: string; main: boolean };
+
+/**
+ * Edits a log entry. The note is plain text and changes in place (anyone who can correct stock).
+ * The date and quantity of a manual correction change only by the main user: the date in place,
+ * the quantity through a new linked entry for the difference, so the balance and history stay
+ * exact. Every change keeps who, when, before, after and why on the entry.
+ */
+export async function editLogEntry(
+  input: { id: string; notes?: string; occurredAt?: Date; quantity?: number; reason: string },
+  actor: LogActor,
+) {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("Write why it changes.");
+  return prisma.$transaction(async (tx) => {
+    const found = await tx.inventoryTransaction.findUnique({ where: { id: input.id }, select: { productId: true } });
+    if (!found) throw new Error("That entry no longer exists.");
+    await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${found.productId} FOR UPDATE`;
+    const txn = await tx.inventoryTransaction.findUniqueOrThrow({ where: { id: input.id } });
+    const meta = readMeta(txn.metadata);
+    const changes: Array<{ field: string; before: unknown; after: unknown }> = [];
+
+    const notes = input.notes?.trim();
+    if (notes !== undefined && notes !== (txn.notes ?? "")) changes.push({ field: "notes", before: txn.notes, after: notes || null });
+
+    const touchesStock = input.occurredAt !== undefined || input.quantity !== undefined;
+    if (touchesStock) {
+      if (!actor.main) throw new Error("Only the main user can change the date or quantity of an entry.");
+      if (!manualEntry(txn)) throw new Error("This entry comes from an invoice, importation or cost change. Correct it there.");
+    }
+    if (input.occurredAt !== undefined) {
+      if (Number.isNaN(input.occurredAt.getTime()) || input.occurredAt.getTime() > Date.now() + 86400e3) throw new Error("Pick a valid date, not in the future");
+      if (input.occurredAt.getTime() !== txn.occurredAt.getTime()) changes.push({ field: "occurredAt", before: txn.occurredAt, after: input.occurredAt });
+    }
+    // The entry's quantity now: itself plus the edits already made to it.
+    const edits = await tx.inventoryTransaction.findMany({ where: { productId: txn.productId, metadata: { contains: `"editOf":"${txn.id}"` } } });
+    const current = roundMoney(txn.quantity + edits.reduce((sum, e) => sum + e.quantity, 0));
+    if (input.quantity !== undefined) {
+      if (!Number.isFinite(input.quantity) || input.quantity === 0) throw new Error("The quantity can't be 0. Remove the entry instead.");
+      if (Math.sign(input.quantity) !== Math.sign(txn.quantity)) throw new Error("Keep the direction (in or out). Add a new entry for the other way.");
+      const delta = roundMoney(input.quantity - current);
+      if (delta) {
+        changes.push({ field: "quantity", before: current, after: input.quantity });
+        await appendTransaction(tx, {
+          productId: txn.productId,
+          type: txn.type,
+          quantity: delta,
+          affectsPhysical: true,
+          affectsCost: false,
+          keepReserved: true,
+          quantityOnly: true,
+          occurredAt: input.occurredAt ?? txn.occurredAt,
+          userId: actor.id,
+          notes: `Edit of the ${txn.occurredAt.toISOString().slice(0, 10)} entry · ${reason}`,
+          metadata: { editOf: txn.id, reason },
+        });
+      }
+    }
+    if (!changes.length) return txn;
+    const history = Array.isArray(meta.edits) ? meta.edits : [];
+    return tx.inventoryTransaction.update({
+      where: { id: txn.id },
+      data: {
+        notes: notes !== undefined ? notes || null : undefined,
+        occurredAt: changes.some((c) => c.field === "occurredAt") ? input.occurredAt : undefined,
+        metadata: JSON.stringify({ ...meta, edits: [...history, { at: new Date(), by: actor.name || actor.id, reason, changes }] }),
+      },
+    });
+  });
+}
+
+/**
+ * Removes a manual correction from the balance (main user only). Nothing is deleted: a linked
+ * entry takes back its units (with its edits), and the entry is marked removed, with who, when and why.
+ */
+export async function removeLogEntry(input: { id: string; reason: string }, actor: LogActor) {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("Write why it's removed.");
+  if (!actor.main) throw new Error("Only the main user can remove an entry.");
+  return prisma.$transaction(async (tx) => {
+    const found = await tx.inventoryTransaction.findUnique({ where: { id: input.id }, select: { productId: true } });
+    if (!found) throw new Error("That entry no longer exists.");
+    await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${found.productId} FOR UPDATE`;
+    const txn = await tx.inventoryTransaction.findUniqueOrThrow({ where: { id: input.id } });
+    const meta = readMeta(txn.metadata);
+    if (meta.removed) return txn;
+    if (!manualEntry(txn)) throw new Error("This entry comes from an invoice, importation or cost change. Correct it there.");
+    const edits = await tx.inventoryTransaction.findMany({ where: { productId: txn.productId, metadata: { contains: `"editOf":"${txn.id}"` } } });
+    const units = roundMoney(txn.quantity + edits.reduce((sum, e) => sum + e.quantity, 0));
+    if (units) {
+      await appendTransaction(tx, {
+        productId: txn.productId,
+        type: txn.type,
+        quantity: -units,
+        affectsPhysical: true,
+        affectsCost: false,
+        keepReserved: true,
+        quantityOnly: true,
+        userId: actor.id,
+        notes: `Removed the ${txn.occurredAt.toISOString().slice(0, 10)} entry · ${reason}`,
+        metadata: { reversalOf: txn.id, reason },
+      });
+    }
+    return tx.inventoryTransaction.update({
+      where: { id: txn.id },
+      data: { metadata: JSON.stringify({ ...meta, removed: { at: new Date(), by: actor.name || actor.id, reason } }) },
+    });
+  });
+}
+
+/**
  * Units set aside (returned damaged or to evaluate) leave that state: released back to available
  * stock after evaluation, or written off (they leave stock at the current average cost).
  */
@@ -319,6 +452,7 @@ export async function resolveSetAside(input: {
       quantity: release ? 0 : -input.quantity,
       affectsPhysical: !release,
       affectsCost: false,
+      quantityOnly: true,
       unavailableDelta: -input.quantity,
       notes: input.reason.trim(),
       userId: input.userId,
@@ -635,8 +769,13 @@ export async function changeQuantity(input: {
   reason: string;
   userId: string;
   requestId?: string;
+  /** When it happened, for entries added to the log after the fact. Defaults to now. */
+  occurredAt?: Date;
 }) {
   if (!input.reason?.trim()) throw new Error("Reason is required");
+  if (input.occurredAt && (Number.isNaN(input.occurredAt.getTime()) || input.occurredAt.getTime() > Date.now() + 86400e3)) {
+    throw new Error("Pick a valid date, not in the future");
+  }
   if (input.mode !== "add" && input.mode !== "remove") throw new Error("Choose Add or Remove");
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("Quantity must be greater than 0");
   const delta = input.mode === "add" ? input.quantity : -input.quantity;
@@ -658,6 +797,8 @@ export async function changeQuantity(input: {
       affectsPhysical: true,
       affectsCost: false,
       keepReserved: true,
+      quantityOnly: true,
+      occurredAt: input.occurredAt,
       userId: input.userId,
       metadata: { reason: input.reason, mode: input.mode, requestId: input.requestId },
     });
@@ -836,9 +977,13 @@ export async function upsertImportation(input: {
 }
 
 /** Every status change, completing and reopening included, under the importation's lock. */
-export async function setImportStatus(id: string, status: ImportStatus, userId: string) {
+/** `canReopen`: only the main user may take a received importation back (it reverses its units). */
+export async function setImportStatus(id: string, status: ImportStatus, userId: string, opts: { canReopen?: boolean } = {}) {
   return prisma.$transaction(async (tx) => {
     const current = await lockImportation(tx, id);
+    if (current.status === ImportStatus.COMPLETED && status !== ImportStatus.COMPLETED && opts.canReopen === false) {
+      throw new Error("Only the main user can reopen a received importation.");
+    }
     if (status === ImportStatus.COMPLETED) {
       if (current.status !== ImportStatus.COMPLETED) {
         if (!current.historical) throw new Error(RECEIVE_WITH_PHOTO);

@@ -6,19 +6,20 @@ import {
 } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { photoStorage } from "@/lib/photos/service";
-import { deny } from "@/lib/guard";
+import { deny, guard } from "@/lib/guard";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, ctx: Ctx) {
-  const denied = await deny(["storage", "media", "imports", "settings"], "view");
-  if (denied) return denied;
+  const me = await guard(["storage", "media", "imports", "settings"], "view");
+  if (me instanceof Response) return me;
   try {
     const { id } = await ctx.params;
     const view = new URL(req.url).searchParams.get("view");
     const product = view === "info" ? await getProductCard(id) : await getProductDetail(id);
     if (!product) return jsonError("Product not found", 404);
-    return jsonOk({ ...product, photoStorage: photoStorage() });
+    // `mainViewer`: the card offers cost and log corrections; the server still checks each one.
+    return jsonOk({ ...product, photoStorage: photoStorage(), mainViewer: me.main });
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Could not load the product", 500);
   }

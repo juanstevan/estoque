@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { unmatchedItems } from "@/lib/inventory/delivery-rules";
 import { cn } from "@/lib/utils";
 import { Avatar, Steps, StatusChip } from "./parts";
 import {
@@ -272,6 +273,7 @@ export function OrderPanel({
   const returned = order.lines.reduce((sum, l) => sum + l.returnedQty, 0);
   const busyDays = new Set(deliveries.flatMap((d) => (d.deliverBy && d.id !== active?.id ? [nyDay(d.deliverBy)] : [])));
   const editable = canEdit && !order.voided;
+  const missing = unmatchedItems(order.issues);
   // Units that left can come back even after QuickBooks voided the invoice.
   const returnable = order.lines.some((line) => line.physical && line.deliveredQty - line.returnedQty > 0);
   const open = active && active.status !== "COMPLETED" && editable;
@@ -733,7 +735,18 @@ export function OrderPanel({
                   <span className="text-xs text-gray-400">No count</span>
                 </li>
               ))}
-              {!items.length && !services.length && <li className="py-3 text-sm text-gray-500">No items matched in QuickBooks.</li>}
+              {/* QuickBooks lines with no product here: listed, so the invoice never looks complete without them. */}
+              {missing.map((text) => (
+                <li key={text} className="flex items-center gap-3 border-b border-gray-150 py-3 last:border-b-0">
+                  <AlertTriangle className="size-4 shrink-0 text-warning-text" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-gray-900">{text.replace(/ \(qty[^)]*\)$/, "")}</div>
+                    <div className="text-xs text-warning-text">No product here. Link it to a product before this can be ready.</div>
+                  </div>
+                  <span className="font-mono text-sm text-warning-text tabular-nums">{text.match(/\(qty ([\d.]+)/)?.[1] ?? "?"}</span>
+                </li>
+              ))}
+              {!items.length && !services.length && !missing.length && <li className="py-3 text-sm text-gray-500">No items matched in QuickBooks.</li>}
             </ul>
           )}
         </section>

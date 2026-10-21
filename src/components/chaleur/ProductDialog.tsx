@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Link2,
   Pencil,
+  Plus,
   Search,
   X,
 } from "lucide-react";
@@ -52,7 +53,7 @@ import {
   type PhotoStorage,
 } from "@/components/chaleur/ProductPhotos";
 import { composeName, photoFileNames, splitName } from "@/lib/photos/name";
-import { formatDateTime, formatMoney, formatQty, movementReason } from "@/lib/format";
+import { formatDateTime, formatMoney, formatQty, isQuantityOnly, isRemovedEntry, movementReason } from "@/lib/format";
 import { readAmount } from "@/lib/inventory/math";
 import { commitMeasure } from "@/lib/measure";
 import { cn } from "@/lib/utils";
@@ -101,7 +102,11 @@ export type ProductRow = {
   cutoutHeight: number | null;
 };
 
+type LogEntry = Detail["transactions"][number];
+
 type Detail = ProductRow & {
+  /** The signed-in person is the main user: cost and log corrections are offered. */
+  mainViewer?: boolean;
   transactions: Array<{
     id: string;
     type: string;
@@ -238,7 +243,8 @@ export function ProductDialog({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [qtyOpen, setQtyOpen] = useState(false);
-  const [fobOpen, setFobOpen] = useState(false);
+  const [costEditor, setCostEditor] = useState<"avg" | "fob" | null>(null);
+  const [logEntry, setLogEntry] = useState<LogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1010,20 +1016,19 @@ export function ProductDialog({
                         label="Avg. cost"
                         value={formatMoney(detail.avgCost)}
                         center
+                        onClick={isCreate ? undefined : () => setCostEditor("avg")}
                       />
                       <Stat
                         label="CIF cost"
                         value={formatMoney(detail.cifCost)}
                         center
                       />
-                      <button
-                        type="button"
-                        className="rounded-md outline-none hover:bg-gray-100"
-                        aria-label="Correct FOB cost"
-                        onClick={() => setFobOpen(true)}
-                      >
-                        <Stat label="FOB cost" value={formatMoney(detail.fobCost)} center />
-                      </button>
+                      <Stat
+                        label="FOB cost"
+                        value={formatMoney(detail.fobCost)}
+                        center
+                        onClick={isCreate ? undefined : () => setCostEditor("fob")}
+                      />
                       <div className="min-w-0 text-center">
                         <Popover>
                           <PopoverTrigger className="w-full rounded-md px-1.5 py-0.5 outline-none hover:bg-gray-100">
@@ -1252,7 +1257,15 @@ export function ProductDialog({
                   <CatalogDescription key={detail.id} owner={{ productId: detail.id }} className="flex-1" onChange={setDescriptionDraft} />
                 </div>
               )}
-              <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "log" ? "flex" : "hidden")}>
+              <div className={cn("min-h-0 flex-1 flex-col gap-2 pb-3", tab === "log" ? "flex" : "hidden")}>
+                  {!isCreate && (
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>Click an entry to see or correct it.</span>
+                      <Button size="sm" variant="secondary" onClick={() => setQtyOpen(true)}>
+                        <Plus /> Add entry
+                      </Button>
+                    </div>
+                  )}
                   <DataGrid
                     rows={detail.transactions}
                     getRowId={(t) => t.id}
@@ -1278,7 +1291,14 @@ export function ProductDialog({
                         label: "Type",
                         width: "120px",
                         filterValue: (t) => movementReason(t),
-                        render: (t) => movementReason(t),
+                        render: (t) =>
+                          isRemovedEntry(t) ? (
+                            <span className="text-gray-400 line-through" title="Removed from the balance">
+                              {movementReason(t)}
+                            </span>
+                          ) : (
+                            movementReason(t)
+                          ),
                       },
                       {
                         key: "userName",
@@ -1318,16 +1338,17 @@ export function ProductDialog({
                         label: "Price",
                         numeric: true,
                         width: "104px",
-                        render: (t) => formatMoney(t.unitCost),
+                        render: (t) => (isQuantityOnly(t) ? <Null /> : formatMoney(t.unitCost)),
                       },
                       {
                         key: "totalValue",
                         label: "Total",
                         numeric: true,
                         width: "112px",
-                        render: (t) => formatMoney(t.totalValue),
+                        render: (t) => (isQuantityOnly(t) ? <Null /> : formatMoney(t.totalValue)),
                       },
                     ]}
+                    onRowClick={(t) => setLogEntry(t)}
                   />
               </div>
 
@@ -1416,10 +1437,28 @@ export function ProductDialog({
         onDownload={(photo, name) => void photoActions.download(photo, name)}
       />
 
-      {detail && !isCreate && fobOpen && (
-          <FobDialog
+      {detail && !isCreate && logEntry && (
+        <LogEntryDialog
+          entry={logEntry}
+          main={Boolean(detail.mainViewer)}
+          onClose={() => setLogEntry(null)}
+          onSaved={() => {
+            setLogEntry(null);
+            onSaved();
+            if (productId) {
+              fetch(`/api/products/${productId}`)
+                .then((r) => r.json())
+                .then(setDetail)
+                .catch(() => undefined);
+            }
+          }}
+        />
+      )}
+      {detail && !isCreate && costEditor && (
+          <CostDialog
+            kind={costEditor}
             product={detail}
-            onClose={() => setFobOpen(false)}
+            onClose={() => setCostEditor(null)}
             onSaved={() => {
               onSaved();
               if (productId) {
@@ -1454,8 +1493,8 @@ export function ProductDialog({
 }
 
 /**
- * Quantity corrections (units in or out at the current average cost) and cost corrections
- * (the average cost changes, the units don't) are separate on purpose.
+ * Quantity corrections only: units in or out, with a reason and (for entries added after the
+ * fact) a date. No price or cost is involved; costs have their own editors (Avg. cost, FOB).
  */
 function QuantityDialog({
   open,
@@ -1472,12 +1511,11 @@ function QuantityDialog({
   onSaved: () => void;
   onError: (message: string) => void;
 }) {
-  const [mode, setMode] = useState<"add" | "remove" | "cost" | "aside">("add");
+  const [mode, setMode] = useState<"add" | "remove" | "aside">("add");
   const [aside, setAside] = useState<"release" | "write-off">("release");
   const [quantity, setQuantity] = useState(1);
-  // Text, so a decimal point can be typed.
-  const [cost, setCost] = useState(String(product.avgCost));
   const [reason, setReason] = useState(reasons[0] ?? "Correction");
+  const [day, setDay] = useState("");
   const busy = useRef(false);
   // One id per opening: a retried request is recorded once.
   const requestId = useRef("");
@@ -1486,16 +1524,13 @@ function QuantityDialog({
     if (!open) return;
     setMode("add");
     setQuantity(1);
-    setCost(String(product.avgCost));
     setReason(reasons[0] ?? "Correction");
+    setDay(todayYmd());
     requestId.current = crypto.randomUUID();
-  }, [open, product.avgCost, reasons]);
+  }, [open, reasons]);
 
   const newQty =
-    mode === "cost" || (mode === "aside" && aside === "release")
-      ? product.physicalQty
-      : product.physicalQty + (mode === "add" ? quantity : -quantity);
-  const newCost = mode === "cost" ? Number(cost) || 0 : product.avgCost;
+    mode === "aside" && aside === "release" ? product.physicalQty : product.physicalQty + (mode === "add" ? quantity : -quantity);
 
   async function save() {
     if (busy.current) return;
@@ -1506,11 +1541,9 @@ function QuantityDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          mode === "cost"
-            ? { productId: product.id, mode, avgCost: Number(cost), reason }
-            : mode === "aside"
-              ? { productId: product.id, mode: aside, quantity, reason }
-              : { productId: product.id, mode, quantity, reason, requestId: requestId.current },
+          mode === "aside"
+            ? { productId: product.id, mode: aside, quantity, reason }
+            : { productId: product.id, mode, quantity, reason, requestId: requestId.current, occurredAt: day === todayYmd() ? undefined : day },
         ),
       });
       if (!res.ok) {
@@ -1527,13 +1560,12 @@ function QuantityDialog({
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent showCloseButton={false} className="gap-5">
-        <DialogTitle>{mode === "cost" ? "Correct cost" : mode === "aside" ? "Units set aside" : "Change quantity"}</DialogTitle>
+        <DialogTitle>{mode === "aside" ? "Units set aside" : "Change quantity"}</DialogTitle>
 
-        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove" | "cost" | "aside")}>
-          <TabsList className={product.unavailableQty > 0 ? "w-96" : "w-72"}>
+        <Tabs value={mode} onValueChange={(v) => setMode(v as "add" | "remove" | "aside")}>
+          <TabsList className={product.unavailableQty > 0 ? "w-72" : "w-52"}>
             <TabsTrigger value="remove">Remove</TabsTrigger>
             <TabsTrigger value="add">Add</TabsTrigger>
-            <TabsTrigger value="cost">Cost</TabsTrigger>
             {product.unavailableQty > 0 && <TabsTrigger value="aside">Set aside</TabsTrigger>}
           </TabsList>
         </Tabs>
@@ -1557,30 +1589,17 @@ function QuantityDialog({
         )}
 
         <div className="flex flex-wrap items-end gap-3">
-          {mode === "cost" ? (
-            <div className="grid w-32 gap-1">
-              <Label htmlFor="adjust-cost">Average cost</Label>
-              <Input
-                id="adjust-cost"
-                className="tabular-nums"
-                inputMode="decimal"
-                value={cost}
-                onChange={(e) => setCost(e.target.value)}
-              />
-            </div>
-          ) : (
-            <div className="grid w-24 gap-1">
-              <Label htmlFor="adjust-qty">Quantity</Label>
-              <Input
-                id="adjust-qty"
-                className="tabular-nums"
-                inputMode="numeric"
-                value={String(quantity)}
-                onChange={(e) => setQuantity(Number(e.target.value) || 0)}
-              />
-            </div>
-          )}
-          <div className="grid min-w-45 flex-1 gap-1">
+          <div className="grid w-24 gap-1">
+            <Label htmlFor="adjust-qty">Quantity</Label>
+            <Input
+              id="adjust-qty"
+              className="tabular-nums"
+              inputMode="numeric"
+              value={String(quantity)}
+              onChange={(e) => setQuantity(Number(e.target.value) || 0)}
+            />
+          </div>
+          <div className="grid min-w-40 flex-1 gap-1">
             <Label>Reason</Label>
             <Select value={reason} onValueChange={(v) => setReason(String(v))}>
               <SelectTrigger className="w-full">
@@ -1595,21 +1614,24 @@ function QuantityDialog({
               </SelectContent>
             </Select>
           </div>
+          {mode !== "aside" && (
+            <div className="grid w-40 gap-1">
+              <Label htmlFor="adjust-day">Date</Label>
+              <Input id="adjust-day" type="date" className="tabular-nums" value={day} max={todayYmd()} onChange={(e) => setDay(e.target.value)} />
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-3 gap-4 rounded-lg border border-border bg-sunken p-4">
-          <Stat label="Quantity" value={`${formatQty(newQty)}un`} />
-          <Stat label="Average cost" value={formatMoney(newCost)} />
-          <Stat label="Value" value={formatMoney(newQty * newCost)} />
+        <div className="grid grid-cols-2 gap-4 rounded-lg border border-border bg-sunken p-4">
+          <Stat label="Quantity now" value={`${formatQty(product.physicalQty)}un`} />
+          <Stat label="After" value={`${formatQty(newQty)}un`} />
         </div>
         <p className="-mt-2 text-xs text-gray-500">
-          {mode === "cost"
-            ? "Only the cost changes. The quantity stays as it is."
-            : mode === "aside"
-              ? aside === "release"
-                ? "The units become available again; the quantity on hand stays."
-                : "The units leave stock at the current average cost."
-              : `Units ${mode === "add" ? "come in" : "go out"} at the current average cost, which stays as it is.`}
+          {mode === "aside"
+            ? aside === "release"
+              ? "The units become available again; the quantity on hand stays."
+              : "The units leave stock."
+            : "Only the quantity changes. No price or cost is recorded."}
         </p>
 
         <DialogFooter>
@@ -1617,7 +1639,7 @@ function QuantityDialog({
             Cancel
           </Button>
           <Button onClick={() => void save()}>
-            {mode === "cost" ? "Save cost" : mode === "aside" ? (aside === "release" ? "Release" : "Write off") : mode === "add" ? "Add stock" : "Remove stock"}
+            {mode === "aside" ? (aside === "release" ? "Release" : "Write off") : mode === "add" ? "Add stock" : "Remove stock"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1625,20 +1647,171 @@ function QuantityDialog({
   );
 }
 
+function todayYmd() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /**
- * Corrects a product's FOB cost. Only FOB changes: the average cost, CIF and quantities stay, and
- * the log keeps the value before and after with the reason.
+ * One log entry: what it is, and what can be corrected. Anyone who can correct stock edits the
+ * note. On a manual correction the main user also changes the date and quantity or removes it;
+ * the balance follows through linked entries, and the entry keeps who, when, before, after, why.
  */
-export function FobDialog({
+function LogEntryDialog({ entry, main, onClose, onSaved }: { entry: LogEntry; main: boolean; onClose: () => void; onSaved: () => void }) {
+  const meta = (() => {
+    try {
+      return entry.metadata ? (JSON.parse(entry.metadata) as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  })();
+  const manual =
+    ["ADJUSTMENT", "RETURNED", "CORRECTION"].includes(entry.type) &&
+    !meta.orderId && !meta.importationId && !meta.setAside && !meta.removed && !meta.editOf && !meta.reversalOf;
+  const stockEditable = manual && main;
+  const day = entry.occurredAt.slice(0, 10);
+  const [notes, setNotes] = useState(entry.notes ?? "");
+  const [date, setDate] = useState(day);
+  const [qty, setQty] = useState(String(Math.abs(entry.quantity)));
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const edits = Array.isArray(meta.edits) ? (meta.edits as Array<{ at: string; by: string; reason: string; changes: Array<{ field: string; before: unknown; after: unknown }> }>) : [];
+  const removed = meta.removed as { at: string; by: string; reason: string } | undefined;
+
+  async function send(body: object) {
+    if (busy) return;
+    if (!reason.trim()) return setError("Write why it changes");
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/adjustments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transactionId: entry.id, reason, ...body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return setError(data.error ?? "Couldn't save the entry");
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function save() {
+    const body: Record<string, unknown> = { mode: "edit-log" };
+    if (notes !== (entry.notes ?? "")) body.notes = notes;
+    if (stockEditable && date !== day) body.occurredAt = date;
+    const units = Number(qty);
+    if (stockEditable && units !== Math.abs(entry.quantity)) body.quantity = Math.sign(entry.quantity) * units;
+    if (Object.keys(body).length === 1) return onClose();
+    void send(body);
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
+      <DialogContent showCloseButton={false} className="gap-4 sm:max-w-[520px]">
+        <DialogTitle>
+          {movementReason(entry)} · {formatDateTime(entry.occurredAt)}
+        </DialogTitle>
+        <p className="-mt-2 text-xs text-gray-500">
+          {entry.userName}
+          {entry.reference ? ` · ${entry.reference}` : ""}
+          {removed ? ` · removed by ${removed.by}: ${removed.reason}` : ""}
+          {!manual && !removed ? " · from an invoice, importation or cost change; correct it there" : ""}
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="grid w-28 gap-1">
+            <Label htmlFor="log-qty">{entry.quantity < 0 ? "Units out" : "Units in"}</Label>
+            <Input id="log-qty" inputMode="numeric" className="tabular-nums" disabled={!stockEditable} value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
+          </div>
+          <div className="grid w-40 gap-1">
+            <Label htmlFor="log-date">Date</Label>
+            <Input id="log-date" type="date" disabled={!stockEditable} value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+          {!isQuantityOnly(entry) && (
+            <div className="grid gap-1">
+              <Label>Price</Label>
+              <span className="flex h-9 items-center font-mono text-sm tabular-nums">{formatMoney(entry.unitCost)}</span>
+            </div>
+          )}
+        </div>
+        <div className="grid gap-1">
+          <Label htmlFor="log-notes">Note</Label>
+          <Input id="log-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </div>
+        <div className="grid gap-1">
+          <Label htmlFor="log-reason">Reason for the change</Label>
+          <Input id="log-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
+        </div>
+        {manual && !main && <p className="text-xs text-gray-500">Only the main user can change the units or date, or remove it.</p>}
+        {edits.length > 0 && (
+          <ul className="max-h-24 overflow-y-auto rounded-md bg-sunken px-3 py-2 text-xs text-gray-600" aria-label="Changes">
+            {edits.map((edit, i) => (
+              <li key={i}>
+                {formatDateTime(edit.at)} · {edit.by} · {edit.changes.map((c) => `${c.field}: ${String(c.before ?? "—")} → ${String(c.after ?? "—")}`).join(", ")} · {edit.reason}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <p className="text-xs text-danger-text">{error}</p>}
+        <DialogFooter className="sm:justify-between">
+          {stockEditable ? (
+            <Button variant="secondary" className="text-danger-text" disabled={busy} onClick={() => void send({ mode: "remove-log" })}>
+              Remove entry
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button variant="secondary" disabled={busy} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button disabled={busy || Boolean(removed)} onClick={save}>
+              Save
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const COST_EDITORS = {
+  avg: {
+    title: "Correct average cost",
+    label: "Average cost",
+    mode: "cost",
+    field: "avgCost",
+    note: "Only the average cost changes, and the stock value with it. Quantities, FOB and CIF stay as they are.",
+  },
+  fob: {
+    title: "Correct FOB cost",
+    label: "FOB",
+    mode: "fob",
+    field: "fobCost",
+    note: "Only the FOB cost changes. Average cost, CIF and quantities stay as they are.",
+  },
+} as const;
+
+/**
+ * Corrects one cost of a product: its average cost or its FOB, each in its own dialog. The
+ * value before and after and the reason are logged; quantities never change here.
+ */
+export function CostDialog({
+  kind,
   product,
   onClose,
   onSaved,
 }: {
-  product: { id: string; name: string; fobCost: number };
+  kind: keyof typeof COST_EDITORS;
+  product: { id: string; name: string; avgCost: number; fobCost: number };
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [value, setValue] = useState(product.fobCost.toFixed(2));
+  const editor = COST_EDITORS[kind];
+  const current = product[editor.field];
+  const [value, setValue] = useState(current.toFixed(2));
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1654,10 +1827,10 @@ export function FobDialog({
       const res = await fetch("/api/adjustments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId: product.id, mode: "fob", fobCost: next, reason }),
+        body: JSON.stringify({ productId: product.id, mode: editor.mode, [editor.field]: next, reason }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return setError(data.error ?? "Couldn't save the FOB cost");
+      if (!res.ok) return setError(data.error ?? "Couldn't save the cost");
       onSaved();
       onClose();
     } finally {
@@ -1668,13 +1841,13 @@ export function FobDialog({
   return (
     <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
       <DialogContent showCloseButton={false} className="gap-5">
-        <DialogTitle>Correct FOB cost</DialogTitle>
+        <DialogTitle>{editor.title}</DialogTitle>
         <p className="-mt-3 text-sm text-gray-600">{product.name}</p>
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid w-32 gap-1">
-            <Label htmlFor="fob-cost">New FOB</Label>
+            <Label htmlFor="cost-value">New {editor.label.toLowerCase()}</Label>
             <Input
-              id="fob-cost"
+              id="cost-value"
               className="tabular-nums"
               inputMode="decimal"
               value={value}
@@ -1684,22 +1857,22 @@ export function FobDialog({
             />
           </div>
           <div className="grid min-w-45 flex-1 gap-1">
-            <Label htmlFor="fob-reason">Reason</Label>
-            <Input id="fob-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
+            <Label htmlFor="cost-reason">Reason</Label>
+            <Input id="cost-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4 rounded-lg border border-border bg-sunken p-4">
-          <Stat label="Current FOB" value={formatMoney(product.fobCost)} />
-          <Stat label="New FOB" value={next === null ? "—" : formatMoney(next)} />
+          <Stat label={`Current ${editor.label}`} value={formatMoney(current)} />
+          <Stat label={`New ${editor.label}`} value={next === null ? "—" : formatMoney(next)} />
         </div>
-        <p className="-mt-2 text-xs text-gray-500">Only the FOB cost changes. Average cost, CIF and quantities stay as they are.</p>
+        <p className="-mt-2 text-xs text-gray-500">{editor.note}</p>
         {error && <p className="text-xs text-danger-text">{error}</p>}
         <DialogFooter>
           <Button variant="secondary" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={busy || next === null} onClick={() => void save()}>
-            Save FOB
+            Save {editor.label.toLowerCase()}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -2156,7 +2329,8 @@ function Stat({
     <button
       type="button"
       onClick={onClick}
-        className={cn(box, "w-full outline-none hover:bg-gray-100", center ? "text-center" : "text-left")}
+      aria-label={`Edit ${label}`}
+      className={cn(box, "w-full outline-none hover:bg-gray-100", center ? "text-center" : "text-left")}
     >
       {content}
     </button>

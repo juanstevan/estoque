@@ -13,6 +13,7 @@ import {
   preparationDone,
   stageOf,
   stockShouldBeOut,
+  unmatchedError,
   workflowError,
   type DeliveryPrefs,
 } from "@/lib/inventory/delivery-rules";
@@ -519,6 +520,8 @@ export async function moveDelivery(deliveryId: string, to: ExitStatus, actor: Ac
     if (to === ExitStatus.TO_DELIVER || to === ExitStatus.IN_TRANSIT) {
       const unpaid = modeError(d.order, prefs, mode);
       if (unpaid) throw new Error(unpaid);
+      const missing = unmatchedError(d.order.issues);
+      if (missing) throw new Error(missing);
     }
     if (to === d.status && mode === d.mode) return detail(tx, d.orderId);
     await tx.delivery.update({
@@ -815,6 +818,8 @@ export async function completeDelivery(deliveryId: string, input: { note?: strin
   return prisma.$transaction(async (tx) => {
     const d = await lockedDelivery(tx, deliveryId);
     if (d.status === ExitStatus.COMPLETED) return detail(tx, d.orderId);
+    const missing = unmatchedError(d.order.issues);
+    if (missing) throw new Error(missing);
     if (!preparationDone(d.lines)) throw new Error(PREP_INCOMPLETE);
     const stage = stageOf(d);
     const pickup = d.mode === "PICKUP";
@@ -905,6 +910,7 @@ export async function recordReturn(
         notes: `Returned · invoice ${order.externalRef} · ${reason}`,
         affectsPhysical: true,
         affectsCost: false,
+        quantityOnly: true,
         unavailableDelta: condition === "damaged" ? qty : 0,
         occurredAt: day,
         userId: actor.id,

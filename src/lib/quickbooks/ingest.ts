@@ -2,7 +2,7 @@ import { ExitStatus, type Order, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createProduct, nextNumber } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
-import { isPhysicalLine } from "@/lib/inventory/delivery-rules";
+import { isPhysicalLine, UNMATCHED } from "@/lib/inventory/delivery-rules";
 import { deliveryPrefs, fitDeliveries, reserveOpenDeliveries, syncOrder } from "@/lib/inventory/orders";
 import { recomputeAvailable, roundMoney } from "@/lib/inventory/math";
 import { storeQbSyncEvent } from "@/lib/quickbooks/adapter";
@@ -54,9 +54,22 @@ function num(v: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** "Grill:38 - Grill GA01…" → "38 - Grill GA01…": QuickBooks names sub-items after their parent. */
+function itemName(name: string) {
+  return name.replace(/^.*:/, "").trim();
+}
+
 function codeFromName(name: string) {
-  const m = name.match(/^(\d{1,3})\b/);
+  const m = itemName(name).match(/^(\d{1,3})\b/);
   return m?.[1];
+}
+
+/**
+ * QuickBooks voids an invoice by zeroing it and adding "Voided" to its private note (after any
+ * note already there). The invoice API has no void status of its own.
+ */
+export function isVoidedNote(note: unknown) {
+  return typeof note === "string" && /(^|\s)Voided\s*$/i.test(note.trim());
 }
 
 function addressOf(inv: Json) {
@@ -110,7 +123,7 @@ export function parseQbInvoice(raw: unknown): QbInvoiceIn | null {
     balance,
     tax: num(obj(inv.TxnTaxDetail)?.TotalTax),
     customerId: str(customer?.value) || undefined,
-    voided: str(inv.status) === "Voided" || str(inv.TxnStatus) === "Voided" || inv.void === true,
+    voided: isVoidedNote(inv.PrivateNote) || str(inv.status) === "Voided" || str(inv.TxnStatus) === "Voided" || inv.void === true,
     deleted: str(inv.status) === "Deleted",
     updatedAt: str(meta?.LastUpdatedTime) || undefined,
     realmId: str(root.realmId) || undefined,
@@ -141,8 +154,9 @@ async function findProduct(line: QbLineIn) {
     if (byQb) return byQb;
   }
   if (line.name) {
+    const plain = itemName(line.name).replace(/^\w{1,3} ?- /, "");
     const byName = await prisma.product.findFirst({
-      where: { name: line.name },
+      where: { name: { in: [...new Set([line.name, plain])] } },
     });
     if (byName) return byName;
     const code = codeFromName(line.name);
@@ -158,7 +172,9 @@ function issueText(unmatched: QbLineIn[]) {
   return unmatched
     .map((line) => {
       const name = line.name || line.sku || "line";
-      return isPhysicalLine(line.name) ? `Unmatched product: ${name}` : `Service line not in inventory: ${name}`;
+      return isPhysicalLine(line.name)
+        ? `${UNMATCHED}${name} (qty ${line.quantity}${line.itemId ? `, QuickBooks item ${line.itemId}` : ""})`
+        : `Service line not in inventory: ${name}`;
     })
     .join("\n");
 }
@@ -268,7 +284,10 @@ export async function ingestInvoice(raw: unknown, retried = false): Promise<Inge
   invoice.realmId ||= (await qbSettings()).realmId || undefined;
   const found = await findExisting(invoice);
   const updatedAt = invoice.updatedAt ? new Date(invoice.updatedAt) : null;
-  if (found?.qbUpdatedAt && updatedAt && updatedAt <= found.qbUpdatedAt) {
+  const voidedNow = Boolean(invoice.voided || invoice.deleted);
+  // Same version and same void state: nothing to do. (Invoices voided before voids were read
+  // correctly kept their version, so the void state alone brings them back once.)
+  if (found?.qbUpdatedAt && updatedAt && updatedAt <= found.qbUpdatedAt && found.voided === voidedNow) {
     return { skipped: true as const, reason: "unchanged", order: found };
   }
   // Only invoices dated from INVOICES_FROM become orders. A deleted or voided one we never had stays out.
@@ -333,7 +352,7 @@ export async function ingestInvoice(raw: unknown, retried = false): Promise<Inge
       where: { id: found.id },
       include: { lines: { orderBy: { id: "asc" } }, deliveries: true },
     }));
-    if (existing.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt) {
+    if (existing.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt && existing.voided === voidedNow) {
       return { skipped: true as const, reason: "unchanged", order: existing };
     }
 

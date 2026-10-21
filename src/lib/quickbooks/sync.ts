@@ -218,9 +218,9 @@ async function runSync() {
     (
       await prisma.order.findMany({
         where: { qbInvoiceId: { not: null } },
-        select: { qbInvoiceId: true, qbUpdatedAt: true },
+        select: { qbInvoiceId: true, qbUpdatedAt: true, voided: true },
       })
-    ).map((order) => [order.qbInvoiceId, order.qbUpdatedAt]),
+    ).map((order) => [order.qbInvoiceId, order]),
   );
   const seen = new Set<string>();
   const batch: unknown[] = [];
@@ -233,7 +233,8 @@ async function runSync() {
       const at = invoice.updatedAt ? new Date(invoice.updatedAt) : null;
       if (known.has(invoice.id)) {
         const before = known.get(invoice.id);
-        if (before && at && at <= before) continue;
+        const voided = Boolean(invoice.voided || invoice.deleted);
+        if (before?.qbUpdatedAt && at && at <= before.qbUpdatedAt && before.voided === voided) continue;
       } else if (invoice.deleted || invoice.voided || !invoice.txnDate || invoice.txnDate < INVOICES_FROM) {
         continue;
       }

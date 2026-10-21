@@ -16,6 +16,7 @@ const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max
 const { adjustCost, changeQuantity, correctFob, createProduct, receiveImportation, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
   await import("./service");
 const { addProof, addToWorkflow, completeDelivery, moveDelivery, recordReturn, removeFromWorkflow, setPrepared } = await import("./orders");
+const { editLogEntry, removeLogEntry } = await import("./service");
 const { ownedProofUrl } = await import("./proof-file");
 const { ingestInvoice, pairLines } = await import("../quickbooks/ingest");
 
@@ -357,6 +358,120 @@ async function deliverAll(orderId: string) {
   const z = await createProduct({ name: "Unknown Z", sku: "Z", initialQty: 3 });
   await correctFob({ productId: z.id, fobCost: 50, reason: "Price list", userId: ME });
   assert.deepEqual([(await product(z.id)).avgCost, (await product(z.id)).inventoryValue], [0, 0]);
+  await invariants();
+}
+
+// Hotfix ─────────────────────────────────────────────────────────────────────────────────────────
+{
+  const MAIN = { id: ME, name: "Tester", main: true };
+  const CLERK = { id: "clerk", name: "Clerk", main: false };
+
+  // Quantity corrections record no price and leave every cost alone; the stock value follows.
+  const q = await createProduct({ name: "Qty Q", sku: "Q", initialQty: 4, initialUnitCost: 25 });
+  await db.product.update({ where: { id: q.id }, data: { fobCost: 20, cifCost: 25, lastSoldPrice: 99 } });
+  await changeQuantity({ productId: q.id, mode: "add", quantity: 2, reason: "Correction", userId: ME });
+  await changeQuantity({ productId: q.id, mode: "remove", quantity: 1, reason: "Correction", userId: ME, occurredAt: new Date("2026-10-01T12:00:00Z") });
+  let p = await product(q.id);
+  assert.deepEqual([p.physicalQty, p.avgCost, p.fobCost, p.cifCost, p.lastSoldPrice, p.inventoryValue], [5, 25, 20, 25, 99, 125]);
+  const corrections = await db.inventoryTransaction.findMany({ where: { productId: q.id, type: TransactionType.ADJUSTMENT }, orderBy: { occurredAt: "asc" } });
+  assert.deepEqual(corrections.map((t) => [t.quantity, t.unitCost, t.totalValue]), [[-1, 0, 0], [2, 0, 0]]);
+  assert.equal(corrections[0]!.occurredAt.toISOString(), "2026-10-01T12:00:00.000Z", "an entry added after the fact keeps its date");
+  assert.equal(await db.costHistory.count({ where: { productId: q.id, eventType: { not: "RECEIVED" } } }), 0);
+
+  // Log edits: anyone with stock access edits the note; date, units and removal are the main
+  // user's, through linked entries that keep the balance exact and the change on record.
+  const added = corrections[1]!;
+  await editLogEntry({ id: added.id, notes: "Found in the back", reason: "Clearer note" }, CLERK);
+  await rejects(() => editLogEntry({ id: added.id, quantity: 5, reason: "Counted again" }, CLERK), /main user/);
+  await editLogEntry({ id: added.id, quantity: 5, reason: "Counted again" }, MAIN);
+  await editLogEntry({ id: added.id, quantity: 5, reason: "Counted again" }, MAIN); // same value: nothing
+  p = await product(q.id);
+  assert.equal(p.physicalQty, 8, "4 + 5 − 1");
+  const edited = await db.inventoryTransaction.findUniqueOrThrow({ where: { id: added.id } });
+  const history = JSON.parse(edited.metadata!).edits;
+  assert.deepEqual([edited.quantity, edited.notes, history.length, history[1].changes[0]], [2, "Found in the back", 2, { field: "quantity", before: 2, after: 5 }]);
+  await rejects(() => editLogEntry({ id: added.id, quantity: -5, reason: "x" }, MAIN), /direction/);
+  await rejects(() => removeLogEntry({ id: added.id, reason: "Wrong product" }, CLERK), /main user/);
+  await removeLogEntry({ id: added.id, reason: "Wrong product" }, MAIN);
+  await removeLogEntry({ id: added.id, reason: "Wrong product" }, MAIN); // again: nothing
+  p = await product(q.id);
+  assert.deepEqual([p.physicalQty, p.avgCost], [3, 25]);
+  assert.ok(JSON.parse((await db.inventoryTransaction.findUniqueOrThrow({ where: { id: added.id } })).metadata!).removed);
+  const initial = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: q.id, type: TransactionType.RECEIVED } });
+  await rejects(() => editLogEntry({ id: initial.id, quantity: 9, reason: "x" }, MAIN), /Correct it there/);
+
+  // Reopening a received importation is the main user's.
+  const r = await importation([{ productId: q.id, quantity: 1, purchaseUnitCost: 25 }]);
+  await receive(r);
+  await rejects(() => setImportStatus(r, ImportStatus.IN_TRANSIT, "clerk", { canReopen: false }), /main user/);
+  assert.equal((await db.importation.findUniqueOrThrow({ where: { id: r } })).status, ImportStatus.COMPLETED);
+  await invariants();
+}
+
+// QuickBooks payloads as the API sends them: no SKU on lines, items by id, sub-item names.
+{
+  const qbReal = (id: string, doc: string, lines: { line: string; item: string; name: string; qty: number }[], minute: number, extra: object = {}) => ({
+    Invoice: {
+      Id: id,
+      DocNumber: doc,
+      TxnDate: "2026-10-15",
+      Balance: 0,
+      TotalAmt: lines.reduce((sum, l) => sum + l.qty * 100, 0),
+      MetaData: { LastUpdatedTime: `2026-10-20T06:${String(minute).padStart(2, "0")}:00-07:00` },
+      Line: [
+        ...lines.map((l) => ({
+          Id: l.line,
+          LineNum: Number(l.line),
+          Amount: l.qty * 100,
+          DetailType: "SalesItemLineDetail",
+          SalesItemLineDetail: { ItemRef: { value: l.item, name: l.name }, Qty: l.qty, UnitPrice: 100 },
+        })),
+        { Amount: 0, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+      ],
+      ...extra,
+    },
+  });
+  const hood = await createProduct({ name: "Hood Line 36\" - Single Motor", sku: "CH-H-HOO-36", code: "3", initialQty: 5, initialUnitCost: 10 });
+  await db.product.update({ where: { id: hood.id }, data: { secondarySku: "qb:107" } });
+  const hoodLine = { line: "5", item: "107", name: "Hood:3 - Hood Line 36\" - Single Motor", qty: 1 };
+  const grillLine = { line: "1", item: "77", name: "Grill:38 - Grill GA01 4B (32'' NG) - Legend Line", qty: 1 };
+
+  // 10. A line whose QuickBooks item has no product here: listed, and the invoice can't be ready.
+  await ingestInvoice(qbReal("873", "1553", [hoodLine], 0));
+  const o = await db.order.findUniqueOrThrow({ where: { externalRef: "1553" } });
+  await addToWorkflow(o.id, actor);
+  await ingestInvoice(qbReal("873", "1553", [grillLine, hoodLine], 16));
+  let order = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { lines: true, deliveries: { include: { lines: true } } } });
+  assert.match(order.issues ?? "", /Unmatched product: Grill:38 - Grill GA01 4B \(32'' NG\) - Legend Line \(qty 1, QuickBooks item 77\)/);
+  assert.equal(order.lines.length, 1);
+  const d = (await db.delivery.findFirstOrThrow({ where: { orderId: o.id }, include: { lines: true } }));
+  await setPrepared(d.id, Object.fromEntries(d.lines.map((l) => [l.id, l.qty])), actor);
+  await rejects(() => moveDelivery(d.id, ExitStatus.TO_DELIVER, actor), /no product here/);
+
+  // The QuickBooks name carries the product's ID after its category: "Grill:38 - …" finds ID 38.
+  const grill = await createProduct({ name: "Grill Legend 4 (32'') - NG", sku: "CH-G-LEG4-NG", code: "38", initialQty: 4, initialUnitCost: 900 });
+  // 9, 11. Once it matches, the next QuickBooks version brings it in once, reserved, on the open delivery.
+  await ingestInvoice(qbReal("873", "1553", [grillLine, hoodLine], 17));
+  await ingestInvoice(qbReal("873", "1553", [grillLine, hoodLine], 17)); // same version again
+  await ingestInvoice(qbReal("873", "1553", [grillLine, hoodLine], 18)); // a later sync, nothing changed
+  order = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { lines: true, deliveries: { include: { lines: true } } } });
+  assert.equal(order.issues, null);
+  assert.deepEqual(order.lines.map((l) => [l.productId, l.qbLineId, l.orderedQty, l.reservedQty]).sort(), [[grill.id, "1", 1, 1], [hood.id, "5", 1, 1]].sort());
+  assert.equal(order.deliveries.length, 1);
+  assert.equal(order.deliveries[0]!.lines.length, 2, "the grill joins the open delivery once");
+  assert.equal((await product(grill.id)).reservedQty, 1);
+
+  // 8. Voided in QuickBooks (private note "Voided", zeroed lines) before it went out: off the board.
+  await ingestInvoice(qbReal("873", "1553", [{ ...grillLine, qty: 0 }, { ...hoodLine, qty: 0 }], 19, { PrivateNote: "Voided", TotalAmt: 0 }));
+  order = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { lines: true, deliveries: { include: { lines: true } } } });
+  assert.deepEqual([order.voided, order.onKanban, order.deliveries.length, order.lines.length], [true, false, 0, 0]);
+  assert.deepEqual([(await product(grill.id)).reservedQty, (await product(hood.id)).reservedQty, (await product(grill.id)).physicalQty], [0, 0, 4]);
+
+  // An invoice voided before voids were read: same version, still open here. The void alone brings it back once.
+  await ingestInvoice(qbReal("829", "1539", [hoodLine], 30));
+  const stuck = await db.order.findUniqueOrThrow({ where: { externalRef: "1539" } });
+  await ingestInvoice(qbReal("829", "1539", [{ ...hoodLine, qty: 0 }], 30, { PrivateNote: "Voided", TotalAmt: 0 }));
+  assert.equal((await db.order.findUniqueOrThrow({ where: { id: stuck.id } })).voided, true);
   await invariants();
 }
 

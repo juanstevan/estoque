@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { MapPin } from "lucide-react";
+import { AlertTriangle, MapPin } from "lucide-react";
+import { unmatchedItems } from "@/lib/inventory/delivery-rules";
 import { cn } from "@/lib/utils";
 import { Avatar, StageHeader, WhenLine } from "./parts";
 import {
@@ -115,6 +116,12 @@ export function BoardCard({
         <span className="flex min-w-0 items-center gap-1.5 text-xs text-gray-600">
           <MapPin className="size-3 shrink-0" />
           <span className="truncate">{[areaOf(order), units(count)].filter(Boolean).join(" · ")}</span>
+        </span>
+      )}
+      {unmatchedItems(order.issues).length > 0 && (
+        <span className="flex items-center gap-1.5 text-xs text-warning-text" title="QuickBooks has items on this invoice with no product here">
+          <AlertTriangle className="size-3 shrink-0" />
+          {unmatchedItems(order.issues).length} without a product
         </span>
       )}
       {prep && (

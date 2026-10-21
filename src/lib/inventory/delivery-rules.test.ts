@@ -9,6 +9,8 @@ import {
   stageOf,
   stockShouldBeOut,
   workflowError,
+  unmatchedError,
+  unmatchedItems,
 } from "./delivery-rules";
 
 const products = [
@@ -54,5 +56,12 @@ assert.match(moveError({ ...base, dispatched: true, from: "IN_TRANSIT", to: "PRE
 assert.match(moveError({ ...base, stockedOut: true, from: "TO_DELIVER", to: "PREPARING" }) ?? "", /left stock/);
 assert.equal(moveError({ ...base, from: "TO_DELIVER", to: "PREPARING" }), null);
 assert.match(moveError({ ...base, from: "TO_DELIVER", to: "COMPLETED" }) ?? "", /Complete delivery/);
+
+// QuickBooks lines with no product here are listed and keep the invoice from looking complete.
+const issues = "Unmatched product: Grill:38 - Grill GA01 (qty 1, QuickBooks item 77)\nService line not in inventory: Shipping";
+assert.deepEqual(unmatchedItems(issues), ["Grill:38 - Grill GA01 (qty 1, QuickBooks item 77)"]);
+assert.match(unmatchedError(issues) ?? "", /no product here/);
+assert.equal(unmatchedError("Service line not in inventory: Shipping"), null);
+assert.equal(unmatchedError(null), null);
 
 console.log("delivery rules ok");

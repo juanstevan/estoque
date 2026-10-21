@@ -34,6 +34,25 @@ export const DEFAULT_PREFS: DeliveryPrefs = {
 
 const NONPHYSICAL = /shipping|freight|delivery fee|service|discount|sales tax|fee/i;
 
+/** How an invoice notes a QuickBooks line that is stock but has no product here. */
+export const UNMATCHED = "Unmatched product: ";
+
+/** The invoice's stock lines that QuickBooks has and no product here matches. */
+export function unmatchedItems(issues: string | null | undefined) {
+  return (issues ?? "")
+    .split("\n")
+    .filter((note) => note.startsWith(UNMATCHED))
+    .map((note) => note.slice(UNMATCHED.length));
+}
+
+/** Why the invoice can't be marked ready or completed while QuickBooks has items with no product. */
+export function unmatchedError(issues: string | null | undefined) {
+  const items = unmatchedItems(issues);
+  return items.length
+    ? `QuickBooks has ${items.length === 1 ? "an item" : "items"} on this invoice with no product here: ${items.join("; ")}. Link ${items.length === 1 ? "it" : "them"} to a product, then sync.`
+    : null;
+}
+
 export function isPhysicalLine(name: string | null | undefined) {
   return !NONPHYSICAL.test(name ?? "");
 }

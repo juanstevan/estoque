@@ -77,6 +77,28 @@ export const TRANSACTION_TYPE_LABELS: Record<string, string> = {
   COST_ADJUSTMENT: "Cost",
 };
 
+/**
+ * Movements that change units only (corrections, adjustments, returns, write-offs): they carry no
+ * price. Older ones stored the average cost as a price; it isn't one, so it isn't shown either.
+ */
+export function isQuantityOnly(t: { type: string; metadata?: string | null }) {
+  if (["ADJUSTMENT", "CORRECTION", "RETURNED"].includes(t.type)) return true;
+  try {
+    return Boolean(t.metadata && JSON.parse(t.metadata)?.quantityOnly);
+  } catch {
+    return false;
+  }
+}
+
+/** A log entry the main user removed (kept, marked, its units taken back by another entry). */
+export function isRemovedEntry(t: { metadata?: string | null }) {
+  try {
+    return Boolean(t.metadata && JSON.parse(t.metadata)?.removed);
+  } catch {
+    return false;
+  }
+}
+
 /** Reason shown in the product log — invoice, import, or the qty-change reason. */
 export function movementReason(t: {
   type: string;
@@ -90,6 +112,10 @@ export function movementReason(t: {
     const meta = t.metadata ? JSON.parse(t.metadata) : null;
     if (t.type === "IMPORTATION") return meta?.reversalOf ? "Import reopened" : "Import";
     if (meta?.action === "cost-basis") return "Cost basis";
+    if (meta?.field === "fobCost") return "FOB correction";
+    if (meta?.mode === "cost") return "Cost correction";
+    if (meta?.editOf) return "Entry edited";
+    if (meta?.reversalOf) return "Entry removed";
     if (meta && typeof meta === "object" && "reason" in meta && meta.reason) {
       return String(meta.reason);
     }

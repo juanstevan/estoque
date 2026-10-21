@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/tooltip";
 import { DataGrid, type GridCol } from "@/components/chaleur/DataGrid";
 import {
-  FobDialog,
+  CostDialog,
   ProductDialog,
   uniqueProductTypes,
   type ProductRow,
@@ -582,7 +582,7 @@ export function StorageTab({
         onSaved={onReload}
       />
 
-      {fobFor && <FobDialog product={fobFor} onClose={() => setFobFor(null)} onSaved={onReload} />}
+      {fobFor && <CostDialog kind="fob" product={fobFor} onClose={() => setFobFor(null)} onSaved={onReload} />}
 
       <ProductDialog
         open={creating}

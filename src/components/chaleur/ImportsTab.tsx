@@ -21,9 +21,10 @@ import {
   Search,
   Trash2,
   AlertCircle,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -1654,16 +1655,18 @@ function ImportDialog({
             onChange={(supplierName) => setForm({ ...form, supplierName })}
           />
           <ImportProgress status={initial?.status ?? "PENDING"} />
-          <span className="font-mono text-sm text-gray-600 tabular-nums" title="Coefficient: everything it cost ÷ what the products cost">
-            {coefficient.toFixed(3)}×
-          </span>
         </div>
 
         <ScrollArea className="h-[360px] rounded-lg border border-border bg-surface">
           <div className={cn("sticky top-0 z-10 grid h-9 border-b border-border bg-sunken pr-2.5 text-xs font-medium text-gray-600", LINE_GRID)}>
               <div className="flex items-center px-3">ID</div>
               <div className="flex items-center px-3">Name</div>
-              <div className="flex items-center justify-center px-3">Coef</div>
+              <div
+                className="flex items-center justify-center px-3 font-mono tabular-nums"
+                title="Coefficient of the importation: everything it cost ÷ what the products cost. Each line shows its own."
+              >
+                {coefficient}×
+              </div>
               <div className="flex items-center justify-center px-3">Qnt</div>
               <div className="flex items-center justify-center px-3">Cost</div>
               <div className="flex items-center justify-center px-3" title="Import tax, a percent of the cost. It stays on this product.">Tax %</div>
@@ -1890,15 +1893,11 @@ function ImportDialog({
             </span>
           ) : (
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-700">
-              <label className="flex items-center gap-2" title="For importations from before the stock count: they set the average cost and add no units.">
-                <Checkbox
-                  disabled={received}
-                  checked={form.historical}
-                  onCheckedChange={(on) => setForm({ ...form, historical: Boolean(on) })}
-                  className="size-4"
-                />
-                Historical · cost only, adds no units
-              </label>
+              <HistoricalToggle
+                on={form.historical}
+                disabled={received}
+                onChange={(historical) => setForm((f) => ({ ...f, historical }))}
+              />
               {initial?.status === "COMPLETED" && initial.receivedAt && (
                 <span className="flex items-center gap-2">
                   Arrived {new Date(initial.receivedAt).toLocaleDateString("en-US", { timeZone: "UTC" })}
@@ -2688,5 +2687,39 @@ function ReceiveDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Historical importation: it counts toward the average cost and adds no units. The eye opens
+ * when it's on.
+ */
+function HistoricalToggle({ on, disabled, onChange }: { on: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+  const Icon = on ? Eye : EyeOff;
+  const hint = "Historical: counts toward the average cost, adds no units";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-pressed={on}
+            aria-label={hint}
+            disabled={disabled}
+            onClick={() => onChange(!on)}
+            className={cn(
+              "flex h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              on
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border bg-surface text-gray-500 hover:bg-gray-50 hover:text-gray-700",
+            )}
+          />
+        }
+      >
+        <Icon className="size-4" />
+        {on && <span>Historical</span>}
+      </TooltipTrigger>
+      <TooltipContent>{hint}</TooltipContent>
+    </Tooltip>
   );
 }

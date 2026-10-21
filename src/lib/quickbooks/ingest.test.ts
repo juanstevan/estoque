@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { quickBooksName, splitName } from "../photos/name";
-import { parseQbInvoice } from "./ingest";
+import { isVoidedNote, parseQbInvoice } from "./ingest";
 import { readAuthCode } from "./qbo";
 import { changedFields } from "./sync";
 
@@ -43,5 +43,28 @@ const invoice = parseQbInvoice({
 assert.equal(invoice?.docNumber, "1009");
 assert.equal(invoice?.rejected, undefined);
 assert.equal(invoice?.lines.length, 1);
+
+// QuickBooks voids an invoice by zeroing it and adding "Voided" to the private note.
+const voided = parseQbInvoice({
+  Invoice: { Id: "829", DocNumber: "1539", TxnDate: "2026-10-06", TotalAmt: 0, Balance: 0, PrivateNote: "Voided", Line: [] },
+});
+assert.equal(voided?.voided, true);
+assert.equal(isVoidedNote("Call before delivery Voided"), true, "appended to an existing note");
+assert.equal(isVoidedNote("Voided  "), true);
+assert.equal(isVoidedNote("Voided check was replaced last week"), false, "the word alone in a note isn't a void");
+assert.equal(isVoidedNote(undefined), false);
+assert.equal(parseQbInvoice({ Invoice: { Id: "1", DocNumber: "2", PrivateNote: "Gate code 12" } })?.voided, false);
+// Lines keep QuickBooks' item id and line id; there's no SKU on an invoice line.
+const real = parseQbInvoice({
+  Invoice: {
+    Id: "873",
+    DocNumber: "1553",
+    Line: [
+      { Id: "1", LineNum: 1, Amount: 1580, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "77", name: "Grill:38 - Grill GA01 4B (32'' NG) - Legend Line" }, Qty: 1, UnitPrice: 1580 } },
+      { Amount: 1580, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+    ],
+  },
+});
+assert.deepEqual(real?.lines, [{ lineId: "1", sku: undefined, quantity: 1, itemId: "77", name: "Grill:38 - Grill GA01 4B (32'' NG) - Legend Line", unitPrice: 1580 }]);
 
 console.log("invoice parse ok");
