@@ -16,7 +16,7 @@ import { TaskTab } from "@/components/chaleur/TaskTab";
 import { ReportsTab } from "@/components/chaleur/ReportsTab";
 import { MediaLibrary } from "@/components/chaleur/MediaLibrary";
 import { SettingsDialog, parseReasons, type SettingsData } from "@/components/chaleur/SettingsDialog";
-import type { ProductRow } from "@/components/chaleur/ProductDialog";
+import { OPEN_SOURCE, type ProductRow, type SourceTarget } from "@/components/chaleur/ProductDialog";
 
 const PRODUCT_AREAS = ["storage", "media", "imports", "settings"] as const;
 
@@ -35,6 +35,17 @@ export function ChaleurApp({ me }: { me: Me }) {
     token: number;
     lines: { productId: string | null; name: string; quantity: number }[];
   } | null>(null);
+  // A product log entry can open the invoice or importation it came from.
+  const [source, setSource] = useState<SourceTarget | null>(null);
+  useEffect(() => {
+    const open = (e: Event) => {
+      const target = (e as CustomEvent<SourceTarget>).detail;
+      setSource(target);
+      setPicked(target.kind === "invoice" ? "delivery" : "imports");
+    };
+    window.addEventListener(OPEN_SOURCE, open);
+    return () => window.removeEventListener(OPEN_SOURCE, open);
+  }, []);
   const reasons = parseReasons(data.settings?.adjustmentReasons);
   const accent = data.settings?.accentColor;
   const brand = data.settings?.brandColor;
@@ -188,10 +199,18 @@ export function ChaleurApp({ me }: { me: Me }) {
             }}
             seed={importSeed}
             onSeedDone={() => setImportSeed(null)}
+            openId={source?.kind === "importation" ? source.id : null}
+            onOpened={() => setSource(null)}
           />
         )}
         {tab === "delivery" && (
-          <DeliveryTab canEdit={can(me.access, "delivery", "edit")} prefs={data.prefs} refreshKey={synced} />
+          <DeliveryTab
+            canEdit={can(me.access, "delivery", "edit")}
+            prefs={data.prefs}
+            refreshKey={synced}
+            openId={source?.kind === "invoice" ? source.id : null}
+            onOpened={() => setSource(null)}
+          />
         )}
         {tab === "tasks" && <TaskTab />}
         {tab === "reports" && (

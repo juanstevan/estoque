@@ -238,7 +238,12 @@ export function ImportsTab({
   seed,
   onSeedDone,
   isMain = false,
+  openId,
+  onOpened,
 }: {
+  /** An importation to open, asked for from elsewhere (a product's log). */
+  openId?: string | null;
+  onOpened?: () => void;
   /** The main user (full access) may correct the costs of received importations. */
   isMain?: boolean;
   imports: ImportRow[];
@@ -292,6 +297,12 @@ export function ImportsTab({
   } | null>(null);
   const [doneFading, setDoneFading] = useState(false);
   const [receiving, setReceiving] = useState<{ imp: ImportRow; extraId?: string } | null>(null);
+  useEffect(() => {
+    const row = openId ? imports.find((r) => r.id === openId) : null;
+    if (!row) return;
+    setEditing(row);
+    onOpened?.();
+  }, [openId, imports, onOpened]);
   const doneTimer = useRef(0);
   const noticeTimer = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1437,7 +1448,6 @@ function ImportDialog({
   // Received: products and quantities are fixed. Only the main user corrects its costs.
   const received = initial?.status === "COMPLETED";
   const costsLocked = received && !isMain;
-  const [reason, setReason] = useState("");
   const [adding, setAdding] = useState(form.lines.length === 0);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
@@ -1572,10 +1582,6 @@ function ImportDialog({
 
   async function save() {
     if (busy.current) return;
-    if (received && !reason.trim()) {
-      setError("Write why the costs change.");
-      return;
-    }
     busy.current = true;
     setError(null);
     try {
@@ -1583,7 +1589,7 @@ function ImportDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...(received ? { action: "revise", reason } : {}),
+          ...(received ? { action: "revise" } : {}),
           id: initial?.id,
           kind,
           reference: form.reference,
@@ -1624,10 +1630,18 @@ function ImportDialog({
           {initial ? "Importation" : "New importation"}
         </DialogTitle>
         <div className={cn("absolute top-0 right-16 flex items-stretch gap-4", received && "pointer-events-none")}>
-          <ExpectedDateField
-            value={form.expectedDate}
-            onChange={(expectedDate) => setForm({ ...form, expectedDate })}
-          />
+          {/* Received: the day it arrived. Before that: the expected date (ETA). Both stay saved. */}
+          {received && initial?.receivedAt ? (
+            <div className="flex items-center gap-2" title={initial.expectedDate ? `Expected ${formatMdY(parseYmd(initial.expectedDate.slice(0, 10))!)}` : undefined}>
+              <span className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Arrived</span>
+              <span className="font-mono text-base leading-none text-gray-900 tabular-nums">{formatMdY(parseYmd(initial.receivedAt.slice(0, 10))!)}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <span className="text-2xs font-medium tracking-caps text-gray-500 uppercase">ETA</span>
+              <ExpectedDateField value={form.expectedDate} onChange={(expectedDate) => setForm({ ...form, expectedDate })} />
+            </div>
+          )}
           <KindBookmark
             kind={kind}
             onClick={() =>
@@ -1900,7 +1914,6 @@ function ImportDialog({
               />
               {initial?.status === "COMPLETED" && initial.receivedAt && (
                 <span className="flex items-center gap-2">
-                  Arrived {new Date(initial.receivedAt).toLocaleDateString("en-US", { timeZone: "UTC" })}
                   {initial.proofs?.map((proof) => (
                     <a key={proof.id} href={`/api/importations/file?id=${proof.id}`} target="_blank" rel="noreferrer" title={`Photo by ${proof.actor}`}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1912,20 +1925,11 @@ function ImportDialog({
             </div>
           )}
           <div className="flex items-center gap-2">
-            {received && isMain && (
-              <Input
-                aria-label="Reason for the correction"
-                placeholder="Why the costs change"
-                className="h-8 w-56"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-              />
-            )}
             {costsLocked && <span className="text-xs text-gray-500">Received. Only the main user can correct its costs.</span>}
             <Button variant="secondary" onClick={onClose}>
               {costsLocked ? "Close" : "Cancel"}
             </Button>
-            {!costsLocked && <Button onClick={() => void save()}>{received ? "Save corrections" : "Save"}</Button>}
+            {!costsLocked && <Button onClick={() => void save()}>Save</Button>}
           </div>
         </DialogFooter>
       </DialogContent>

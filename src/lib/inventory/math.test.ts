@@ -33,6 +33,7 @@ for (const text of ["", "2*3", "1/2", "abc", "120+", "1e9", "(1)"]) assert.equal
 // Quantity corrections show no price, old ones included; real prices stay.
 assert.equal(isQuantityOnly({ type: "ADJUSTMENT", metadata: '{"reason":"Correction","mode":"remove"}' }), true);
 assert.equal(isQuantityOnly({ type: "RETURNED", metadata: null }), true);
+assert.equal(isQuantityOnly({ type: "RESERVED", metadata: '{"action":"reserve"}' }), true);
 assert.equal(isQuantityOnly({ type: "SOLD", metadata: null }), false);
 assert.equal(isQuantityOnly({ type: "IMPORTATION", metadata: '{"importationId":"x"}' }), false);
 assert.equal(isQuantityOnly({ type: "COST_ADJUSTMENT", metadata: '{"mode":"cost"}' }), false);

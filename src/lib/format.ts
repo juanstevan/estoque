@@ -78,11 +78,12 @@ export const TRANSACTION_TYPE_LABELS: Record<string, string> = {
 };
 
 /**
- * Movements that change units only (corrections, adjustments, returns, write-offs): they carry no
- * price. Older ones stored the average cost as a price; it isn't one, so it isn't shown either.
+ * Log entries with no price: movements that change units only (corrections, adjustments,
+ * returns, write-offs) and reservations, which move nothing. Older ones stored the average cost
+ * as a price; it isn't one, so it isn't shown either.
  */
 export function isQuantityOnly(t: { type: string; metadata?: string | null }) {
-  if (["ADJUSTMENT", "CORRECTION", "RETURNED"].includes(t.type)) return true;
+  if (["ADJUSTMENT", "CORRECTION", "RETURNED", "RESERVED"].includes(t.type)) return true;
   try {
     return Boolean(t.metadata && JSON.parse(t.metadata)?.quantityOnly);
   } catch {

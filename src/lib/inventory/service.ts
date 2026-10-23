@@ -262,16 +262,19 @@ async function setAverageCost(
   return txn;
 }
 
-/** A manual cost correction: the quantity stays, the average cost and value change. */
-export async function adjustCost(input: { productId: string; avgCost: number; reason: string; userId: string }) {
-  if (!input.reason?.trim()) throw new Error("Reason is required");
+/**
+ * A manual cost correction: the quantity stays, the average cost and value change. The log keeps
+ * who, when and the values before and after; a reason only when one was given.
+ */
+export async function adjustCost(input: { productId: string; avgCost: number; reason?: string; userId: string }) {
+  const reason = input.reason?.trim() || undefined;
   return prisma.$transaction((tx) =>
     setAverageCost(tx, {
       productId: input.productId,
       avgCost: input.avgCost,
       userId: input.userId,
-      notes: input.reason.trim(),
-      metadata: { reason: input.reason.trim(), mode: "cost" },
+      notes: reason ?? "Average cost corrected",
+      metadata: { reason, mode: "cost" },
     }),
   );
 }
@@ -307,10 +310,15 @@ async function applyCostBasis(
  * Log entries a person can change: manual quantity corrections (added from the product, not
  * from an invoice or importation) that weren't removed. Others change through where they came from.
  */
-function manualEntry(txn: { type: TransactionType; metadata: string | null }) {
+function manualEntry(txn: { type: TransactionType; metadata: string | null; reference?: string | null }) {
   const meta = readMeta(txn.metadata);
+  const kind =
+    txn.type === TransactionType.ADJUSTMENT ||
+    txn.type === TransactionType.RETURNED ||
+    txn.type === TransactionType.CORRECTION ||
+    (txn.type === TransactionType.RECEIVED && txn.reference === "INITIAL");
   return (
-    (txn.type === TransactionType.ADJUSTMENT || txn.type === TransactionType.RETURNED || txn.type === TransactionType.CORRECTION) &&
+    kind &&
     !meta.orderId &&
     !meta.importationId &&
     !meta.setAside &&
@@ -318,6 +326,11 @@ function manualEntry(txn: { type: TransactionType; metadata: string | null }) {
     !meta.editOf &&
     !meta.reversalOf
   );
+}
+
+/** Entries that only record something (a reservation), moving no units or value. */
+function logOnly(txn: { type: TransactionType; quantity: number }) {
+  return txn.type === TransactionType.RESERVED && txn.quantity === 0;
 }
 
 type LogActor = { id: string; name: string; main: boolean };
@@ -329,11 +342,10 @@ type LogActor = { id: string; name: string; main: boolean };
  * exact. Every change keeps who, when, before, after and why on the entry.
  */
 export async function editLogEntry(
-  input: { id: string; notes?: string; occurredAt?: Date; quantity?: number; reason: string },
+  input: { id: string; notes?: string; occurredAt?: Date; quantity?: number; reason?: string },
   actor: LogActor,
 ) {
-  const reason = input.reason?.trim();
-  if (!reason) throw new Error("Write why it changes.");
+  const reason = input.reason?.trim() || undefined;
   return prisma.$transaction(async (tx) => {
     const found = await tx.inventoryTransaction.findUnique({ where: { id: input.id }, select: { productId: true } });
     if (!found) throw new Error("That entry no longer exists.");
@@ -345,10 +357,16 @@ export async function editLogEntry(
     const notes = input.notes?.trim();
     if (notes !== undefined && notes !== (txn.notes ?? "")) changes.push({ field: "notes", before: txn.notes, after: notes || null });
 
-    const touchesStock = input.occurredAt !== undefined || input.quantity !== undefined;
-    if (touchesStock) {
+    if (input.occurredAt !== undefined || input.quantity !== undefined) {
       if (!actor.main) throw new Error("Only the main user can change the date or quantity of an entry.");
-      if (!manualEntry(txn)) throw new Error("This entry comes from an invoice, importation or cost change. Correct it there.");
+    }
+    // Units change only on manual corrections. A date also on log-only entries (reservations),
+    // which move no units; entries from deliveries, importations or costs follow their source.
+    if (input.quantity !== undefined && !manualEntry(txn)) {
+      throw new Error("These units come from an invoice, importation or cost change. Correct them there.");
+    }
+    if (input.occurredAt !== undefined && !manualEntry(txn) && !logOnly(txn)) {
+      throw new Error("This date comes from an invoice, importation or cost change. Correct it there.");
     }
     if (input.occurredAt !== undefined) {
       if (Number.isNaN(input.occurredAt.getTime()) || input.occurredAt.getTime() > Date.now() + 86400e3) throw new Error("Pick a valid date, not in the future");
@@ -373,7 +391,7 @@ export async function editLogEntry(
           quantityOnly: true,
           occurredAt: input.occurredAt ?? txn.occurredAt,
           userId: actor.id,
-          notes: `Edit of the ${txn.occurredAt.toISOString().slice(0, 10)} entry · ${reason}`,
+          notes: `Edit of the ${txn.occurredAt.toISOString().slice(0, 10)} entry${reason ? ` · ${reason}` : ""}`,
           metadata: { editOf: txn.id, reason },
         });
       }
@@ -395,9 +413,8 @@ export async function editLogEntry(
  * Removes a manual correction from the balance (main user only). Nothing is deleted: a linked
  * entry takes back its units (with its edits), and the entry is marked removed, with who, when and why.
  */
-export async function removeLogEntry(input: { id: string; reason: string }, actor: LogActor) {
-  const reason = input.reason?.trim();
-  if (!reason) throw new Error("Write why it's removed.");
+export async function removeLogEntry(input: { id: string; reason?: string }, actor: LogActor) {
+  const reason = input.reason?.trim() || undefined;
   if (!actor.main) throw new Error("Only the main user can remove an entry.");
   return prisma.$transaction(async (tx) => {
     const found = await tx.inventoryTransaction.findUnique({ where: { id: input.id }, select: { productId: true } });
@@ -419,7 +436,7 @@ export async function removeLogEntry(input: { id: string; reason: string }, acto
         keepReserved: true,
         quantityOnly: true,
         userId: actor.id,
-        notes: `Removed the ${txn.occurredAt.toISOString().slice(0, 10)} entry · ${reason}`,
+        notes: `Removed the ${txn.occurredAt.toISOString().slice(0, 10)} entry${reason ? ` · ${reason}` : ""}`,
         metadata: { reversalOf: txn.id, reason },
       });
     }
@@ -1125,11 +1142,10 @@ const COST_KEYS = ["transferFee", "freight", "delivery", "duties", "customs", "o
  */
 export async function reviseImportation(
   id: string,
-  input: { costs?: Partial<CostFields>; lines?: Array<{ id: string; purchaseUnitCost?: number; taxRate?: number }>; reason: string },
+  input: { costs?: Partial<CostFields>; lines?: Array<{ id: string; purchaseUnitCost?: number; taxRate?: number }>; reason?: string },
   actor: { id: string; name: string },
 ) {
-  const reason = input.reason?.trim();
-  if (!reason) throw new Error("Write why the costs change.");
+  const reason = input.reason?.trim() || undefined;
   return prisma.$transaction(async (tx) => {
     const imp = await lockImportation(tx, id);
     if (imp.status !== ImportStatus.COMPLETED) throw new Error("It isn't received yet; edit it normally.");
@@ -1185,7 +1201,7 @@ export async function reviseImportation(
       data: {
         importationId: id,
         actor: actor.name || actor.id,
-        message: `Costs corrected: ${[...changedCosts, ...(changedLines.length ? [`${changedLines.length} line${changedLines.length === 1 ? "" : "s"}`] : [])].join(", ")} · ${reason}`,
+        message: `Costs corrected: ${[...changedCosts, ...(changedLines.length ? [`${changedLines.length} line${changedLines.length === 1 ? "" : "s"}`] : [])].join(", ")}${reason ? ` · ${reason}` : ""}`,
         meta: JSON.stringify({
           reason,
           before: {
@@ -1203,7 +1219,7 @@ export async function reviseImportation(
     for (const productId of new Set(lines.flatMap((line) => (line.productId ? [line.productId] : [])))) {
       await applyCostBasis(tx, productId, {
         userId: actor.id,
-        notes: `Costs of import ${imp.reference} corrected · ${reason}`,
+        notes: `Costs of import ${imp.reference} corrected${reason ? ` · ${reason}` : ""}`,
         importationId: id,
       });
       // FOB and CIF are the latest received normal importation's; they follow when that's this one.
@@ -1224,9 +1240,8 @@ export async function reviseImportation(
  * importations. It doesn't feed the average cost or CIF, so neither changes, and no units move.
  * Logged as a cost correction with the value before and after; the same value again does nothing.
  */
-export async function correctFob(input: { productId: string; fobCost: number; reason: string; userId: string }) {
-  const reason = input.reason?.trim();
-  if (!reason) throw new Error("Reason is required");
+export async function correctFob(input: { productId: string; fobCost: number; reason?: string; userId: string }) {
+  const reason = input.reason?.trim() || undefined;
   if (!Number.isFinite(input.fobCost) || input.fobCost < 0) throw new Error("The cost must be 0 or more");
   const fobCost = roundMoney(input.fobCost, 2);
   return prisma.$transaction(async (tx) => {
@@ -1240,7 +1255,7 @@ export async function correctFob(input: { productId: string; fobCost: number; re
         quantity: 0,
         unitCost: fobCost,
         totalValue: 0,
-        notes: `FOB ${product.fobCost} → ${fobCost} · ${reason}`,
+        notes: `FOB ${product.fobCost} → ${fobCost}${reason ? ` · ${reason}` : ""}`,
         userId: input.userId,
         metadata: JSON.stringify({ field: "fobCost", reason, mode: "fob", before: { fobCost: product.fobCost }, after: { fobCost } }),
       },

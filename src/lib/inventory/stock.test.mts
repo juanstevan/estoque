@@ -340,7 +340,6 @@ async function deliverAll(orderId: string) {
   assert.equal((await product(t.id)).cifCost, tLine.landedUnitCost, "CIF follows the latest received lot");
   assert.equal(await avg(t.id), tLine.landedUnitCost, "only lot of the product: its CIF is the average");
   await rejects(() => reviseImportation(ti, { costs: { freight: -1 }, reason: "x" }, actor), /0 or more/);
-  await rejects(() => reviseImportation(ti, { costs: { freight: 1 }, reason: " " }, actor), /why/);
   await rejects(() => reviseImportation(a + "x", { reason: "x" }, actor), /./);
 
   // 5, 6, 10, 11. FOB correction: only FOB, cents kept, logged before → after; again is nothing.
@@ -397,12 +396,14 @@ async function deliverAll(orderId: string) {
   p = await product(q.id);
   assert.deepEqual([p.physicalQty, p.avgCost], [3, 25]);
   assert.ok(JSON.parse((await db.inventoryTransaction.findUniqueOrThrow({ where: { id: added.id } })).metadata!).removed);
-  const initial = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: q.id, type: TransactionType.RECEIVED } });
-  await rejects(() => editLogEntry({ id: initial.id, quantity: 9, reason: "x" }, MAIN), /Correct it there/);
 
   // Reopening a received importation is the main user's.
   const r = await importation([{ productId: q.id, quantity: 1, purchaseUnitCost: 25 }]);
   await receive(r);
+  // Units and dates from an importation are corrected there, not from the log.
+  const fromImport = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: q.id, type: TransactionType.IMPORTATION } });
+  await rejects(() => editLogEntry({ id: fromImport.id, quantity: 9 }, MAIN), /Correct them there/);
+  await rejects(() => editLogEntry({ id: fromImport.id, occurredAt: new Date("2026-10-01T12:00:00Z") }, MAIN), /Correct it there/);
   await rejects(() => setImportStatus(r, ImportStatus.IN_TRANSIT, "clerk", { canReopen: false }), /main user/);
   assert.equal((await db.importation.findUniqueOrThrow({ where: { id: r } })).status, ImportStatus.COMPLETED);
   await invariants();
@@ -472,6 +473,51 @@ async function deliverAll(orderId: string) {
   const stuck = await db.order.findUniqueOrThrow({ where: { externalRef: "1539" } });
   await ingestInvoice(qbReal("829", "1539", [{ ...hoodLine, qty: 0 }], 30, { PrivateNote: "Voided", TotalAmt: 0 }));
   assert.equal((await db.order.findUniqueOrThrow({ where: { id: stuck.id } })).voided, true);
+  await invariants();
+}
+
+// Corrections without a typed reason: still recorded with who, when, before and after.
+{
+  const MAIN = { id: ME, name: "Tester", main: true };
+  const p = await createProduct({ name: "Audit P", sku: "AP", initialQty: 6, initialUnitCost: 10 });
+  await adjustCost({ productId: p.id, avgCost: 12, userId: ME });
+  const cost = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.COST_ADJUSTMENT } });
+  const costMeta = JSON.parse(cost.metadata!);
+  assert.deepEqual([cost.userId, costMeta.before.avgCost, costMeta.after.avgCost, costMeta.reason], [ME, 10, 12, undefined]);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).fobCost, (await product(p.id)).cifCost], [6, 10, 10]);
+
+  // Initial stock counts as a manual entry: its units are corrected from the log.
+  const initial = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, reference: "INITIAL" } });
+  await editLogEntry({ id: initial.id, quantity: 5 }, MAIN);
+  assert.equal((await product(p.id)).physicalQty, 5);
+  const audit = JSON.parse((await db.inventoryTransaction.findUniqueOrThrow({ where: { id: initial.id } })).metadata!).edits[0];
+  assert.deepEqual([audit.by, audit.changes[0], audit.reason], ["Tester", { field: "quantity", before: 6, after: 5 }, undefined]);
+
+  // A reservation's log entry: its date can be corrected (it moves nothing); its units follow the invoice.
+  await ingestInvoice({
+    Invoice: {
+      Id: "77001",
+      DocNumber: "1549",
+      TxnDate: "2026-10-14",
+      Balance: 0,
+      TotalAmt: 100,
+      MetaData: { LastUpdatedTime: "2026-10-14T10:00:00-07:00" },
+      Line: [{ Id: "1", DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1", name: "Audit P" }, Qty: 1, UnitPrice: 100 } }],
+    },
+  });
+  const o = await db.order.findUniqueOrThrow({ where: { externalRef: "1549" } });
+  await addToWorkflow(o.id, actor);
+  const reserved = await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.RESERVED } });
+  await editLogEntry({ id: reserved.id, occurredAt: new Date("2026-10-14T12:00:00Z") }, MAIN);
+  assert.equal((await db.inventoryTransaction.findUniqueOrThrow({ where: { id: reserved.id } })).occurredAt.toISOString(), "2026-10-14T12:00:00.000Z");
+  await rejects(() => editLogEntry({ id: reserved.id, quantity: 3 }, MAIN), /Correct them there/);
+  assert.equal((await product(p.id)).reservedQty, 1, "the reservation still follows the invoice");
+
+  // Removing without a reason: the entry is marked removed with who and when; its units come back.
+  const added = await changeQuantity({ productId: p.id, mode: "add", quantity: 2, reason: "Correction", userId: ME });
+  await removeLogEntry({ id: added.id }, MAIN);
+  assert.equal((await product(p.id)).physicalQty, 5);
+  assert.equal(JSON.parse((await db.inventoryTransaction.findUniqueOrThrow({ where: { id: added.id } })).metadata!).removed.by, "Tester");
   await invariants();
 }
 

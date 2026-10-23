@@ -7,6 +7,7 @@ import {
   Link2,
   Pencil,
   Plus,
+  Trash2,
   Search,
   X,
 } from "lucide-react";
@@ -610,7 +611,7 @@ export function ProductDialog({
                     }}
                     className="w-full gap-0"
                   >
-                    <TabsList className="mx-auto w-[400px] bg-[#f2f2f7]">
+                    <TabsList className="mx-auto w-[300px] bg-[#f2f2f7]">
                       <TabsTrigger
                         value="info"
                         className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
@@ -633,12 +634,6 @@ export function ProductDialog({
                             {photoList.length + fileGroups.reduce((n, [, files]) => n + files.length, 0)}
                           </span>
                         )}
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="catalog"
-                        className="h-6 flex-1 bg-transparent px-0 shadow-none data-active:bg-white data-active:shadow-xs"
-                      >
-                        Catalog
                       </TabsTrigger>
                     </TabsList>
                   </Tabs>
@@ -1227,36 +1222,45 @@ export function ProductDialog({
                     </div>
                   </div>
                 </div>
-              <div className={cn("min-h-0 flex-1 flex-col", tab === "photos" ? "flex" : "hidden")}>
-                <PhotoGallery
-                  photos={photoList}
-                  onPick={() => fileRef.current?.click()}
-                  onFiles={photoActions.add}
-                  onOpen={setViewer}
-                  onRename={(id, tag) => void renamePhoto(id, tag)}
-                  onRemove={(id) => void removePhoto(id)}
-                  onDownload={(photo, i) => void photoActions.download(photo, photoNames[i] ?? photo.fileName)}
-                >
-                  {fileGroups.map(([source, files]) => (
-                    <section key={source} className="mt-6 grid gap-2">
-                      <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">{source}</div>
-                      <div className="grid grid-cols-4 gap-3">
-                        {files.map((file) => (
-                          <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="truncate text-sm underline">
-                            {file.name || file.tag || file.fileName || "File"}
-                          </a>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </PhotoGallery>
-              </div>
-              {/* Kept mounted while the card is open, so switching tabs doesn't drop an unsaved edit. */}
-              {!isCreate && detail.id && (
-                <div className={cn("min-h-0 flex-1 flex-col pb-3", tab === "catalog" ? "flex" : "hidden")}>
-                  <CatalogDescription key={detail.id} owner={{ productId: detail.id }} className="flex-1" onChange={setDescriptionDraft} />
+              {/* Media: photos top left, files below, the catalog description on the right. Kept
+                  mounted while the card is open, so switching tabs doesn't drop an unsaved edit. */}
+              <div className={cn("min-h-0 flex-1 gap-6", tab === "photos" ? "flex" : "hidden")}>
+                <div className="flex min-h-0 w-1/2 shrink-0 flex-col gap-4">
+                  <PhotoGallery
+                    photos={photoList}
+                    onPick={() => fileRef.current?.click()}
+                    onFiles={photoActions.add}
+                    onOpen={setViewer}
+                    onRename={(id, tag) => void renamePhoto(id, tag)}
+                    onRemove={(id) => void removePhoto(id)}
+                    onDownload={(photo, i) => void photoActions.download(photo, photoNames[i] ?? photo.fileName)}
+                  />
+                  <section className="flex max-h-[38%] min-h-24 shrink-0 flex-col gap-2 overflow-y-auto border-t border-border pt-3 pb-3">
+                    <h3 className="text-sm font-medium text-gray-900">Files</h3>
+                    {fileGroups.length ? (
+                      fileGroups.map(([source, files]) => (
+                        <div key={source} className="grid gap-1.5">
+                          <div className="text-2xs font-medium tracking-caps text-gray-500 uppercase">{source}</div>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                            {files.map((file) => (
+                              <a key={file.id} href={file.url} target="_blank" rel="noreferrer" className="truncate text-sm underline">
+                                {file.name || file.tag || file.fileName || "File"}
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-gray-500">No files yet.</p>
+                    )}
+                  </section>
                 </div>
-              )}
+                {!isCreate && detail.id && (
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col pb-3">
+                    <CatalogDescription key={detail.id} owner={{ productId: detail.id }} className="flex-1" onChange={setDescriptionDraft} />
+                  </div>
+                )}
+              </div>
               <div className={cn("min-h-0 flex-1 flex-col gap-2 pb-3", tab === "log" ? "flex" : "hidden")}>
                   {!isCreate && (
                     <div className="flex items-center justify-between text-xs text-gray-500">
@@ -1275,6 +1279,7 @@ export function ProductDialog({
                       {
                         key: "occurredAt",
                         label: "Date",
+                        mono: true,
                         width: "148px",
                         sortValue: (t) => new Date(t.occurredAt).getTime(),
                         render: (t) => formatDateTime(t.occurredAt),
@@ -1346,6 +1351,29 @@ export function ProductDialog({
                         numeric: true,
                         width: "112px",
                         render: (t) => (isQuantityOnly(t) ? <Null /> : formatMoney(t.totalValue)),
+                      },
+                      {
+                        key: "remove",
+                        label: "",
+                        plain: true,
+                        width: "44px",
+                        render: (t) =>
+                          detail.mainViewer && manualLogEntry(t) ? (
+                            <RemoveEntryButton
+                              entry={t}
+                              onRemoved={() => {
+                                setError(null);
+                                onSaved();
+                                if (productId) {
+                                  fetch(`/api/products/${productId}`)
+                                    .then((r) => r.json())
+                                    .then(setDetail)
+                                    .catch(() => undefined);
+                                }
+                              }}
+                              onError={setError}
+                            />
+                          ) : null,
                       },
                     ]}
                     onRowClick={(t) => setLogEntry(t)}
@@ -1441,6 +1469,7 @@ export function ProductDialog({
         <LogEntryDialog
           entry={logEntry}
           main={Boolean(detail.mainViewer)}
+          reservedUnits={detail.orderLines.find((line) => line.order.externalRef === logEntry.reference)?.reservedQty}
           onClose={() => setLogEntry(null)}
           onSaved={() => {
             setLogEntry(null);
@@ -1493,8 +1522,8 @@ export function ProductDialog({
 }
 
 /**
- * Quantity corrections only: units in or out, with a reason and (for entries added after the
- * fact) a date. No price or cost is involved; costs have their own editors (Avg. cost, FOB).
+ * Quantity corrections only: units in or out, with a reason, dated now. No price or cost is
+ * involved; costs have their own editors (Avg. cost, FOB).
  */
 function QuantityDialog({
   open,
@@ -1515,7 +1544,6 @@ function QuantityDialog({
   const [aside, setAside] = useState<"release" | "write-off">("release");
   const [quantity, setQuantity] = useState(1);
   const [reason, setReason] = useState(reasons[0] ?? "Correction");
-  const [day, setDay] = useState("");
   const busy = useRef(false);
   // One id per opening: a retried request is recorded once.
   const requestId = useRef("");
@@ -1525,7 +1553,6 @@ function QuantityDialog({
     setMode("add");
     setQuantity(1);
     setReason(reasons[0] ?? "Correction");
-    setDay(todayYmd());
     requestId.current = crypto.randomUUID();
   }, [open, reasons]);
 
@@ -1543,7 +1570,7 @@ function QuantityDialog({
         body: JSON.stringify(
           mode === "aside"
             ? { productId: product.id, mode: aside, quantity, reason }
-            : { productId: product.id, mode, quantity, reason, requestId: requestId.current, occurredAt: day === todayYmd() ? undefined : day },
+            : { productId: product.id, mode, quantity, reason, requestId: requestId.current },
         ),
       });
       if (!res.ok) {
@@ -1614,25 +1641,17 @@ function QuantityDialog({
               </SelectContent>
             </Select>
           </div>
-          {mode !== "aside" && (
-            <div className="grid w-40 gap-1">
-              <Label htmlFor="adjust-day">Date</Label>
-              <Input id="adjust-day" type="date" className="tabular-nums" value={day} max={todayYmd()} onChange={(e) => setDay(e.target.value)} />
-            </div>
-          )}
         </div>
 
         <div className="grid grid-cols-2 gap-4 rounded-lg border border-border bg-sunken p-4">
           <Stat label="Quantity now" value={`${formatQty(product.physicalQty)}un`} />
           <Stat label="After" value={`${formatQty(newQty)}un`} />
         </div>
-        <p className="-mt-2 text-xs text-gray-500">
-          {mode === "aside"
-            ? aside === "release"
-              ? "The units become available again; the quantity on hand stays."
-              : "The units leave stock."
-            : "Only the quantity changes. No price or cost is recorded."}
-        </p>
+        {mode === "aside" && (
+          <p className="-mt-2 text-xs text-gray-500">
+            {aside === "release" ? "The units become available again; the quantity on hand stays." : "The units leave stock."}
+          </p>
+        )}
 
         <DialogFooter>
           <Button variant="secondary" onClick={onClose}>
@@ -1647,48 +1666,139 @@ function QuantityDialog({
   );
 }
 
-function todayYmd() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function entryMeta(entry: { metadata: string | null }): Record<string, unknown> {
+  try {
+    return entry.metadata ? (JSON.parse(entry.metadata) as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Corrections typed in here (and the initial stock): their units and date change from the log. Mirrors the server. */
+function manualLogEntry(entry: LogEntry) {
+  const meta = entryMeta(entry);
+  const kind = ["ADJUSTMENT", "RETURNED", "CORRECTION"].includes(entry.type) || (entry.type === "RECEIVED" && entry.reference === "INITIAL");
+  return kind && !meta.orderId && !meta.importationId && !meta.setAside && !meta.removed && !meta.editOf && !meta.reversalOf;
+}
+
+/** Opens the invoice or importation an entry came from, in its own tab. */
+export const OPEN_SOURCE = "chaleur:open-source";
+export type SourceTarget = { kind: "invoice" | "importation"; id: string };
+
+function openSource(target: SourceTarget) {
+  window.dispatchEvent(new CustomEvent<SourceTarget>(OPEN_SOURCE, { detail: target }));
+}
+
+const CHANGE_LABELS: Record<string, string> = { occurredAt: "date", quantity: "units", notes: "note" };
+
+function changeValue(field: string, value: unknown) {
+  if (value == null || value === "") return "—";
+  return field === "occurredAt" ? formatDateTime(String(value)) : String(value);
+}
+
+/** The trash at the end of a log row: a second click within 3 seconds removes the entry. */
+function RemoveEntryButton({ entry, onRemoved, onError }: { entry: LogEntry; onRemoved: () => void; onError: (message: string) => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!confirm) return;
+    const t = setTimeout(() => setConfirm(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirm]);
+
+  async function remove() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/adjustments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "remove-log", transactionId: entry.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return onError(data.error ?? "Couldn't remove the entry");
+      onRemoved();
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-label={confirm ? `Confirm removing the ${formatDateTime(entry.occurredAt)} entry` : `Remove the ${formatDateTime(entry.occurredAt)} entry`}
+      title={confirm ? "Click again to remove" : "Remove entry"}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (confirm) void remove();
+        else setConfirm(true);
+      }}
+      className={cn(
+        "flex h-7 items-center justify-center rounded-md px-1.5 text-xs transition-colors",
+        confirm ? "bg-danger-fill font-medium text-danger-text" : "text-gray-400 hover:text-danger-text",
+      )}
+    >
+      {confirm ? "Remove?" : <Trash2 className="size-3.5" />}
+    </button>
+  );
 }
 
 /**
- * One log entry: what it is, and what can be corrected. Anyone who can correct stock edits the
- * note. On a manual correction the main user also changes the date and quantity or removes it;
- * the balance follows through linked entries, and the entry keeps who, when, before, after, why.
+ * One log entry. The note is editable by anyone who can correct stock. The main user also
+ * corrects the units and date of manual corrections, and the date of a reservation (it moves no
+ * units). Units from an invoice or importation are corrected there: the dialog opens it. Every
+ * change is recorded automatically with who, when and the values before and after.
  */
-function LogEntryDialog({ entry, main, onClose, onSaved }: { entry: LogEntry; main: boolean; onClose: () => void; onSaved: () => void }) {
-  const meta = (() => {
-    try {
-      return entry.metadata ? (JSON.parse(entry.metadata) as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  })();
-  const manual =
-    ["ADJUSTMENT", "RETURNED", "CORRECTION"].includes(entry.type) &&
-    !meta.orderId && !meta.importationId && !meta.setAside && !meta.removed && !meta.editOf && !meta.reversalOf;
-  const stockEditable = manual && main;
+function LogEntryDialog({
+  entry,
+  main,
+  reservedUnits,
+  onClose,
+  onSaved,
+}: {
+  entry: LogEntry;
+  main: boolean;
+  /** For a reservation: the units its invoice holds now. */
+  reservedUnits?: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const meta = entryMeta(entry);
+  const manual = manualLogEntry(entry);
+  const reservation = entry.type === "RESERVED" && entry.quantity === 0;
+  const unitsEditable = manual && main;
+  const dateEditable = (manual || reservation) && main;
+  const source: SourceTarget | null =
+    typeof meta.orderId === "string"
+      ? { kind: "invoice", id: meta.orderId }
+      : typeof meta.importationId === "string"
+        ? { kind: "importation", id: meta.importationId }
+        : null;
   const day = entry.occurredAt.slice(0, 10);
   const [notes, setNotes] = useState(entry.notes ?? "");
   const [date, setDate] = useState(day);
   const [qty, setQty] = useState(String(Math.abs(entry.quantity)));
-  const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const edits = Array.isArray(meta.edits) ? (meta.edits as Array<{ at: string; by: string; reason: string; changes: Array<{ field: string; before: unknown; after: unknown }> }>) : [];
-  const removed = meta.removed as { at: string; by: string; reason: string } | undefined;
+  const edits = Array.isArray(meta.edits) ? (meta.edits as Array<{ at: string; by: string; changes: Array<{ field: string; before: unknown; after: unknown }> }>) : [];
+  const removed = meta.removed as { at: string; by: string } | undefined;
 
-  async function send(body: object) {
+  async function save() {
+    const body: Record<string, unknown> = { mode: "edit-log", transactionId: entry.id };
+    if (notes !== (entry.notes ?? "")) body.notes = notes;
+    if (dateEditable && date !== day) body.occurredAt = date;
+    const units = Number(qty);
+    if (unitsEditable && units !== Math.abs(entry.quantity)) body.quantity = Math.sign(entry.quantity || 1) * units;
+    if (Object.keys(body).length === 2) return onClose();
     if (busy) return;
-    if (!reason.trim()) return setError("Write why it changes");
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/adjustments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transactionId: entry.id, reason, ...body }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return setError(data.error ?? "Couldn't save the entry");
@@ -1698,79 +1808,84 @@ function LogEntryDialog({ entry, main, onClose, onSaved }: { entry: LogEntry; ma
     }
   }
 
-  function save() {
-    const body: Record<string, unknown> = { mode: "edit-log" };
-    if (notes !== (entry.notes ?? "")) body.notes = notes;
-    if (stockEditable && date !== day) body.occurredAt = date;
-    const units = Number(qty);
-    if (stockEditable && units !== Math.abs(entry.quantity)) body.quantity = Math.sign(entry.quantity) * units;
-    if (Object.keys(body).length === 1) return onClose();
-    void send(body);
-  }
-
   return (
     <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
       <DialogContent showCloseButton={false} className="gap-4 sm:max-w-[520px]">
         <DialogTitle>
           {movementReason(entry)} · {formatDateTime(entry.occurredAt)}
         </DialogTitle>
-        <p className="-mt-2 text-xs text-gray-500">
-          {entry.userName}
-          {entry.reference ? ` · ${entry.reference}` : ""}
-          {removed ? ` · removed by ${removed.by}: ${removed.reason}` : ""}
-          {!manual && !removed ? " · from an invoice, importation or cost change; correct it there" : ""}
-        </p>
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid w-28 gap-1">
-            <Label htmlFor="log-qty">{entry.quantity < 0 ? "Units out" : "Units in"}</Label>
-            <Input id="log-qty" inputMode="numeric" className="tabular-nums" disabled={!stockEditable} value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
+            <Label htmlFor="log-qty">{reservation ? "Units" : entry.quantity < 0 ? "Units out" : "Units in"}</Label>
+            {unitsEditable ? (
+              <Input id="log-qty" inputMode="numeric" className="tabular-nums" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.]/g, ""))} />
+            ) : (
+              <span id="log-qty" className="flex h-9 items-center font-mono text-sm tabular-nums text-gray-900">
+                {entry.quantity ? formatQty(Math.abs(entry.quantity)) : reservation && reservedUnits ? `${formatQty(reservedUnits)} reserved` : "—"}
+              </span>
+            )}
           </div>
           <div className="grid w-40 gap-1">
             <Label htmlFor="log-date">Date</Label>
-            <Input id="log-date" type="date" disabled={!stockEditable} value={date} onChange={(e) => setDate(e.target.value)} />
+            {dateEditable ? (
+              <Input id="log-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            ) : (
+              <span id="log-date" className="flex h-9 items-center font-mono text-sm tabular-nums text-gray-900">
+                {formatDateTime(entry.occurredAt)}
+              </span>
+            )}
           </div>
-          {!isQuantityOnly(entry) && (
+          {!isQuantityOnly(entry) && entry.type !== "RESERVED" && (
             <div className="grid gap-1">
               <Label>Price</Label>
               <span className="flex h-9 items-center font-mono text-sm tabular-nums">{formatMoney(entry.unitCost)}</span>
             </div>
           )}
         </div>
+        {source && !removed && (
+          <div className="flex items-center justify-between gap-3 rounded-md bg-sunken px-3 py-2 text-xs text-gray-600">
+            <span>
+              {reservation ? "Reserved units follow the invoice." : `Units${dateEditable ? "" : " and date"} come from the ${source.kind}.`} Correct them there.
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                onClose();
+                openSource(source);
+              }}
+            >
+              Open {source.kind}
+              {entry.reference ? ` ${entry.reference}` : ""}
+            </Button>
+          </div>
+        )}
+        {!source && !manual && !removed && entry.type === "COST_ADJUSTMENT" && (
+          <p className="text-xs text-gray-600">Cost changes are corrected with Avg. cost or FOB on the Info tab.</p>
+        )}
+        {manual && !main && <p className="text-xs text-gray-600">Only the main user can change the units or date.</p>}
         <div className="grid gap-1">
           <Label htmlFor="log-notes">Note</Label>
-          <Input id="log-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <Input id="log-notes" value={notes} disabled={Boolean(removed)} onChange={(e) => setNotes(e.target.value)} />
         </div>
-        <div className="grid gap-1">
-          <Label htmlFor="log-reason">Reason for the change</Label>
-          <Input id="log-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
-        </div>
-        {manual && !main && <p className="text-xs text-gray-500">Only the main user can change the units or date, or remove it.</p>}
-        {edits.length > 0 && (
+        {(edits.length > 0 || removed) && (
           <ul className="max-h-24 overflow-y-auto rounded-md bg-sunken px-3 py-2 text-xs text-gray-600" aria-label="Changes">
             {edits.map((edit, i) => (
               <li key={i}>
-                {formatDateTime(edit.at)} · {edit.by} · {edit.changes.map((c) => `${c.field}: ${String(c.before ?? "—")} → ${String(c.after ?? "—")}`).join(", ")} · {edit.reason}
+                {formatDateTime(edit.at)} · {edit.by} · {edit.changes.map((c) => `${CHANGE_LABELS[c.field] ?? c.field}: ${changeValue(c.field, c.before)} → ${changeValue(c.field, c.after)}`).join(", ")}
               </li>
             ))}
+            {removed && <li>{formatDateTime(removed.at)} · {removed.by} · removed from the balance</li>}
           </ul>
         )}
         {error && <p className="text-xs text-danger-text">{error}</p>}
-        <DialogFooter className="sm:justify-between">
-          {stockEditable ? (
-            <Button variant="secondary" className="text-danger-text" disabled={busy} onClick={() => void send({ mode: "remove-log" })}>
-              Remove entry
-            </Button>
-          ) : (
-            <span />
-          )}
-          <div className="flex gap-2">
-            <Button variant="secondary" disabled={busy} onClick={onClose}>
-              Cancel
-            </Button>
-            <Button disabled={busy || Boolean(removed)} onClick={save}>
-              Save
-            </Button>
-          </div>
+        <DialogFooter>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={busy || Boolean(removed)} onClick={() => void save()}>
+            Save
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1783,20 +1898,18 @@ const COST_EDITORS = {
     label: "Average cost",
     mode: "cost",
     field: "avgCost",
-    note: "Only the average cost changes, and the stock value with it. Quantities, FOB and CIF stay as they are.",
   },
   fob: {
     title: "Correct FOB cost",
     label: "FOB",
     mode: "fob",
     field: "fobCost",
-    note: "Only the FOB cost changes. Average cost, CIF and quantities stay as they are.",
   },
 } as const;
 
 /**
- * Corrects one cost of a product: its average cost or its FOB, each in its own dialog. The
- * value before and after and the reason are logged; quantities never change here.
+ * Corrects one cost of a product: its average cost or its FOB, each in its own dialog. Who, when
+ * and the value before and after are logged; quantities never change here.
  */
 export function CostDialog({
   kind,
@@ -1812,7 +1925,6 @@ export function CostDialog({
   const editor = COST_EDITORS[kind];
   const current = product[editor.field];
   const [value, setValue] = useState(current.toFixed(2));
-  const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const next = readAmount(value);
@@ -1820,14 +1932,13 @@ export function CostDialog({
   async function save() {
     if (busy) return;
     if (next === null || next < 0) return setError("Type a cost, like 12.50");
-    if (!reason.trim()) return setError("Write why it changes");
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/adjustments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId: product.id, mode: editor.mode, [editor.field]: next, reason }),
+        body: JSON.stringify({ productId: product.id, mode: editor.mode, [editor.field]: next }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return setError(data.error ?? "Couldn't save the cost");
@@ -1842,7 +1953,6 @@ export function CostDialog({
     <Dialog open onOpenChange={(v) => !v && !busy && onClose()}>
       <DialogContent showCloseButton={false} className="gap-5">
         <DialogTitle>{editor.title}</DialogTitle>
-        <p className="-mt-3 text-sm text-gray-600">{product.name}</p>
         <div className="flex flex-wrap items-end gap-3">
           <div className="grid w-32 gap-1">
             <Label htmlFor="cost-value">New {editor.label.toLowerCase()}</Label>
@@ -1856,23 +1966,18 @@ export function CostDialog({
               onBlur={() => next !== null && setValue(next.toFixed(2))}
             />
           </div>
-          <div className="grid min-w-45 flex-1 gap-1">
-            <Label htmlFor="cost-reason">Reason</Label>
-            <Input id="cost-reason" value={reason} placeholder="Why it changes" onChange={(e) => setReason(e.target.value)} />
-          </div>
         </div>
         <div className="grid grid-cols-2 gap-4 rounded-lg border border-border bg-sunken p-4">
           <Stat label={`Current ${editor.label}`} value={formatMoney(current)} />
           <Stat label={`New ${editor.label}`} value={next === null ? "—" : formatMoney(next)} />
         </div>
-        <p className="-mt-2 text-xs text-gray-500">{editor.note}</p>
         {error && <p className="text-xs text-danger-text">{error}</p>}
         <DialogFooter>
           <Button variant="secondary" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={busy || next === null} onClick={() => void save()}>
-            Save {editor.label.toLowerCase()}
+            Save
           </Button>
         </DialogFooter>
       </DialogContent>

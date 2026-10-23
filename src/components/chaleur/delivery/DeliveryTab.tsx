@@ -51,7 +51,20 @@ function matches(order: Order, q: string) {
     .includes(q);
 }
 
-export function DeliveryTab({ canEdit, prefs: shellPrefs, refreshKey }: { canEdit: boolean; prefs: Prefs | null; refreshKey: number }) {
+export function DeliveryTab({
+  canEdit,
+  prefs: shellPrefs,
+  refreshKey,
+  openId: requested,
+  onOpened,
+}: {
+  canEdit: boolean;
+  prefs: Prefs | null;
+  refreshKey: number;
+  /** An invoice to open, asked for from elsewhere (a product's log). */
+  openId?: string | null;
+  onOpened?: () => void;
+}) {
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -61,6 +74,11 @@ export function DeliveryTab({ canEdit, prefs: shellPrefs, refreshKey }: { canEdi
   const [calendar, setCalendar] = useState<{ mode: CalendarMode; anchor: string }>(() => ({ mode: "month", anchor: todayDay() }));
   const [drawer, setDrawer] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!requested) return;
+    setOpenId(requested);
+    onOpened?.();
+  }, [requested, onOpened]);
   const [choose, setChoose] = useState<{ order: Order; delivery: Delivery } | null>(null);
   const [notice, setNotice] = useState("");
   const [syncing, setSyncing] = useState(false);

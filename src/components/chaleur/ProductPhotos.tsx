@@ -572,15 +572,7 @@ export function PhotoGallery({
   const drop = useDrop(onFiles);
   return (
     <div {...drop.bind} className="relative flex min-h-0 flex-1 flex-col gap-4 pb-3">
-      <div className="flex h-8 shrink-0 items-center justify-between">
-        <div className="text-sm text-gray-600">
-          {photos.length ? `${photos.length} photo${photos.length === 1 ? "" : "s"}` : "No photos yet"}
-        </div>
-        <Button variant="secondary" size="sm" onClick={onPick}>
-          <ImagePlus />
-          Add photos
-        </Button>
-      </div>
+      <h3 className="shrink-0 text-sm font-medium text-gray-900">Media</h3>
       <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
         <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-x-3 gap-y-4">
           {photos.map((photo, i) => (
