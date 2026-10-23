@@ -265,13 +265,28 @@ model CatalogText {
   brand     String?
   category  String?
   family    String?
+  sectionId String? @unique
   /// The editor's document (ProseMirror JSON), cleaned to headings, paragraphs, lists, bold and italic
   content   String
   updatedAt DateTime @updatedAt
   tag       Tag?     @relation(fields: [tagId], references: [id], onDelete: Cascade)
   product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  section   CatalogSection? @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   @@index([brand, category, family])
+}
+
+/// A stable owner for a brand/category or brand/category/family catalog section.
+model CatalogSection {
+  id       String @id @default(cuid())
+  scope    String
+  brand    String
+  category String
+  family   String @default("")
+  text     CatalogText?
+  links    MediaLink[]
+
+  @@unique([scope, brand, category, family])
 }
 
 /** One file, many connections. A product sees a file when any connection matches it. */
@@ -283,15 +298,18 @@ model MediaLink {
   brand     String?
   category  String?
   family    String?
+  sectionId String?
   /// "cover": the cover of the brand, category, family or tag it links to
   role      String?
   photo     ProductPhoto @relation(fields: [photoId], references: [id], onDelete: Cascade)
   product   Product?     @relation(fields: [productId], references: [id], onDelete: Cascade)
   tag       Tag?         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  section   CatalogSection? @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   @@index([photoId])
   @@index([productId])
   @@index([tagId])
+  @@index([sectionId])
 }
 
 model InventoryTransaction {

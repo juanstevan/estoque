@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 
 type Scope = "brand" | "category" | "family" | "tag" | "product";
 type Kind = "photo" | "pdf" | "document" | "video" | "other";
-type Connection = { id: string; scope: Scope; key: string; name: string; context?: string; label: string; cover?: boolean };
+type Connection = { id: string; scope: Scope; key: string; name: string; context?: string; label: string; cover?: boolean; sectionId?: string };
 type Visibility = "internal" | "partners" | "public";
 export type FileRow = {
   id: string;
@@ -46,6 +46,7 @@ type Tag = { id: string; name: string; color: string };
 /** Where a file gets linked: the same scopes the Files view connects to. */
 export type LinkTarget = {
   scope: Scope;
+  sectionId?: string;
   productId?: string;
   tagId?: string;
   brand?: string;
@@ -584,6 +585,7 @@ export function MediaLibrary({
               kind: file.type.startsWith("image/") ? "photo" : "file",
               contentType: file.type || "application/octet-stream",
               size: file.size,
+              ...(target?.scope === "category" || target?.scope === "family" ? { visibility: "internal" } : {}),
             },
           }),
         });
@@ -601,6 +603,7 @@ export function MediaLibrary({
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed");
+      if (target) throw e;
     }
   }
 
@@ -1093,8 +1096,7 @@ export function MediaLibrary({
                 <FileNameField key={openFile.id} file={openFile} onRename={(name) => void renameFile(openFile.id, name)} />
               </DialogHeader>
               <div className="grid gap-4">
-                {/* Photos are always public; other files choose who sees them. */}
-                {fileKind(openFile) !== "photo" && (
+                {/* Files and photos keep their own audience. Section uploads begin internal. */}
                 <div className="grid gap-1.5">
                   <div className="flex gap-1" role="radiogroup" aria-label="Who can see it">
                     {(Object.keys(VISIBILITY) as Visibility[]).map((value) => (
@@ -1112,7 +1114,6 @@ export function MediaLibrary({
                   </div>
                   <p className="text-xs text-gray-500">{VISIBILITY[openFile.visibility].hint}</p>
                 </div>
-                )}
                 {fileKind(openFile) === "photo" ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={openFile.url} alt="" className="max-h-64 w-full rounded-md object-contain" />

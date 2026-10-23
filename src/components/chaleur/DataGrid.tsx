@@ -30,6 +30,7 @@ export type GridCol<T> = {
   filterValue?: (row: T) => string;
   sortValue?: (row: T) => string | number;
   sortCompare?: (a: T, b: T, dir: "asc" | "desc") => number;
+  sortLabels?: { asc: string; desc: string };
   /** Decorative column (row actions) — no header menu. */
   plain?: boolean;
   width?: string;
@@ -272,7 +273,8 @@ export function DataGrid<T extends object>({
                     style={col.width ? { width: col.width } : undefined}
                     className={cn(
                       "h-9 border-b border-border bg-sunken align-middle text-xs font-medium text-gray-600",
-                      col.align === "center" ? "text-center" : "text-left",
+                      // Numbers sit on the right, so their header does too.
+                      col.align === "center" ? "text-center" : col.numeric ? "text-right" : "text-left",
                       colIndex === 0 ? "px-4" : "px-3",
                       scrolled && "shadow-xs",
                     )}
@@ -310,14 +312,14 @@ export function DataGrid<T extends object>({
                               onClick={() => setSort({ key, dir: "asc" })}
                             >
                               <ArrowUp className="size-3.5 text-gray-500" />
-                              {col.numeric ? "Low to high" : "A to Z"}
+                              {col.sortLabels?.asc ?? (col.numeric ? "Low to high" : "A to Z")}
                             </MenuAction>
                             <MenuAction
                               active={isSorted && sort.dir === "desc"}
                               onClick={() => setSort({ key, dir: "desc" })}
                             >
                               <ArrowDown className="size-3.5 text-gray-500" />
-                              {col.numeric ? "High to low" : "Z to A"}
+                              {col.sortLabels?.desc ?? (col.numeric ? "High to low" : "Z to A")}
                             </MenuAction>
                           </div>
                           {col.numeric && (

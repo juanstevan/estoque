@@ -926,7 +926,7 @@ function Matching({
         onRowClick={(row) => setCard(row.id)}
         empty={search ? `No matches for "${search}"` : "No products"}
         columns={[
-          { key: "code", label: "ID", mono: true, width: "72px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir) },
+          { key: "code", label: "ID", mono: true, width: "72px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir), sortLabels: { asc: "Lowest ID first", desc: "Highest ID first" } },
           {
             key: "name",
             label: "Name",

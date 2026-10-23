@@ -2,6 +2,7 @@ import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny } from "@/lib/guard";
 import { assignProduct, catalogLink, setCatalogField, setShared, unassignProduct } from "@/lib/catalog/service";
 import { getCatalogText, setCatalogText } from "@/lib/catalog/text";
+import { resolveCatalogSection } from "@/lib/catalog/section";
 
 /** A description: ?productId= (its Tag's when it has one), ?tagId=, or ?brand=&category=[&family=]. */
 export async function GET(req: Request) {
@@ -10,7 +11,7 @@ export async function GET(req: Request) {
   try {
     const q = new URL(req.url).searchParams;
     return jsonOk(
-      await getCatalogText({ productId: q.get("productId"), tagId: q.get("tagId"), brand: q.get("brand"), category: q.get("category"), family: q.get("family") }),
+      await getCatalogText({ productId: q.get("productId"), tagId: q.get("tagId"), sectionId: q.get("sectionId"), brand: q.get("brand"), category: q.get("category"), family: q.get("family") }),
     );
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : "Couldn't load the description");
@@ -23,7 +24,9 @@ export async function POST(req: Request) {
   if (denied) return denied;
   try {
     const body = await readJson<{
-      action?: "field" | "shared" | "assign" | "unassign" | "link" | "text";
+      action?: "field" | "shared" | "assign" | "unassign" | "link" | "text" | "section";
+      sectionId?: string | null;
+      sampleProductId?: string | null;
       tagId?: string | null;
       productId?: string | null;
       productIds?: string[];
@@ -36,6 +39,10 @@ export async function POST(req: Request) {
       family?: string | null;
       content?: unknown;
     }>(req);
+    if (body.action === "section") {
+      const section = await resolveCatalogSection(body);
+      return jsonOk({ id: section.id });
+    }
     if (body.action === "text") return jsonOk(await setCatalogText(body, body.content));
     if (body.action === "field") {
       await setCatalogField({ tagId: body.tagId, productId: body.productId }, body.field ?? "", body.visibility ?? "");

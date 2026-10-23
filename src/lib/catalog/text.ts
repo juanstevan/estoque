@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/db";
 import { cleanDoc, readDoc, type RichNode } from "./rich-text";
+import { resolveCatalogSection } from "./section";
 
 /** Whose description: a Tag, a product (its Tag's when it has one), or a category / family of a brand. */
 export type TextOwner = {
   tagId?: string | null;
   productId?: string | null;
+  sectionId?: string | null;
   brand?: string | null;
   category?: string | null;
   family?: string | null;
@@ -33,13 +35,18 @@ async function resolve(owner: TextOwner) {
     const info: TextOwnerInfo = { kind: "tag", tagId, name: tag.name, products: tag._count.products };
     return { info, where: { tagId }, data: { tagId } };
   }
-  const brand = owner.brand?.trim();
-  const category = owner.category?.trim();
-  if (brand && category) {
-    const family = owner.family?.trim() || null;
-    const info: TextOwnerInfo = { kind: family ? "family" : "category", brand, category, family };
-    const scope = { brand, category, family, tagId: null, productId: null };
-    return { info, where: scope, data: scope };
+  if (owner.sectionId || (owner.brand?.trim() && owner.category?.trim())) {
+    const section = owner.sectionId
+      ? await prisma.catalogSection.findUnique({ where: { id: owner.sectionId } })
+      : await resolveCatalogSection(owner);
+    if (!section) throw new Error("Catalog section not found");
+    const family = section.family || null;
+    const info: TextOwnerInfo = { kind: family ? "family" : "category", brand: section.brand, category: section.category, family };
+    return {
+      info,
+      where: { sectionId: section.id },
+      data: { sectionId: section.id, brand: section.brand, category: section.category, family },
+    };
   }
   throw new Error("Choose a product, a Tag, or a category");
 }

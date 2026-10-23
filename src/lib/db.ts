@@ -16,6 +16,13 @@ function createPrismaClient() {
   });
 }
 
+// `prisma generate` can run while next dev is open. An instance built from the old
+// generated client lacks delegates for newly added models even after hot reload.
+if (globalForPrisma.prisma && !globalForPrisma.prisma.catalogSection) {
+  void globalForPrisma.prisma.$disconnect().catch(() => {});
+  globalForPrisma.prisma = undefined;
+}
+
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== "production") {

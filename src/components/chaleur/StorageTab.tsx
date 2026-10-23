@@ -88,7 +88,7 @@ function supplierNames(raw: string | null) {
 }
 
 const ALL_COLUMNS: GridCol<ProductRow>[] = [
-  { key: "code", label: "ID", mono: true, width: "96px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir) },
+  { key: "code", label: "ID", mono: true, width: "96px", sortCompare: (a, b, dir) => compareProductCodes(a.code, b.code, dir), sortLabels: { asc: "Lowest ID first", desc: "Highest ID first" } },
   {
     key: "name",
     label: "Name",

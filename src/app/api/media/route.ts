@@ -27,8 +27,10 @@ export async function POST(req: Request) {
         kind: string;
         contentType: string;
         size: number;
+        visibility?: string;
       };
       photoId?: string;
+      sectionId?: string;
       scope?: "product" | "tag" | "family" | "category" | "brand";
       productId?: string | null;
       tagId?: string | null;

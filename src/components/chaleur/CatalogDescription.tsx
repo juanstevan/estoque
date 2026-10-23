@@ -23,7 +23,7 @@ const EXTENSIONS = [
   }),
 ];
 
-export type DescriptionOwner = { productId?: string; tagId?: string };
+export type DescriptionOwner = { productId?: string; tagId?: string; sectionId?: string; brand?: string; category?: string; family?: string };
 
 /** Saves a description to its owner (the Tag's when the product has one). */
 export async function saveDescription(owner: DescriptionOwner, content: unknown) {
@@ -57,17 +57,25 @@ export function CatalogDescription({
   className,
   aside,
   onChange,
+  hideTitle = false,
 }: {
   owner: DescriptionOwner;
   className?: string;
   aside?: React.ReactNode;
   onChange?: (content: unknown) => void;
+  hideTitle?: boolean;
 }) {
   const [info, setInfo] = useState<TextOwnerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const saved = useRef<RichNode | null>(null);
   const dirty = useRef(false);
-  const query = owner.tagId ? `tagId=${encodeURIComponent(owner.tagId)}` : `productId=${encodeURIComponent(owner.productId ?? "")}`;
+  const query = owner.tagId
+    ? `tagId=${encodeURIComponent(owner.tagId)}`
+    : owner.productId
+      ? `productId=${encodeURIComponent(owner.productId)}`
+      : owner.sectionId
+        ? `sectionId=${encodeURIComponent(owner.sectionId)}`
+      : new URLSearchParams({ brand: owner.brand ?? "", category: owner.category ?? "", ...(owner.family ? { family: owner.family } : {}) }).toString();
 
   const editor = useEditor({
     extensions: EXTENSIONS,
@@ -121,11 +129,13 @@ export function CatalogDescription({
   const note = info ? sharedNote(info) : null;
   return (
     <section aria-label="Description" className={cn("flex min-h-0 flex-col gap-2", className)}>
-      <div className="flex min-h-7 items-center gap-2">
-        <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Description</p>
-        {note && <p className="min-w-0 truncate text-2xs text-gray-500">· {note}</p>}
-        {aside && <div className="ml-auto flex shrink-0 items-center gap-1">{aside}</div>}
-      </div>
+      {(!hideTitle || note || aside) && (
+        <div className="flex min-h-7 items-center gap-2">
+          {!hideTitle && <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Description</p>}
+          {note && <p className="min-w-0 truncate text-2xs text-gray-500">· {note}</p>}
+          {aside && <div className="ml-auto flex shrink-0 items-center gap-1">{aside}</div>}
+        </div>
+      )}
       {error && <p className="text-xs text-danger-text">{error}</p>}
       <div
         className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-gray-200 bg-surface focus-within:border-gray-400"
@@ -143,7 +153,7 @@ export function CatalogDescription({
         {editor && info && <Toolbar editor={editor} />}
         <div className="no-scrollbar relative min-h-24 flex-1 overflow-y-auto select-text">
           {!info && !error && <p className="absolute top-2 left-3 text-sm text-gray-400">Loading…</p>}
-          {info && editor && <EmptyHint editor={editor} />}
+          {info && editor && <EmptyHint editor={editor} group={info.kind === "category" || info.kind === "family"} />}
           <EditorContent editor={editor} className="h-full" />
         </div>
       </div>
@@ -151,10 +161,10 @@ export function CatalogDescription({
   );
 }
 
-function EmptyHint({ editor }: { editor: Editor }) {
+function EmptyHint({ editor, group }: { editor: Editor; group: boolean }) {
   const empty = useEditorState({ editor, selector: ({ editor: e }) => e.isEmpty });
   if (!empty) return null;
-  return <p className="pointer-events-none absolute top-2 left-3 text-sm text-gray-400">Write what builders should know about this model…</p>;
+  return <p className="pointer-events-none absolute top-2 left-3 text-sm text-gray-400">{group ? "Write or paste the description for this section…" : "Write what builders should know about this model…"}</p>;
 }
 
 function Toolbar({ editor }: { editor: Editor }) {

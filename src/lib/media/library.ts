@@ -35,6 +35,7 @@ function linkConnection(link: {
   family: string | null;
   category: string | null;
   brand: string | null;
+  sectionId: string | null;
   tag?: { id?: string; name: string } | null;
   product?: { name: string } | null;
 }) {
@@ -49,6 +50,7 @@ function linkConnection(link: {
   if (link.family && link.brand && link.category) {
     return {
       scope: "family" as const,
+      ...(link.sectionId ? { sectionId: link.sectionId } : {}),
       key: `${link.brand}\0${link.category}\0${link.family}`,
       name: link.family,
       context: `${link.brand} · ${link.category}`,
@@ -59,6 +61,7 @@ function linkConnection(link: {
     // A category link with a brand belongs to that brand's chapter; without one it applies in every brand.
     return {
       scope: "category" as const,
+      ...(link.sectionId ? { sectionId: link.sectionId } : {}),
       key: link.brand ? `${link.brand}\0${link.category}` : link.category,
       name: link.category,
       ...(link.brand ? { context: link.brand } : {}),
@@ -206,13 +209,13 @@ function downloadName(
 
 export { VISIBILITY, type Visibility } from "@/lib/catalog/fields";
 
-/** Internal: only the app. Partners: partner links. Public: catalog and share links. Photos are always public. */
+/** Internal: only the app. Partners: partner links. Public: catalog and share links. */
 export async function setVisibility(ids: string[], visibility: string) {
   if (!VISIBILITY.includes(visibility as Visibility)) throw new Error("Choose Internal, Partners or Public");
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return;
   await prisma.productPhoto.updateMany({
-    where: { id: { in: unique }, OR: [{ kind: "file" }, { NOT: { contentType: { startsWith: "image/" } } }] },
+    where: { id: { in: unique } },
     data: { visibility },
   });
 }
@@ -256,7 +259,7 @@ export async function listLibrary() {
   return {
     tags,
     files: photos.map((photo) => {
-      const connections: { id: string; scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string; label: string; cover?: boolean }[] = [];
+      const connections: { id: string; scope: "brand" | "category" | "family" | "tag" | "product"; key: string; name: string; context?: string; label: string; cover?: boolean; sectionId?: string }[] = [];
       if (photo.product) {
         connections.push({
           id: `owner:${photo.id}`,
@@ -296,7 +299,9 @@ export async function addLibraryFile(file: {
   kind: string;
   contentType: string;
   size: number;
+  visibility?: string;
 }) {
+  if (file.visibility && !VISIBILITY.includes(file.visibility as Visibility)) throw new Error("Choose Internal, Partners or Public");
   const existing = await prisma.productPhoto.findFirst({ where: { url: file.url } });
   if (existing) return existing;
   const kind = file.kind === "file" ? "file" : "photo";
@@ -309,8 +314,8 @@ export async function addLibraryFile(file: {
       kind,
       contentType,
       size: Math.round(file.size),
-      // Photos are always public. New files go last until someone arranges them.
-      ...(kind === "photo" && contentType.startsWith("image/") ? { visibility: "public" } : {}),
+      // Category and family uploads begin internal; existing model photos keep their current default.
+      ...(file.visibility ? { visibility: file.visibility } : kind === "photo" && contentType.startsWith("image/") ? { visibility: "public" } : {}),
       position: Date.now(),
     },
   });
@@ -319,19 +324,23 @@ export async function addLibraryFile(file: {
 export async function addLink(input: {
   photoId: string;
   scope: "product" | "tag" | "family" | "category" | "brand";
+  sectionId?: string | null;
   productId?: string | null;
   tagId?: string | null;
   brand?: string | null;
   category?: string | null;
   family?: string | null;
 }) {
+  const section = input.sectionId ? await prisma.catalogSection.findUnique({ where: { id: input.sectionId } }) : null;
+  if (input.sectionId && (!section || section.scope !== input.scope)) throw new Error("Catalog section not found");
   const data = {
     photoId: input.photoId,
     productId: input.scope === "product" ? input.productId || null : null,
     tagId: input.scope === "tag" ? input.tagId || null : null,
-    brand: input.scope === "brand" || input.scope === "family" || input.scope === "category" ? input.brand || null : null,
-    category: input.scope === "category" || input.scope === "family" ? input.category || null : null,
-    family: input.scope === "family" ? input.family || null : null,
+    sectionId: section?.id ?? null,
+    brand: section?.brand ?? (input.scope === "brand" || input.scope === "family" || input.scope === "category" ? input.brand || null : null),
+    category: section?.category ?? (input.scope === "category" || input.scope === "family" ? input.category || null : null),
+    family: section?.family || (input.scope === "family" ? input.family || null : null),
   };
   if (!data.productId && !data.tagId && !data.brand && !data.category && !data.family) {
     throw new Error("Choose what this file connects to");
@@ -402,6 +411,8 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
     if (scope === "brand") {
       await tx.product.updateMany({ where: { type: key }, data: { type: name } });
       await tx.mediaLink.updateMany({ where: { brand: key }, data: { brand: name } });
+      await tx.catalogText.updateMany({ where: { brand: key, tagId: null, productId: null }, data: { brand: name } });
+      await tx.catalogSection.updateMany({ where: { brand: key }, data: { brand: name } });
       return;
     }
     if (scope === "category") {
@@ -415,6 +426,11 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
         where: inBrand ? { brand: inBrand, category: categoryName } : { category: key },
         data: { category: name },
       });
+      await tx.catalogText.updateMany({
+        where: { ...(inBrand ? { brand: inBrand } : {}), category: categoryName, tagId: null, productId: null },
+        data: { category: name },
+      });
+      await tx.catalogSection.updateMany({ where: { ...(inBrand ? { brand: inBrand } : {}), category: categoryName }, data: { category: name } });
       return;
     }
     const [brand, category, family] = key.split("\0");
@@ -429,6 +445,8 @@ export async function renameScope(scope: "tag" | "brand" | "category" | "family"
       where: { brand, category, family },
       data: { family: name },
     });
+    await tx.catalogText.updateMany({ where: { brand, category, family, tagId: null, productId: null }, data: { family: name } });
+    await tx.catalogSection.updateMany({ where: { scope: "family", brand, category, family }, data: { family: name } });
   }, { timeout: 30_000 });
 
   // Download names start with the brand and product name.

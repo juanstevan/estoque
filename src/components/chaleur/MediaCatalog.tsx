@@ -1,12 +1,13 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useRef, useState, useSyncExternalStore, ViewTransition } from "react";
-import { Check, ChevronLeft, ChevronRight, Image as ImageIcon, Share2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Image as ImageIcon, Plus, Share2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProductRow } from "@/components/chaleur/ProductDialog";
 import type { FileRow, LinkTarget } from "@/components/chaleur/MediaLibrary";
 import { ModelWindow } from "@/components/chaleur/MediaModel";
+import { MediaSectionDialog, type MediaSection } from "@/components/chaleur/MediaSectionDialog";
 import { buildTree, byName, type Brand, type Category, type Family, type Model } from "@/lib/catalog/tree";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +77,7 @@ export function MediaCatalog({
   const [familyKey, setFamilyKey] = useState<string | null>(null);
   const [modelKey, setModelKey] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [mediaSection, setMediaSection] = useState<MediaSection | null>(null);
 
   const brandKey = chosenBrand === undefined ? (tree[0]?.key ?? null) : chosenBrand;
   const brand = tree.find((b) => b.key === brandKey) ?? null;
@@ -211,6 +213,11 @@ export function MediaCatalog({
       onOpenProduct={onOpenProduct}
     />
   );
+  const sectionWindow = (
+    <MediaSectionDialog section={mediaSection} files={files} onClose={() => setMediaSection(null)} onUpload={onAddFiles} onChanged={onChanged} onOpenFile={onOpenFile} onError={onError} />
+  );
+  const editCategory = (b: B, c: C) => setMediaSection({ scope: "category", brand: b.key, category: c.key, sampleProductId: c.products[0]!.id });
+  const editFamily = (b: B, c: C, f: F) => setMediaSection({ scope: "family", brand: b.key, category: c.key, family: f.key, sampleProductId: f.products[0]!.id });
 
   if (!wide) {
     // A phone steps through plain lists: brands, categories, families, models.
@@ -237,10 +244,13 @@ export function MediaCatalog({
           onCategory={(key) => brand && setChosenCategory((current) => ({ ...current, [brand.key]: key }))}
           onFamily={(key) => setFamilyKey(key)}
           onModel={(m) => setModelKey(m.key)}
+          onEditCategory={(c) => brand && editCategory(brand, c)}
+          onEditFamily={(f) => brand && picked && editFamily(brand, picked, f)}
           familyImage={(f) => (brand && picked ? familyImage(brand.key, picked.key, f) : null)}
           modelImage={modelImage}
         />
         {modelWindow}
+        {sectionWindow}
       </>
     );
   }
@@ -284,9 +294,10 @@ export function MediaCatalog({
                             fill
                             onSave={(name) => rename("category", `${b.key}\0${category.key}`, name)}
                           />
-                          <Button variant="ghost" size="icon-sm" aria-label="Close category" onClick={closeCategory}>
-                            <X />
-                          </Button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            {b.key && category.key && <EditSectionButton label={`Edit ${category.name || "category"} media and description`} onClick={() => editCategory(b, category)} />}
+                            <Button variant="ghost" size="icon-sm" aria-label="Close category" onClick={closeCategory}><X /></Button>
+                          </div>
                         </div>
                         <div className="grid grid-flow-row-dense grid-cols-2 items-start gap-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
                           {category.families.map((f, i) => (
@@ -298,6 +309,7 @@ export function MediaCatalog({
                                 onOpen={() => openFamily(f.key)}
                                 onClose={closeFamily}
                                 onRename={b.key && category.key && f.key ? (name) => rename("family", `${b.key}\0${category.key}\0${f.key}`, name) : null}
+                                onEdit={b.key && category.key && f.key ? () => editFamily(b, category, f) : null}
                               >
                                 {f.models.map((m) => (
                                   <ModelCard key={m.key} model={m} image={modelImage(m)} fill onOpen={() => setModelKey(m.key)} />
@@ -324,7 +336,7 @@ export function MediaCatalog({
                   <div className="no-scrollbar grid min-h-0 flex-1 content-start gap-3 overflow-y-auto [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
                     {b.categories.map((c, i) => (
                       <ViewTransition key={c.key || "-"} name={`mc-cat-${i}`} share="mc-morph" update="mc-morph" default="none">
-                        <CategoryTile category={c} image={categoryImage(b.key, c)} onOpen={() => openCategory(c.key)} />
+                        <CategoryTile category={c} image={categoryImage(b.key, c)} onOpen={() => openCategory(c.key)} onEdit={b.key && c.key ? () => editCategory(b, c) : null} />
                       </ViewTransition>
                     ))}
                   </div>
@@ -335,6 +347,7 @@ export function MediaCatalog({
         );
       })}
       {modelWindow}
+      {sectionWindow}
     </div>
   );
 }
@@ -501,17 +514,19 @@ function BrandColumn({
   );
 }
 
-function CategoryTile({ category, image, onOpen }: { category: C; image: string | null; onOpen: () => void }) {
+function EditSectionButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return <button type="button" aria-label={label} title={label} onClick={onClick} className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-surface/90 text-gray-600 shadow-xs hover:bg-gray-150 hover:text-gray-900"><Plus className="size-4" /></button>;
+}
+
+function CategoryTile({ category, image, onOpen, onEdit }: { category: C; image: string | null; onOpen: () => void; onEdit: (() => void) | null }) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      data-mc-category={category.key}
-      className="flex flex-col gap-2 rounded-[12px] bg-surface p-2 text-left transition-colors hover:bg-gray-50"
-    >
-      <Thumb src={image} className="aspect-[4/3] w-full rounded-[8px]" />
-      <span className="block truncate px-1 pb-0.5 text-sm font-medium text-gray-900">{category.name || "No category"}</span>
-    </button>
+    <div className="relative rounded-[12px] bg-surface">
+      <button type="button" onClick={onOpen} data-mc-category={category.key} className="flex w-full flex-col gap-2 rounded-[12px] p-2 text-left transition-colors hover:bg-gray-50">
+        <Thumb src={image} className="aspect-[4/3] w-full rounded-[8px]" />
+        <span className="block truncate px-1 pb-0.5 text-sm font-medium text-gray-900">{category.name || "No category"}</span>
+      </button>
+      {onEdit && <div className="absolute top-3 right-3"><EditSectionButton label={`Edit ${category.name || "category"} media and description`} onClick={onEdit} /></div>}
+    </div>
   );
 }
 
@@ -552,6 +567,7 @@ function FamilyBlock({
   onOpen,
   onClose,
   onRename,
+  onEdit,
   children,
 }: {
   family: F;
@@ -560,30 +576,30 @@ function FamilyBlock({
   onOpen: () => void;
   onClose: () => void;
   onRename: ((name: string) => Promise<void>) | null;
+  onEdit: (() => void) | null;
   children: React.ReactNode;
 }) {
   const name = family.name || "No family";
   const single = family.models.length === 1;
   if (!open) {
     return (
-      <button
-        type="button"
-        onClick={onOpen}
-        data-mc-family={family.key}
-        className="flex flex-col gap-2 rounded-[12px] bg-sunken p-2 text-left transition-colors hover:bg-gray-150"
-      >
-        <Thumb src={image} className="aspect-[4/3] w-full rounded-[8px]" />
-        <span className="block truncate px-1 pb-0.5 text-sm font-medium text-gray-900">{name}</span>
-      </button>
+      <div className="relative rounded-[12px] bg-sunken">
+        <button type="button" onClick={onOpen} data-mc-family={family.key} className="flex w-full flex-col gap-2 rounded-[12px] p-2 text-left transition-colors hover:bg-gray-150">
+          <Thumb src={image} className="aspect-[4/3] w-full rounded-[8px]" />
+          <span className="block truncate px-1 pb-0.5 text-sm font-medium text-gray-900">{name}</span>
+        </button>
+        {onEdit && <div className="absolute top-3 right-3"><EditSectionButton label={`Edit ${name} media and description`} onClick={onEdit} /></div>}
+      </div>
     );
   }
   const body = (
     <>
       <div className="flex shrink-0 items-center justify-between gap-2">
         <Title value={family.name} empty="No family" editable={Boolean(onRename)} className="text-sm" fill onSave={(next) => onRename?.(next) ?? Promise.resolve()} />
-        <Button variant="ghost" size="icon-sm" aria-label="Close family" onClick={onClose}>
-          <X />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          {onEdit && <EditSectionButton label={`Edit ${name} media and description`} onClick={onEdit} />}
+          <Button variant="ghost" size="icon-sm" aria-label="Close family" onClick={onClose}><X /></Button>
+        </div>
       </div>
       <div className={cn("flex min-h-0 flex-1 gap-2", single ? "[&>*]:flex-1" : "no-scrollbar overflow-x-auto [&>*]:shrink-0 [&>*]:basis-[calc(50%-4px)]")}>{children}</div>
     </>
@@ -626,6 +642,8 @@ function PhoneList({
   onCategory,
   onFamily,
   onModel,
+  onEditCategory,
+  onEditFamily,
   familyImage,
   modelImage,
 }: {
@@ -638,16 +656,18 @@ function PhoneList({
   onCategory: (key: string) => void;
   onFamily: (key: string) => void;
   onModel: (m: M) => void;
+  onEditCategory: (c: C) => void;
+  onEditFamily: (f: F) => void;
   familyImage: (f: F) => string | null;
   modelImage: (m: M) => string | null;
 }) {
   const path = [brand, category, family].filter((level): level is B | C | F => level !== null).map((level) => level.name || "—");
-  const rows: { key: string; name: string; image?: string | null; open: () => void }[] = family
+  const rows: { key: string; name: string; image?: string | null; open: () => void; edit?: () => void }[] = family
     ? []
     : category
-      ? category.families.map((f) => ({ key: f.key, name: f.name || "No family", image: familyImage(f), open: () => onFamily(f.key) }))
+      ? category.families.map((f) => ({ key: f.key, name: f.name || "No family", image: familyImage(f), open: () => onFamily(f.key), edit: brand?.key && category.key && f.key ? () => onEditFamily(f) : undefined }))
       : brand
-        ? brand.categories.map((c) => ({ key: c.key, name: c.name || "No category", open: () => onCategory(c.key) }))
+        ? brand.categories.map((c) => ({ key: c.key, name: c.name || "No category", open: () => onCategory(c.key), edit: brand.key && c.key ? () => onEditCategory(c) : undefined }))
         : tree.map((b) => ({ key: b.key, name: b.name || "No brand", open: () => onBrand(b.key) }));
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -658,6 +678,8 @@ function PhoneList({
           </Button>
         )}
         <p className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{path.join(" › ") || "Brands"}</p>
+        {family && brand?.key && category?.key && family.key && <EditSectionButton label={`Edit ${family.name} media and description`} onClick={() => onEditFamily(family)} />}
+        {!family && category && brand?.key && category.key && <EditSectionButton label={`Edit ${category.name} media and description`} onClick={() => onEditCategory(category)} />}
       </div>
       <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto">
         {family ? (
@@ -670,11 +692,14 @@ function PhoneList({
           <ul className="flex flex-col gap-1.5">
             {rows.map((row) => (
               <li key={row.key || "-"}>
-                <button type="button" onClick={row.open} className="flex w-full items-center gap-3 rounded-[10px] bg-sunken p-2 text-left">
-                  {row.image !== undefined && <Thumb src={row.image} className="size-12 shrink-0 rounded-md" />}
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{row.name}</span>
-                  <ChevronRight className="size-4 shrink-0 text-gray-400" aria-hidden />
-                </button>
+                <div className="flex items-center rounded-[10px] bg-sunken p-1">
+                  <button type="button" onClick={row.open} className="flex min-w-0 flex-1 items-center gap-3 p-1 text-left">
+                    {row.image !== undefined && <Thumb src={row.image} className="size-12 shrink-0 rounded-md" />}
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{row.name}</span>
+                    <ChevronRight className="size-4 shrink-0 text-gray-400" aria-hidden />
+                  </button>
+                  {row.edit && <EditSectionButton label={`Edit ${row.name} media and description`} onClick={row.edit} />}
+                </div>
               </li>
             ))}
           </ul>
