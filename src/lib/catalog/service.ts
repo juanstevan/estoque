@@ -126,7 +126,12 @@ export type SharedCatalog = {
   brand: string;
   audience: Visibility;
   company: { name: string; phone: string | null };
-  categories: { key: string; name: string; families: { key: string; name: string; files: SharedFile[]; models: SharedModel[] }[] }[];
+  categories: {
+    key: string;
+    name: string;
+    description: RichNode | null;
+    families: { key: string; name: string; description: RichNode | null; files: SharedFile[]; models: SharedModel[] }[];
+  }[];
 };
 
 const measure = (value: number | null) => (value == null ? "—" : String(Number(value.toFixed(2))));
@@ -186,11 +191,20 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
   const company = { name: settings?.companyName ?? "Chaleur Manufacturing Co.", phone: settings?.companyPhone ?? null };
   const tree = buildTree(products).find((b) => b.key === link.brand);
   if (!tree) return { brand: link.brand, audience, company, categories: [] };
-  // Only Tags' descriptions: the catalog is Tags, and categories and families aren't published yet.
   const texts = new Map(
     (await prisma.catalogText.findMany({ where: { tagId: { in: products.flatMap((p) => (p.tagId ? [p.tagId] : [])) } }, select: { tagId: true, content: true } })).map(
       (t) => [t.tagId!, readDoc(t.content)],
     ),
+  );
+  const sectionTexts = await prisma.catalogText.findMany({
+    where: { brand: link.brand, sectionId: { not: null } },
+    select: { brand: true, category: true, family: true, content: true },
+  });
+  const familyTexts = new Map(
+    sectionTexts.filter((t) => t.family).map((t) => [`${t.brand}\0${t.category}\0${t.family}`, readDoc(t.content)]),
+  );
+  const categoryTexts = new Map(
+    sectionTexts.filter((t) => !t.family).map((t) => [`${t.brand}\0${t.category}`, readDoc(t.content)]),
   );
   const can = (json: string | null | undefined, field: CatalogField) => visibleTo(audience, fieldVisibility(json, field));
 
@@ -202,10 +216,12 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
       .map((c) => ({
         key: c.key,
         name: c.name,
+        description: categoryTexts.get(`${link.brand}\0${c.key}`) ?? null,
         families: c.families
           .map((f) => ({
             key: f.key,
             name: f.name,
+            description: familyTexts.get(`${link.brand}\0${c.key}\0${f.key}`) ?? null,
             files: (at.get(`family|${link.brand}\0${c.key}\0${f.key}`) ?? []).filter((x) => !isPhoto(x)).map(asFile),
             models: f.models
               .map((m): SharedModel => {

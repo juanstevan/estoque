@@ -8,6 +8,7 @@ import { caps, Files, focus, load, slug, specRows, Stock } from "../shared";
 import { ProductGallery } from "./product-gallery";
 
 type Params = { params: Promise<{ token: string; model: string }> };
+const detailsText = "w-full text-[15px] font-normal text-chaleur-graphite sm:text-md [&_h1]:text-chaleur-char [&_h2]:text-chaleur-char [&_h3]:text-chaleur-char";
 
 /** The model in the link's catalog, with where it sits; null when the link doesn't show it. */
 async function find(token: string, model: string) {
@@ -138,15 +139,13 @@ export default async function ModelPage({ params }: Params) {
         </div>
       </div>
 
-      {m.description && (
-        <section aria-labelledby="details" className="mt-14 border-t-2 border-chaleur-char pt-8 sm:mt-20 lg:grid lg:grid-cols-[minmax(0,3fr)_minmax(0,9fr)] lg:gap-14">
-          <h2 id="details" className={cn(caps, "mb-4 text-chaleur-flame lg:mb-0")}>
-            Details
-          </h2>
-          <RichText
-            doc={m.description}
-            className="max-w-[68ch] text-[15px] font-normal text-chaleur-graphite sm:text-md [&_h1]:text-chaleur-char [&_h2]:text-chaleur-char [&_h3]:text-chaleur-char"
-          />
+      {(category.description || family.description || m.description) && (
+        <section aria-label="Product description" className="mt-14 w-full border-t-2 border-chaleur-char pt-8 sm:mt-20">
+          <div className="w-full space-y-8">
+            {category.description && <RichText doc={category.description} className={detailsText} />}
+            {family.description && <RichText doc={family.description} className={detailsText} />}
+            {m.description && <RichText doc={m.description} className={detailsText} />}
+          </div>
         </section>
       )}
     </main>
