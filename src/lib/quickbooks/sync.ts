@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { unmatchedItems } from "@/lib/inventory/delivery-rules";
 import { updateProduct } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
 import { INVOICES_FROM, ingestInvoice, ingestItems, parseQbInvoice } from "@/lib/quickbooks/ingest";
@@ -218,7 +219,7 @@ async function runSync() {
     (
       await prisma.order.findMany({
         where: { qbInvoiceId: { not: null } },
-        select: { qbInvoiceId: true, qbUpdatedAt: true, voided: true },
+        select: { qbInvoiceId: true, qbUpdatedAt: true, voided: true, issues: true },
       })
     ).map((order) => [order.qbInvoiceId, order]),
   );
@@ -234,7 +235,10 @@ async function runSync() {
       if (known.has(invoice.id)) {
         const before = known.get(invoice.id);
         const voided = Boolean(invoice.voided || invoice.deleted);
-        if (before?.qbUpdatedAt && at && at <= before.qbUpdatedAt && before.voided === voided) continue;
+        // Unchanged in QuickBooks: skip, unless it still has items with no product here (a product
+        // created or linked since then joins the invoice on this run).
+        const unchanged = before?.qbUpdatedAt && at && at <= before.qbUpdatedAt && before.voided === voided;
+        if (unchanged && !unmatchedItems(before.issues).length) continue;
       } else if (invoice.deleted || invoice.voided || !invoice.txnDate || invoice.txnDate < INVOICES_FROM) {
         continue;
       }

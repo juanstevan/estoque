@@ -2,7 +2,7 @@ import { ExitStatus, type Order, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { createProduct, nextNumber } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
-import { isPhysicalLine, UNMATCHED } from "@/lib/inventory/delivery-rules";
+import { isPhysicalLine, UNMATCHED, unmatchedItems } from "@/lib/inventory/delivery-rules";
 import { deliveryPrefs, fitDeliveries, reserveOpenDeliveries, syncOrder } from "@/lib/inventory/orders";
 import { recomputeAvailable, roundMoney } from "@/lib/inventory/math";
 import { storeQbSyncEvent } from "@/lib/quickbooks/adapter";
@@ -285,9 +285,9 @@ export async function ingestInvoice(raw: unknown, retried = false): Promise<Inge
   const found = await findExisting(invoice);
   const updatedAt = invoice.updatedAt ? new Date(invoice.updatedAt) : null;
   const voidedNow = Boolean(invoice.voided || invoice.deleted);
-  // Same version and same void state: nothing to do. (Invoices voided before voids were read
-  // correctly kept their version, so the void state alone brings them back once.)
-  if (found?.qbUpdatedAt && updatedAt && updatedAt <= found.qbUpdatedAt && found.voided === voidedNow) {
+  // Same version, same void state and every item matched: nothing to do. An invoice with items
+  // that had no product here goes again each time, so a product created or linked later joins it.
+  if (found?.qbUpdatedAt && updatedAt && updatedAt <= found.qbUpdatedAt && found.voided === voidedNow && !unmatchedItems(found.issues).length) {
     return { skipped: true as const, reason: "unchanged", order: found };
   }
   // Only invoices dated from INVOICES_FROM become orders. A deleted or voided one we never had stays out.
@@ -352,7 +352,7 @@ export async function ingestInvoice(raw: unknown, retried = false): Promise<Inge
       where: { id: found.id },
       include: { lines: { orderBy: { id: "asc" } }, deliveries: true },
     }));
-    if (existing.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt && existing.voided === voidedNow) {
+    if (existing.qbUpdatedAt && updatedAt && updatedAt <= existing.qbUpdatedAt && existing.voided === voidedNow && !unmatchedItems(existing.issues).length) {
       return { skipped: true as const, reason: "unchanged", order: existing };
     }
 

@@ -521,5 +521,44 @@ async function deliverAll(orderId: string) {
   await invariants();
 }
 
+// An item with no product when the invoice came in, linked days later while the invoice stayed
+// the same in QuickBooks: the next sync of that same version brings it in, once.
+{
+  const inv = {
+    Invoice: {
+      Id: "88001",
+      DocNumber: "1653",
+      TxnDate: "2026-10-19",
+      Balance: 0,
+      TotalAmt: 1980,
+      MetaData: { LastUpdatedTime: "2026-10-20T06:16:33-07:00" },
+      Line: [
+        { Id: "1", DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "877", name: "Grill:398 - Grill GA01 4B (32'' NG) - Legend Line" }, Qty: 1, UnitPrice: 1580 } },
+        { Id: "2", DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "856", name: "Drawer:399 - Double Drawer" }, Qty: 1, UnitPrice: 400 } },
+        { Amount: 1980, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+      ],
+    },
+  };
+  const drawer = await createProduct({ name: "Double Drawer", sku: "DD-1", initialQty: 3, initialUnitCost: 50 });
+  await db.product.update({ where: { id: drawer.id }, data: { secondarySku: "qb:856" } });
+  await ingestInvoice(inv);
+  const o = await db.order.findUniqueOrThrow({ where: { externalRef: "1653" } });
+  assert.match(o.issues ?? "", /Unmatched product: Grill:398/);
+  await addToWorkflow(o.id, actor);
+
+  // Days later: the grill is created here and linked to QuickBooks item 877. The invoice didn't change.
+  const grill = await createProduct({ name: "Grill Legend 4 (32'') - NG", sku: "GA01-NG", initialQty: 2, initialUnitCost: 900 });
+  await db.product.update({ where: { id: grill.id }, data: { secondarySku: "qb:877" } });
+  await ingestInvoice(inv);
+  await ingestInvoice(inv); // and the next sync after that
+  const order = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { lines: true, deliveries: { include: { lines: true } } } });
+  assert.equal(order.issues, null, "fully matched with QuickBooks");
+  assert.deepEqual(order.lines.map((l) => [l.productId, l.qbLineId, l.orderedQty, l.reservedQty]).sort(), [[drawer.id, "2", 1, 1], [grill.id, "1", 1, 1]].sort());
+  assert.equal(order.deliveries.length, 1);
+  assert.equal(order.deliveries[0]!.lines.length, 2, "the grill joined the open delivery once");
+  assert.deepEqual([(await product(grill.id)).reservedQty, (await product(grill.id)).physicalQty], [1, 2]);
+  await invariants();
+}
+
 await db.$disconnect();
 console.log("stock.test: ok");
