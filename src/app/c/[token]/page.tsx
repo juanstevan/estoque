@@ -88,7 +88,7 @@ export default async function CatalogPage({ params }: { params: Promise<{ token:
               )}
               <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                 {cards.map(({ m, family }) => (
-                  <ModelCard key={m.key} model={m} family={family} href={modelHref(token, m)} />
+                  <ModelCard key={m.key} model={m} family={family} href={modelHref(data.base, m)} />
                 ))}
               </div>
             </section>

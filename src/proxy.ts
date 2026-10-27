@@ -9,6 +9,7 @@ export function proxy(req: NextRequest) {
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/share/") ||
     pathname.startsWith("/c/") ||
+    pathname.startsWith("/price/") ||
     pathname.startsWith("/track/");
   if (!session && !publicPath) {
     return NextResponse.redirect(new URL("/login", req.url));

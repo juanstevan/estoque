@@ -44,7 +44,7 @@ export default async function ModelPage({ params }: Params) {
   const { data, category, family, model: m } = hit;
   const specs = specRows(m);
   const title = m.title ?? "";
-  const brandHref = `/c/${token}`;
+  const brandHref = data.base;
   const categoryHref = `${brandHref}#${slug(category.name)}`;
 
   // Only levels the catalog has; a level without a page of its own is plain text.

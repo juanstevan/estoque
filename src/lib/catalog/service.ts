@@ -105,6 +105,24 @@ export async function catalogLink(brand: string, audience: Visibility = "partner
   return token;
 }
 
+/** A brand as it reads in a price table address: "Chaleur" → "chaleur", "Embera Grills" → "embera-grills". */
+export function brandSlug(brand: string) {
+  return brand.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/**
+ * The price table of a brand by its name (/price/<brand>): the brand's active builder link.
+ * Open to anyone with the address; revoking the brand's link takes it down.
+ */
+export async function brandLinkToken(slug: string) {
+  const links = await prisma.catalogLink.findMany({
+    where: { audience: "partners", revokedAt: null },
+    select: { token: true, brand: true },
+    orderBy: { createdAt: "asc" },
+  });
+  return links.find((link) => brandSlug(link.brand) === slug.toLowerCase())?.token ?? null;
+}
+
 export type SharedFile = { name: string; url: string; fileName: string };
 export type SharedModel = {
   key: string;

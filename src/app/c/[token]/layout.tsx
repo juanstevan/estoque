@@ -20,7 +20,7 @@ export default async function CatalogLayout({ children, params }: { children: Re
     <div className={cn(archivo.variable, lexend.variable, "min-h-dvh bg-white font-chaleur-text font-light text-chaleur-char antialiased")}>
       <header className="sticky top-0 z-20 border-b border-chaleur-stone bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-5 sm:gap-10 sm:px-8">
-          <a href={`/c/${token}`} className={cn("shrink-0", focus)} aria-label={`${data.brand} catalog`}>
+          <a href={data.base} className={cn("shrink-0", focus)} aria-label={`${data.brand} catalog`}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={logo.src} alt="Chaleur" className="h-6 w-auto sm:h-7" />
           </a>
@@ -29,7 +29,7 @@ export default async function CatalogLayout({ children, params }: { children: Re
               {data.categories.map((c) => (
                 <a
                   key={c.key}
-                  href={`/c/${token}#${slug(c.name)}`}
+                  href={`${data.base}#${slug(c.name)}`}
                   className={cn("shrink-0 px-2 py-1 font-chaleur-display text-[11px] tracking-[0.12em] text-chaleur-iron transition-colors duration-200 hover:text-chaleur-flame", focus)}
                 >
                   {c.name || "Other"}

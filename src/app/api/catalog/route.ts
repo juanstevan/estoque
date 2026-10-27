@@ -1,6 +1,6 @@
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { deny } from "@/lib/guard";
-import { assignProduct, catalogLink, setCatalogField, setShared, unassignProduct } from "@/lib/catalog/service";
+import { assignProduct, brandSlug, catalogLink, setCatalogField, setShared, unassignProduct } from "@/lib/catalog/service";
 import { getCatalogText, setCatalogText } from "@/lib/catalog/text";
 import { resolveCatalogSection } from "@/lib/catalog/section";
 
@@ -57,8 +57,9 @@ export async function POST(req: Request) {
       return jsonOk({ ok: true });
     }
     if (body.action === "link") {
-      const token = await catalogLink(body.brand ?? "");
-      return jsonOk({ url: `${new URL(req.url).origin}/c/${token}` });
+      // The brand's builder link exists from now on; it's shared by the brand's name.
+      await catalogLink(body.brand ?? "");
+      return jsonOk({ url: `${new URL(req.url).origin}/price/${brandSlug(body.brand ?? "")}` });
     }
     return jsonError("Unknown action");
   } catch (e) {
