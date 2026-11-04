@@ -460,7 +460,7 @@ function Editor({
           <ProductPicker products={products} current={variants} onPick={addProduct} />
         </aside>
       </div>
-      <Lightbox photos={photos} openId={viewing} onOpenId={setViewing} onArrange={arrange} onRename={renamePhoto} />
+      <Lightbox photos={photos} openId={viewing} onOpenId={setViewing} onArrange={arrange} onRename={renamePhoto} onRemove={unlink} />
     </>
   );
 }
@@ -712,12 +712,15 @@ function Lightbox({
   onOpenId,
   onArrange,
   onRename,
+  onRemove,
 }: {
   photos: Placed[];
   openId: string | null;
   onOpenId: (id: string | null) => void;
   onArrange: (ids: string[]) => Promise<void>;
   onRename: (id: string, name: string) => Promise<void>;
+  /** Takes the photo off this model, like the gallery's trash. */
+  onRemove: (linkId: string) => Promise<unknown> | void;
 }) {
   // The order being dragged; it stays until the saved order comes back.
   const [order, setOrder] = useState<string[] | null>(null);
@@ -734,8 +737,8 @@ function Lightbox({
           {shownIds.map((id) => {
             const x = byId.get(id)!;
             return (
+              <div key={id} className="group/thumb relative shrink-0">
               <button
-                key={id}
                 type="button"
                 draggable
                 aria-label={`Show ${x.file.name}`}
@@ -767,6 +770,22 @@ function Lightbox({
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={x.file.thumbUrl} alt="" draggable={false} className="size-full object-contain" />
               </button>
+              <button
+                type="button"
+                aria-label={`Remove ${x.file.name} from this model`}
+                onClick={() => {
+                  // Showing it: move to a neighbour first, or close when it was the last.
+                  if (id === current?.file.id) {
+                    const rest = shownIds.filter((other) => other !== id);
+                    onOpenId(rest[Math.min(shownIds.indexOf(id), rest.length - 1)] ?? null);
+                  }
+                  void onRemove(x.linkId);
+                }}
+                className="absolute top-0.5 right-0.5 hidden size-4 items-center justify-center rounded-full bg-surface/95 text-gray-600 shadow-xs group-hover/thumb:flex hover:text-danger-text focus-visible:flex"
+              >
+                <X className="size-3" />
+              </button>
+              </div>
             );
           })}
         </div>
