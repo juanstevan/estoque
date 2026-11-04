@@ -277,7 +277,7 @@ export function StorageTab({
   onReload: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [fobFor, setFobFor] = useState<ProductRow | null>(null);
+  const [cifFor, setCifFor] = useState<ProductRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
@@ -325,23 +325,23 @@ export function StorageTab({
 
   const columns = useMemo(() => {
     const shown = new Set(visibleKeys);
-    // FOB opens its correction instead of the product.
+    // CIF opens its correction instead of the product.
     const cols = ALL_COLUMNS.filter((c) => shown.has(String(c.key))).map((c) =>
-      c.key === "fobCost"
+      c.key === "cifCost"
         ? {
             ...c,
             render: (p: ProductRow) => (
               <button
                 type="button"
                 className="-mx-1 rounded px-1 tabular-nums underline decoration-gray-300 decoration-dotted underline-offset-2 hover:bg-gray-100"
-                aria-label={`Correct FOB cost of ${p.name}`}
+                aria-label={`Correct CIF cost of ${p.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setFobFor(p);
+                  setCifFor(p);
                 }}
                 onDoubleClick={(e) => e.stopPropagation()}
               >
-                {money(p.fobCost)}
+                {money(p.cifCost)}
               </button>
             ),
           }
@@ -584,7 +584,7 @@ export function StorageTab({
         onSaved={onReload}
       />
 
-      {fobFor && <CostDialog kind="fob" product={fobFor} onClose={() => setFobFor(null)} onSaved={onReload} />}
+      {cifFor && <CostDialog kind="cif" product={cifFor} onClose={() => setCifFor(null)} onSaved={onReload} />}
 
       <ProductDialog
         open={creating}

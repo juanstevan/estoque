@@ -14,7 +14,7 @@ const calls: Array<[string, object]> = [
   ["/api/adjustments", { productId: "x", mode: "add", quantity: 1, reason: "Correction" }],
   ["/api/adjustments", { productId: "x", mode: "cost", avgCost: 1, reason: "Correction" }],
   ["/api/adjustments", { productId: "x", mode: "write-off", quantity: 1, reason: "Correction" }],
-  ["/api/adjustments", { productId: "x", mode: "fob", fobCost: 1, reason: "Correction" }],
+  ["/api/adjustments", { productId: "x", mode: "cif", cifCost: 1, reason: "Correction" }],
   ["/api/importations", { action: "revise", id: "x", reason: "Correction", freight: 1 }],
   ["/api/adjustments", { mode: "edit-log", transactionId: "x", notes: "x", reason: "Correction" }],
   ["/api/adjustments", { mode: "edit-log", transactionId: "x", quantity: 2, reason: "Correction" }],
@@ -52,7 +52,7 @@ for (const [path, body] of calls) {
 if (tokens.editor) {
   const refused: Array<[string, object]> = [
     ["/api/importations", { action: "revise", id: "x", reason: "x" }],
-    ["/api/adjustments", { productId: "x", mode: "fob", fobCost: 1, reason: "x" }],
+    ["/api/adjustments", { productId: "x", mode: "cif", cifCost: 1, reason: "x" }],
     ["/api/adjustments", { productId: "x", mode: "cost", avgCost: 1, reason: "x" }],
     ["/api/adjustments", { mode: "edit-log", transactionId: "x", quantity: 2, reason: "x" }],
     ["/api/adjustments", { mode: "edit-log", transactionId: "x", occurredAt: "2026-10-01", reason: "x" }],

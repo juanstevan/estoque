@@ -1236,31 +1236,31 @@ export async function reviseImportation(
 }
 
 /**
- * Corrects a product's FOB cost: what it costs to buy, used as the starting cost of new
- * importations. It doesn't feed the average cost or CIF, so neither changes, and no units move.
+ * Corrects a product's CIF cost: the landed unit cost shown on the card. It doesn't feed the
+ * average cost or FOB, so neither changes, and no units move. The next received importation sets it again.
  * Logged as a cost correction with the value before and after; the same value again does nothing.
  */
-export async function correctFob(input: { productId: string; fobCost: number; reason?: string; userId: string }) {
+export async function correctCif(input: { productId: string; cifCost: number; reason?: string; userId: string }) {
   const reason = input.reason?.trim() || undefined;
-  if (!Number.isFinite(input.fobCost) || input.fobCost < 0) throw new Error("The cost must be 0 or more");
-  const fobCost = roundMoney(input.fobCost, 2);
+  if (!Number.isFinite(input.cifCost) || input.cifCost < 0) throw new Error("The cost must be 0 or more");
+  const cifCost = roundMoney(input.cifCost, 2);
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${input.productId} FOR UPDATE`;
     const product = await tx.product.findUniqueOrThrow({ where: { id: input.productId } });
-    if (product.fobCost === fobCost) return null;
+    if (product.cifCost === cifCost) return null;
     const txn = await tx.inventoryTransaction.create({
       data: {
         productId: product.id,
         type: TransactionType.COST_ADJUSTMENT,
         quantity: 0,
-        unitCost: fobCost,
+        unitCost: cifCost,
         totalValue: 0,
-        notes: `FOB ${product.fobCost} → ${fobCost}${reason ? ` · ${reason}` : ""}`,
+        notes: `CIF ${product.cifCost} → ${cifCost}${reason ? ` · ${reason}` : ""}`,
         userId: input.userId,
-        metadata: JSON.stringify({ field: "fobCost", reason, mode: "fob", before: { fobCost: product.fobCost }, after: { fobCost } }),
+        metadata: JSON.stringify({ field: "cifCost", reason, mode: "cif", before: { cifCost: product.cifCost }, after: { cifCost } }),
       },
     });
-    await tx.product.update({ where: { id: product.id }, data: { fobCost } });
+    await tx.product.update({ where: { id: product.id }, data: { cifCost } });
     return txn;
   });
 }

@@ -13,7 +13,7 @@ if (!/^postgres(ql)?:\/\/[^/]*@(localhost|127\.0\.0\.1)[:/]/.test(url)) throw ne
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }) });
 (globalThis as { prisma?: PrismaClient }).prisma = db;
 
-const { adjustCost, changeQuantity, correctFob, createProduct, receiveImportation, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
+const { adjustCost, changeQuantity, correctCif, createProduct, receiveImportation, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
   await import("./service");
 const { addProof, addToWorkflow, completeDelivery, moveDelivery, recordReturn, removeFromWorkflow, setPrepared } = await import("./orders");
 const { editLogEntry, removeLogEntry } = await import("./service");
@@ -342,20 +342,20 @@ async function deliverAll(orderId: string) {
   await rejects(() => reviseImportation(ti, { costs: { freight: -1 }, reason: "x" }, actor), /0 or more/);
   await rejects(() => reviseImportation(a + "x", { reason: "x" }, actor), /./);
 
-  // 5, 6, 10, 11. FOB correction: only FOB, cents kept, logged before → after; again is nothing.
+  // 5, 6, 10, 11. CIF correction: only CIF, cents kept, logged before → after; again is nothing.
   const before = await product(t.id);
-  await correctFob({ productId: t.id, fobCost: 99.99, reason: "Supplier price list", userId: ME });
-  await correctFob({ productId: t.id, fobCost: 99.99, reason: "Supplier price list", userId: ME });
+  await correctCif({ productId: t.id, cifCost: 99.99, reason: "Supplier price list", userId: ME });
+  await correctCif({ productId: t.id, cifCost: 99.99, reason: "Supplier price list", userId: ME });
   const after = await product(t.id);
-  assert.deepEqual([after.fobCost, after.physicalQty, after.avgCost, after.cifCost], [99.99, before.physicalQty, before.avgCost, before.cifCost]);
-  const fobLog = await db.inventoryTransaction.findMany({ where: { productId: t.id, metadata: { contains: '"field":"fobCost"' } } });
-  assert.equal(fobLog.length, 1);
-  assert.deepEqual([fobLog[0]!.quantity, fobLog[0]!.userId, JSON.parse(fobLog[0]!.metadata!).before.fobCost, JSON.parse(fobLog[0]!.metadata!).after.fobCost, JSON.parse(fobLog[0]!.metadata!).reason], [0, ME, before.fobCost, 99.99, "Supplier price list"]);
-  await rejects(() => correctFob({ productId: t.id, fobCost: Number.NaN, reason: "x", userId: ME }), /0 or more/);
+  assert.deepEqual([after.cifCost, after.physicalQty, after.avgCost, after.fobCost], [99.99, before.physicalQty, before.avgCost, before.fobCost]);
+  const cifLog = await db.inventoryTransaction.findMany({ where: { productId: t.id, metadata: { contains: '"field":"cifCost"' } } });
+  assert.equal(cifLog.length, 1);
+  assert.deepEqual([cifLog[0]!.quantity, cifLog[0]!.userId, JSON.parse(cifLog[0]!.metadata!).before.cifCost, JSON.parse(cifLog[0]!.metadata!).after.cifCost, JSON.parse(cifLog[0]!.metadata!).reason], [0, ME, before.cifCost, 99.99, "Supplier price list"]);
+  await rejects(() => correctCif({ productId: t.id, cifCost: Number.NaN, reason: "x", userId: ME }), /0 or more/);
 
-  // 14. No importations: nothing makes an average up. FOB doesn't become a cost.
+  // 14. No importations: nothing makes an average up. CIF doesn't become the average.
   const z = await createProduct({ name: "Unknown Z", sku: "Z", initialQty: 3 });
-  await correctFob({ productId: z.id, fobCost: 50, reason: "Price list", userId: ME });
+  await correctCif({ productId: z.id, cifCost: 50, reason: "Price list", userId: ME });
   assert.deepEqual([(await product(z.id)).avgCost, (await product(z.id)).inventoryValue], [0, 0]);
   await invariants();
 }

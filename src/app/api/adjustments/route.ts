@@ -1,11 +1,11 @@
-import { adjustCost, changeQuantity, correctFob, editLogEntry, removeLogEntry, resolveSetAside } from "@/lib/inventory/service";
+import { adjustCost, changeQuantity, correctCif, editLogEntry, removeLogEntry, resolveSetAside } from "@/lib/inventory/service";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
 import { guard } from "@/lib/guard";
 
 /**
  * Stock and cost corrections from the product card:
  * - add / remove: units only (no price), optionally dated in the past
- * - cost / fob: the average or FOB cost (main user)
+ * - cost / fob: the average or CIF cost (main user)
  * - release / write-off: units set aside after a damaged return
  * - edit-log / remove-log: a log entry (date, quantity and removal: main user)
  */
@@ -15,19 +15,19 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{
       productId: string;
-      mode: "add" | "remove" | "cost" | "fob" | "release" | "write-off" | "edit-log" | "remove-log";
+      mode: "add" | "remove" | "cost" | "cif" | "release" | "write-off" | "edit-log" | "remove-log";
       transactionId?: string;
       notes?: string;
       occurredAt?: string;
-      fobCost?: number;
+      cifCost?: number;
       quantity?: number;
       avgCost?: number;
       reason: string;
       requestId?: string;
     }>(req);
-    // Cost corrections (average or FOB) belong to the main user, and so do log changes that
+    // Cost corrections (average or CIF) belong to the main user, and so do log changes that
     // move units or dates (the service checks again).
-    if ((body.mode === "cost" || body.mode === "fob") && !me.main) {
+    if ((body.mode === "cost" || body.mode === "cif") && !me.main) {
       return jsonError("Only the main user can correct costs.", 403);
     }
     const logStock = body.mode === "remove-log" || (body.mode === "edit-log" && (body.quantity !== undefined || body.occurredAt !== undefined));
@@ -40,9 +40,9 @@ export async function POST(req: Request) {
         { status: 201 },
       );
     }
-    if (body.mode === "fob") {
+    if (body.mode === "cif") {
       return jsonOk(
-        { changed: Boolean(await correctFob({ productId: body.productId, fobCost: Number(body.fobCost), reason: body.reason, userId: me.id })) },
+        { changed: Boolean(await correctCif({ productId: body.productId, cifCost: Number(body.cifCost), reason: body.reason, userId: me.id })) },
         { status: 201 },
       );
     }

@@ -114,6 +114,7 @@ export function movementReason(t: {
     if (t.type === "IMPORTATION") return meta?.reversalOf ? "Import reopened" : "Import";
     if (meta?.action === "cost-basis") return "Cost basis";
     if (meta?.field === "fobCost") return "FOB correction";
+    if (meta?.field === "cifCost") return "CIF correction";
     if (meta?.mode === "cost") return "Cost correction";
     if (meta?.editOf) return "Entry edited";
     if (meta?.reversalOf) return "Entry removed";

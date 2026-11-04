@@ -244,7 +244,7 @@ export function ProductDialog({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [qtyOpen, setQtyOpen] = useState(false);
-  const [costEditor, setCostEditor] = useState<"avg" | "fob" | null>(null);
+  const [costEditor, setCostEditor] = useState<"avg" | "cif" | null>(null);
   const [logEntry, setLogEntry] = useState<LogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1017,12 +1017,12 @@ export function ProductDialog({
                         label="CIF cost"
                         value={formatMoney(detail.cifCost)}
                         center
+                        onClick={isCreate ? undefined : () => setCostEditor("cif")}
                       />
                       <Stat
                         label="FOB cost"
                         value={formatMoney(detail.fobCost)}
                         center
-                        onClick={isCreate ? undefined : () => setCostEditor("fob")}
                       />
                       <div className="min-w-0 text-center">
                         <Popover>
@@ -1523,7 +1523,7 @@ export function ProductDialog({
 
 /**
  * Quantity corrections only: units in or out, with a reason, dated now. No price or cost is
- * involved; costs have their own editors (Avg. cost, FOB).
+ * involved; costs have their own editors (Avg. cost, CIF).
  */
 function QuantityDialog({
   open,
@@ -1861,7 +1861,7 @@ function LogEntryDialog({
           </div>
         )}
         {!source && !manual && !removed && entry.type === "COST_ADJUSTMENT" && (
-          <p className="text-xs text-gray-600">Cost changes are corrected with Avg. cost or FOB on the Info tab.</p>
+          <p className="text-xs text-gray-600">Cost changes are corrected with Avg. cost or CIF on the Info tab.</p>
         )}
         {manual && !main && <p className="text-xs text-gray-600">Only the main user can change the units or date.</p>}
         <div className="grid gap-1">
@@ -1899,16 +1899,16 @@ const COST_EDITORS = {
     mode: "cost",
     field: "avgCost",
   },
-  fob: {
-    title: "Correct FOB cost",
-    label: "FOB",
-    mode: "fob",
-    field: "fobCost",
+  cif: {
+    title: "Correct CIF cost",
+    label: "CIF",
+    mode: "cif",
+    field: "cifCost",
   },
 } as const;
 
 /**
- * Corrects one cost of a product: its average cost or its FOB, each in its own dialog. Who, when
+ * Corrects one cost of a product: its average cost or its CIF, each in its own dialog. Who, when
  * and the value before and after are logged; quantities never change here.
  */
 export function CostDialog({
@@ -1918,7 +1918,7 @@ export function CostDialog({
   onSaved,
 }: {
   kind: keyof typeof COST_EDITORS;
-  product: { id: string; name: string; avgCost: number; fobCost: number };
+  product: { id: string; name: string; avgCost: number; cifCost: number };
   onClose: () => void;
   onSaved: () => void;
 }) {
