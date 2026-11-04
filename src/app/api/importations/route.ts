@@ -3,6 +3,7 @@ import {
   deleteImportation,
   listImportations,
   receiveImportation,
+  removeImportationProof,
   reviseImportation,
   setImportStatus,
   upsertImportation,
@@ -51,7 +52,8 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{
       id?: string;
-      action?: "save" | "status" | "delete" | "receive" | "revise";
+      action?: "save" | "status" | "delete" | "receive" | "revise" | "remove-proof";
+      proofId?: string;
       photos?: string[];
       reason?: string;
       lines?: Array<{ id?: string; productId?: string | null; draftName?: string | null; draftSku?: string | null; quantity: number; purchaseUnitCost: number; taxRate?: number }>;
@@ -104,6 +106,11 @@ export async function POST(req: Request) {
       return jsonOk({ ok: true });
     }
 
+    if (body.action === "remove-proof" && body.proofId) {
+      return jsonOk(await removeImportationProof(body.proofId));
+    }
+
+    if (!body.reference?.trim()) return jsonError("Give the import its code first");
     if (!body.lines?.length) return jsonError("Add at least one product line");
     const saved = await upsertImportation({
       id: body.id,

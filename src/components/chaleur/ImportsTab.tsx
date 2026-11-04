@@ -395,6 +395,16 @@ export function ImportsTab({
     noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
   }
 
+  function putRow(row: ImportRow) {
+    onImportsChange((rows) => {
+      const i = rows.findIndex((r) => r.id === row.id);
+      if (i === -1) return [row, ...rows];
+      const next = [...rows];
+      next[i] = row;
+      return next;
+    });
+  }
+
   function applyStatus(id: string, status: ImportRow["status"]) {
     onImportsChange((rows) =>
       rows.map((row) => (row.id === id ? { ...row, status } : row)),
@@ -766,7 +776,7 @@ export function ImportsTab({
           )}
 
           {receiving && (
-            <ReceiveDialog imp={receiving.imp} onClose={() => setReceiving(null)} onReceived={received} />
+            <ReceiveDialog imp={receiving.imp} onClose={() => setReceiving(null)} onReceived={received} onRowChange={putRow} />
           )}
 
           {doneNotice && !draggingId && (
@@ -977,17 +987,12 @@ export function ImportsTab({
             setSeedLines(null);
           }}
           seedLines={editing ? undefined : seedLines ?? undefined}
+          onRowChange={putRow}
           onSaved={(row) => {
             setEditing(null);
             setAddingImport(false);
             setSeedLines(null);
-            onImportsChange((rows) => {
-              const i = rows.findIndex((r) => r.id === row.id);
-              if (i === -1) return [row, ...rows];
-              const next = [...rows];
-              next[i] = row;
-              return next;
-            });
+            putRow(row);
           }}
           onCatalogChange={onProductsReload}
         />
@@ -1399,11 +1404,14 @@ function ImportDialog({
   reasons,
   onClose,
   onSaved,
+  onRowChange,
   onCatalogChange,
   seedLines,
   isMain,
 }: {
   isMain: boolean;
+  /** The importation changed on the server without closing the dialog (a photo deleted). */
+  onRowChange: (row: ImportRow) => void;
   open: boolean;
   initial: ImportRow | null;
   kind: "DOMESTIC" | "INTERNATIONAL";
@@ -1460,6 +1468,7 @@ function ImportDialog({
   const [kind, setKind] = useState(initialKind);
   const [catalog, setCatalog] = useState(products);
   const [error, setError] = useState<string | null>(null);
+  const [proofs, setProofs] = useState(initial?.proofs ?? []);
   const clickTimer = useRef(0);
   const busy = useRef(false);
 
@@ -1582,6 +1591,10 @@ function ImportDialog({
 
   async function save() {
     if (busy.current) return;
+    if (!form.reference.trim()) {
+      setError("Give the import its code first");
+      return;
+    }
     busy.current = true;
     setError(null);
     try {
@@ -1912,16 +1925,18 @@ function ImportDialog({
                 disabled={received}
                 onChange={(historical) => setForm((f) => ({ ...f, historical }))}
               />
-              {initial?.status === "COMPLETED" && initial.receivedAt && (
-                <span className="flex items-center gap-2">
-                  {initial.proofs?.map((proof) => (
-                    <a key={proof.id} href={`/api/importations/file?id=${proof.id}`} target="_blank" rel="noreferrer" title={`Photo by ${proof.actor}`}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={`/api/importations/file?id=${proof.id}`} alt="Arrival photo" className="size-8 rounded object-cover" />
-                    </a>
-                  ))}
-                </span>
-              )}
+              <span className="flex items-center gap-2">
+                <ProofThumbs
+                  proofs={proofs}
+                  size="size-8"
+                  onError={setError}
+                  onChange={(row) => {
+                    setProofs(row.proofs ?? []);
+                    onRowChange(row);
+                  }}
+                />
+              </span>
+
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -2592,19 +2607,23 @@ function ReceiveDialog({
   imp,
   onClose,
   onReceived,
+  onRowChange,
 }: {
   imp: ImportRow;
   onClose: () => void;
   onReceived: (row: ImportRow) => void;
+  onRowChange: (row: ImportRow) => void;
 }) {
   const [day, setDay] = useState(() => toYmd(new Date()));
   const [files, setFiles] = useState<File[]>([]);
+  // Photos from an earlier receipt (the import was reopened) stay and count.
+  const [kept, setKept] = useState(imp.proofs ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previews = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
   useEffect(() => () => previews.forEach((url) => URL.revokeObjectURL(url)), [previews]);
   const units = imp.lines.reduce((sum, line) => sum + line.quantity, 0);
-  const needsPhoto = !imp.historical;
+  const needsPhoto = !imp.historical && !kept.length;
 
   async function submit() {
     if (busy) return;
@@ -2637,9 +2656,18 @@ function ReceiveDialog({
         </label>
         <div className="grid gap-2">
           <span className="text-xs font-medium text-gray-700">
-            Photo of the products{needsPhoto ? "" : " (optional)"}
+            Photo of the products{imp.historical ? " (optional)" : kept.length ? " (already attached)" : ""}
           </span>
           <div className="flex flex-wrap gap-2">
+            <ProofThumbs
+              proofs={kept}
+              size="size-20"
+              onError={setError}
+              onChange={(row) => {
+                setKept(row.proofs ?? []);
+                onRowChange(row);
+              }}
+            />
             {previews.map((url, i) => (
               <div key={url} className="relative size-20 overflow-hidden rounded-md bg-gray-100">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2692,6 +2720,57 @@ function ReceiveDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** Arrival photos: click to open, the trash on hover deletes one (and its file). */
+function ProofThumbs({
+  proofs,
+  size,
+  onChange,
+  onError,
+}: {
+  proofs: NonNullable<ImportRow["proofs"]>;
+  size: string;
+  onChange: (row: ImportRow) => void;
+  onError: (message: string) => void;
+}) {
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  async function remove(id: string) {
+    if (removing || !window.confirm("Delete this photo?")) return;
+    setRemoving(id);
+    try {
+      const res = await fetch("/api/importations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove-proof", proofId: id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Couldn't delete the photo");
+      if (data?.id) onChange(data as ImportRow);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Couldn't delete the photo");
+    } finally {
+      setRemoving(null);
+    }
+  }
+
+  return proofs.map((proof) => (
+    <span key={proof.id} className={cn("group/proof relative shrink-0 overflow-hidden rounded-md bg-gray-100", size, removing === proof.id && "opacity-40")}>
+      <a href={`/api/importations/file?id=${proof.id}`} target="_blank" rel="noreferrer" title={`Photo by ${proof.actor}`}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={`/api/importations/file?id=${proof.id}`} alt="Arrival photo" className="size-full object-cover" />
+      </a>
+      <button
+        type="button"
+        aria-label="Delete photo"
+        className="absolute top-0.5 right-0.5 hidden rounded-full bg-white/90 p-0.5 text-gray-700 group-hover/proof:block hover:text-danger-text focus-visible:block"
+        onClick={() => void remove(proof.id)}
+      >
+        <Trash2 className="size-3" />
+      </button>
+    </span>
+  ));
 }
 
 /**

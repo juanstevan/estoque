@@ -8,7 +8,8 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { currentUserId, DEMO_USER } from "@/lib/user";
-import { deleteProductFiles, syncPhotos } from "@/lib/photos/service";
+import { deleteFiles, deleteProductFiles, syncPhotos } from "@/lib/photos/service";
+import { removeLocalProofs } from "@/lib/inventory/proof-file";
 import { mediaForProduct } from "@/lib/media/library";
 import { roundMeasure } from "@/lib/measure";
 import {
@@ -1031,10 +1032,9 @@ export async function setImportStatus(id: string, status: ImportStatus, userId: 
 type LockedImportation = Awaited<ReturnType<typeof lockImportation>>;
 
 /**
- * Takes back what completing added. A normal importation's units leave at the cost they came in
- * at, restoring the product exactly as it was; that's only possible while nothing else moved its
- * stock since. A historical one recomputes the cost basis without it. History stays: each
- * reversal is its own transaction.
+ * Takes back what completing added. A normal importation's entries are deleted and the product
+ * goes back exactly to what the first one found; that's only possible while nothing else moved its
+ * stock since. A historical one recomputes the cost basis without it.
  */
 async function reopenLocked(tx: Tx, importation: LockedImportation, userId: string) {
   if (importation.historical) {
@@ -1097,24 +1097,6 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
     const before = readMeta(receipt.metadata).before as Snapshot | undefined;
     const inventoryValue = before ? before.inventoryValue : Math.max(0, roundMoney(product.inventoryValue - receipt.quantity * receipt.unitCost));
     const avgCost = before ? before.avgCost : physicalQty > 0 ? roundMoney(inventoryValue / physicalQty) : 0;
-    const reversal = await tx.inventoryTransaction.create({
-      data: {
-        productId: product.id,
-        type: TransactionType.IMPORTATION,
-        quantity: -receipt.quantity,
-        unitCost: receipt.unitCost,
-        totalValue: roundMoney(receipt.quantity * receipt.unitCost),
-        reference: importation.reference,
-        notes: `Reopened import ${importation.reference}`,
-        userId,
-        metadata: JSON.stringify({
-          importationId: importation.id,
-          reversalOf: receipt.id,
-          before: snapshot(product),
-          after: { physicalQty, avgCost, inventoryValue },
-        }),
-      },
-    });
     await tx.product.update({
       where: { id: product.id },
       data: {
@@ -1126,8 +1108,11 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
         ...(before?.cifCost !== undefined ? { cifCost: before.cifCost } : {}),
       },
     });
-    own.push(reversal.id);
   }
+  // The entries leave the log: a reopened import never came in. Older reopen pairs (entry plus
+  // reversal, which add up to nothing) go too.
+  await tx.costHistory.deleteMany({ where: { transactionId: { in: own } } });
+  await tx.inventoryTransaction.deleteMany({ where: { id: { in: own } } });
 }
 
 type CostFields = { transferFee: number; freight: number; delivery: number; duties: number; customs: number; otherCosts: number };
@@ -1293,7 +1278,9 @@ export async function receiveImportation(
     if (importation.status === ImportStatus.COMPLETED) {
       return tx.importation.findUniqueOrThrow({ where: { id: importationId }, include: importInclude });
     }
-    if (!importation.historical && !input.photos.length) throw new Error("Add a photo of the products that arrived.");
+    // Photos kept from an earlier receipt (before a reopen) still count.
+    const kept = await tx.importationProof.count({ where: { importationId } });
+    if (!importation.historical && !input.photos.length && !kept) throw new Error("Add a photo of the products that arrived.");
     await completeLocked(tx, importation, input.actor.id, input.receivedAt);
     for (const url of input.photos) {
       await tx.importationProof.create({ data: { importationId, url, actor: input.actor.name || input.actor.id } });
@@ -1418,6 +1405,24 @@ export async function getImportation(id: string) {
 
 export async function importationProof(id: string) {
   return prisma.importationProof.findUnique({ where: { id } });
+}
+
+/** Deletes an arrival photo and its file. A received normal importation keeps at least one. */
+export async function removeImportationProof(proofId: string) {
+  const proof = await prisma.$transaction(async (tx) => {
+    const found = await tx.importationProof.findUnique({ where: { id: proofId } });
+    if (!found) return null;
+    const imp = await lockImportation(tx, found.importationId);
+    const count = await tx.importationProof.count({ where: { importationId: imp.id } });
+    if (imp.status === ImportStatus.COMPLETED && !imp.historical && count <= 1) {
+      throw new Error("A received import keeps at least one arrival photo. Add another first.");
+    }
+    await tx.importationProof.delete({ where: { id: proofId } });
+    return found;
+  });
+  if (!proof) return null;
+  await (proof.url.startsWith("local:") ? removeLocalProofs([proof.url]) : deleteFiles([proof.url]));
+  return getImportation(proof.importationId);
 }
 
 export function importationMetrics(imp: {

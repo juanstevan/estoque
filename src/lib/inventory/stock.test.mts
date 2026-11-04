@@ -13,7 +13,7 @@ if (!/^postgres(ql)?:\/\/[^/]*@(localhost|127\.0\.0\.1)[:/]/.test(url)) throw ne
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 1 }) });
 (globalThis as { prisma?: PrismaClient }).prisma = db;
 
-const { adjustCost, changeQuantity, correctCif, createProduct, receiveImportation, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
+const { adjustCost, changeQuantity, correctCif, createProduct, receiveImportation, removeImportationProof, resolveSetAside, reviseImportation, setImportStatus, upsertImportation } =
   await import("./service");
 const { addProof, addToWorkflow, completeDelivery, moveDelivery, recordReturn, removeFromWorkflow, setPrepared } = await import("./orders");
 const { editLogEntry, removeLogEntry } = await import("./service");
@@ -108,7 +108,7 @@ async function deliverAll(orderId: string) {
   assert.equal(receipt.occurredAt.toISOString(), "2026-10-10T12:00:00.000Z");
   assert.equal(receipt.userId, ME);
 
-  // 12. A completed importation can't be edited; reopening is an explicit reversal kept in history.
+  // 12. A completed importation can't be edited; reopening deletes its entries (it never came in).
   await rejects(() => upsertImportation({ id, lines: [{ productId: p.id, quantity: 99, purchaseUnitCost: 1 }], userId: ME }), /cannot be edited/);
   await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
   await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
@@ -116,12 +116,20 @@ async function deliverAll(orderId: string) {
   assert.equal(reopened.receivedAt, null);
   assert.equal(reopened.expectedDate?.toISOString(), eta.toISOString());
   assert.deepEqual(Object.values(await product(p.id)).length > 0 && [(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [10, 50]);
-  assert.equal(await count(p.id, TransactionType.IMPORTATION), 2, "receipt and its reversal both kept");
+  assert.equal(await count(p.id, TransactionType.IMPORTATION), 0, "the receipt left the log");
+  assert.equal(await db.costHistory.count({ where: { transactionId: receipt.id } }), 0);
 
-  // Corrected freight, received again: average from the real costs (10×50 + 10×110) / 20.
-  await upsertImportation({ id, lines: [{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], freight: 100, expectedDate: eta, userId: ME });
-  await receive(id, "2026-10-11");
+  // Corrected freight, received again with the photo already attached: average from the real
+  // costs (10×50 + 10×110) / 20, one entry, one photo.
+  await upsertImportation({ id, reference: "IMP-RENAMED", lines: [{ productId: p.id, quantity: 10, purchaseUnitCost: 100 }], freight: 100, expectedDate: eta, userId: ME });
+  await receive(id, "2026-10-11", []);
   assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [20, 80]);
+  assert.equal(await count(p.id, TransactionType.IMPORTATION), 1);
+  assert.equal((await db.inventoryTransaction.findFirstOrThrow({ where: { productId: p.id, type: TransactionType.IMPORTATION } })).reference, "IMP-RENAMED");
+  assert.equal(await db.importationProof.count({ where: { importationId: id } }), 1);
+  // The last photo of a received import stays.
+  const [proof] = await db.importationProof.findMany({ where: { importationId: id } });
+  await rejects(() => removeImportationProof(proof!.id), /at least one/);
 
   // Once units moved, reopening refuses instead of guessing.
   await changeQuantity({ productId: p.id, mode: "remove", quantity: 1, reason: "Correction", userId: ME });
