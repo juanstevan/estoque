@@ -3,8 +3,12 @@ import { unmatchedItems } from "@/lib/inventory/delivery-rules";
 import { updateProduct } from "@/lib/inventory/service";
 import { splitName } from "@/lib/photos/name";
 import { INVOICES_FROM, ingestInvoice, ingestItems, parseQbInvoice } from "@/lib/quickbooks/ingest";
+import { quickBooksName } from "@/lib/photos/name";
 import {
   EXPIRED,
+  adjustQuickBooksQuantities,
+  createQuickBooksItem,
+  itemDiffers,
   NOT_CONNECTED,
   REFUSED,
   itemUpdatedAt,
@@ -116,7 +120,7 @@ export function changedFields(
  * QuickBooks → app for linked products. Each product remembers its item's name, SKU and price
  * as last seen (or pushed). Only fields QuickBooks changed since then are pulled, so a sale that
  * only moves QtyOnHand never overwrites a name edited here. The first sight just records them.
- * Quantities are never pulled: stock is owned here.
+ * Quantities are never pulled: stock is owned here and pushed by pushApp.
  */
 async function pullItems(items: QbItem[]) {
   const products = await prisma.product.findMany({ select: { ...PRODUCT, qbUpdatedAt: true, qbSeen: true } });
@@ -268,11 +272,91 @@ async function runSync() {
   }
 
   await fillPhones().catch(() => undefined);
+  const pushed = await pushApp();
 
   const updated = invoiceResults.filter((row) => !row.skipped).length;
   return {
-    changed: itemResult.created.length + pulled + updated > 0,
-    items: { fetched: items.length, created: itemResult.created.length, pulled },
+    changed: itemResult.created.length + pulled + updated + pushed.created + pushed.updated + pushed.adjusted > 0,
+    items: { fetched: items.length, created: itemResult.created.length, pulled, pushed },
     invoices: { fetched: batch.length, updated, from: INVOICES_FROM, changeError },
   };
+}
+
+type PushProduct = {
+  id: string;
+  code: string;
+  name: string;
+  sku: string;
+  b2bPrice: number;
+  avgCost: number;
+  secondarySku: string | null;
+  category: string | null;
+  physicalQty: number;
+  reservedQty: number;
+};
+
+/**
+ * What QuickBooks needs so it shows what the app has. QuickBooks edits were pulled before this, so
+ * the app's name, SKU and B2B price win. QuickBooks takes stock out when an invoice is made, so its
+ * quantity is physical − reserved. Unlinked products take an unlinked item with their SKU, or get a
+ * new item with the accounts of an item of the same category.
+ */
+export function planPush(products: PushProduct[], items: QbItem[]) {
+  const itemId = (p: PushProduct) => (p.secondarySku?.startsWith("qb:") ? p.secondarySku.slice(3) : null);
+  const byId = new Map(items.map((item) => [String(item.Id), item]));
+  const linked = new Set(products.map(itemId).filter(Boolean));
+  const stock = (item?: QbItem) => Boolean(item?.Type === "Inventory" && item.AssetAccountRef);
+  const anyStock = items.find(stock);
+  const create: { product: PushProduct; template: QbItem; qty: number }[] = [];
+  const link: { product: PushProduct; item: QbItem }[] = [];
+  const update: { product: PushProduct; item: QbItem }[] = [];
+  const adjust: { itemId: string; diff: number }[] = [];
+  for (const product of products) {
+    const qty = product.physicalQty - product.reservedQty;
+    let item = byId.get(itemId(product) ?? "");
+    if (!itemId(product)) {
+      item = items.find((i) => i.Sku && i.Sku === product.sku && !linked.has(String(i.Id)));
+      if (item) {
+        linked.add(String(item.Id));
+        link.push({ product, item });
+      } else {
+        const peer = products.find((p) => p.category === product.category && stock(byId.get(itemId(p) ?? "")));
+        const template = peer ? byId.get(itemId(peer)!)! : anyStock;
+        if (template) create.push({ product, template, qty });
+        continue;
+      }
+    }
+    // Linked to an item that's gone or inactive in QuickBooks: nothing to show it on.
+    if (!item) continue;
+    if (itemDiffers(product, item)) update.push({ product: { ...product, secondarySku: `qb:${item.Id}` }, item });
+    if (item.Type === "Inventory" && item.TrackQtyOnHand) {
+      const diff = Math.round((qty - (Number(item.QtyOnHand) || 0)) * 10000) / 10000;
+      if (diff) adjust.push({ itemId: String(item.Id), diff });
+    }
+  }
+  return { create, link, update, adjust };
+}
+
+/** App → QuickBooks, after invoices are in (they move reserved). A failed product doesn't stop the rest. */
+async function pushApp() {
+  const items = (await withRetry(() => qboQuery("Item", "Active = true"))) as QbItem[];
+  const products = await prisma.product.findMany({
+    select: { ...PRODUCT, avgCost: true, physicalQty: true, reservedQty: true },
+  });
+  const plan = planPush(products, items);
+  const failed: string[] = [];
+  const attempt = async (product: PushProduct, run: () => Promise<unknown>) =>
+    run().catch((error) => failed.push(`${quickBooksName(product.code, product.name)}: ${error instanceof Error ? error.message : error}`));
+  for (const { product, item } of plan.link) {
+    await prisma.product.update({ where: { id: product.id }, data: { secondarySku: `qb:${item.Id}` } });
+  }
+  for (const { product, template, qty } of plan.create) {
+    await attempt(product, () => createQuickBooksItem(product, template, qty));
+  }
+  for (const { product, item } of plan.update) {
+    await attempt(product, () => pushQuickBooksItem(product, item));
+  }
+  if (plan.adjust.length) await adjustQuickBooksQuantities(plan.adjust);
+  if (failed.length) throw new Error(`${failed.length} products didn't reach QuickBooks. ${failed.slice(0, 3).join(" · ")}`);
+  return { created: plan.create.length, linked: plan.link.length, updated: plan.update.length, adjusted: plan.adjust.length };
 }

@@ -258,6 +258,11 @@ export type QbItem = {
   Sku?: string;
   Type?: string;
   UnitPrice?: number;
+  QtyOnHand?: number;
+  TrackQtyOnHand?: boolean;
+  IncomeAccountRef?: { value: string };
+  ExpenseAccountRef?: { value: string };
+  AssetAccountRef?: { value: string };
   MetaData?: { LastUpdatedTime?: string };
 };
 
@@ -302,32 +307,40 @@ export async function qboItem(id: string) {
   return json.Item ?? null;
 }
 
+/** "QB-260" is the stand-in SKU of an item imported without one: QuickBooks needn't have it. */
+const qbSku = (sku: string) => (/^QB-\d+$/.test(sku) ? "" : sku);
+
+/** QuickBooks shows a different name, SKU or (set) B2B price than the app has. */
+export function itemDiffers(product: { code: string; name: string; sku: string; b2bPrice: number }, item: QbItem) {
+  return (
+    item.Name !== quickBooksName(product.code, product.name) ||
+    ![product.sku, qbSku(product.sku)].includes(item.Sku ?? "") ||
+    (product.b2bPrice > 0 && item.UnitPrice !== product.b2bPrice)
+  );
+}
+
 /**
  * Push the app name (as `ID - category family variant`), SKU and B2B price to the linked
  * QuickBooks item. Saves the item's new LastUpdatedTime on the product so the next sync
  * doesn't pull our own change back. Returns the item as QuickBooks now has it, or null when
- * the product isn't linked.
+ * the product isn't linked. `known`: the item as just read, to skip reading it again.
  */
-export async function pushQuickBooksItem(product: {
-  id: string;
-  code: string;
-  name: string;
-  sku: string;
-  secondarySku: string | null;
-  b2bPrice: number;
-}) {
+export async function pushQuickBooksItem(
+  product: { id: string; code: string; name: string; sku: string; secondarySku: string | null; b2bPrice: number },
+  known?: QbItem,
+) {
   const id = product.secondarySku?.startsWith("qb:") ? product.secondarySku.slice(3) : "";
   if (!id) return null;
-  const current = await qboItem(id);
+  const current = known ?? (await qboItem(id));
   if (!current?.SyncToken) return null;
   const name = quickBooksName(product.code, product.name);
   const price = product.b2bPrice > 0 ? product.b2bPrice : undefined;
   let pushed: QbItem = current;
-  if (current.Name !== name || (current.Sku ?? "") !== product.sku || (price !== undefined && current.UnitPrice !== price)) {
+  if (itemDiffers(product, current)) {
     const res = await qboFetch(
       "item",
       { operation: "update" },
-      { Id: id, SyncToken: current.SyncToken, Name: name, Sku: product.sku, UnitPrice: price, sparse: true },
+      { Id: id, SyncToken: current.SyncToken, Name: name, Sku: qbSku(product.sku) || current.Sku, UnitPrice: price, sparse: true },
     );
     if (!res.ok) throw new Error(faultMessage(await res.text()) || "QuickBooks item update failed");
     pushed = ((await res.json()) as { Item?: QbItem }).Item ?? current;
@@ -337,4 +350,54 @@ export async function pushQuickBooksItem(product: {
     data: { qbUpdatedAt: itemUpdatedAt(pushed), qbSeen: seenOf(pushed) },
   });
   return pushed;
+}
+
+/**
+ * A new QuickBooks inventory item for a product made here, with the accounts of `template` (an
+ * item of the same category) and the stock QuickBooks should show. The product is linked to it.
+ */
+export async function createQuickBooksItem(
+  product: { id: string; code: string; name: string; sku: string; b2bPrice: number; avgCost: number },
+  template: QbItem,
+  qty: number,
+) {
+  const res = await qboFetch("item", {}, {
+    Name: quickBooksName(product.code, product.name),
+    Sku: qbSku(product.sku) || undefined,
+    Type: "Inventory",
+    TrackQtyOnHand: true,
+    QtyOnHand: qty,
+    InvStartDate: new Date().toISOString().slice(0, 10),
+    UnitPrice: product.b2bPrice > 0 ? product.b2bPrice : undefined,
+    PurchaseCost: product.avgCost > 0 ? product.avgCost : undefined,
+    IncomeAccountRef: template.IncomeAccountRef,
+    ExpenseAccountRef: template.ExpenseAccountRef,
+    AssetAccountRef: template.AssetAccountRef,
+  });
+  if (!res.ok) throw new Error(faultMessage(await res.text()) || "QuickBooks item create failed");
+  const item = ((await res.json()) as { Item: QbItem }).Item;
+  await prisma.product.update({
+    where: { id: product.id },
+    data: { secondarySku: `qb:${item.Id}`, qbUpdatedAt: itemUpdatedAt(item), qbSeen: seenOf(item) },
+  });
+  return item;
+}
+
+/**
+ * One QuickBooks inventory adjustment that brings each item's QtyOnHand to the app's number,
+ * posted to the Inventory Shrinkage account (where QuickBooks posts its own quantity adjustments).
+ */
+export async function adjustQuickBooksQuantities(lines: { itemId: string; diff: number }[]) {
+  const [account] = (await qboQuery("Account", "Name = 'Inventory Shrinkage'")) as { Id?: string }[];
+  if (!account?.Id) throw new Error("QuickBooks has no Inventory Shrinkage account to adjust quantities against.");
+  const res = await qboFetch("inventoryadjustment", {}, {
+    TxnDate: new Date().toISOString().slice(0, 10),
+    AdjustAccountRef: { value: account.Id },
+    PrivateNote: "Stock from Chaleur estoque",
+    Line: lines.map((line) => ({
+      DetailType: "ItemAdjustmentLineDetail",
+      ItemAdjustmentLineDetail: { ItemRef: { value: line.itemId }, QtyDiff: line.diff },
+    })),
+  });
+  if (!res.ok) throw new Error(`QuickBooks quantities: ${faultMessage(await res.text())}`);
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { quickBooksName, splitName } from "../photos/name";
 import { isVoidedNote, parseQbInvoice } from "./ingest";
 import { readAuthCode } from "./qbo";
-import { changedFields } from "./sync";
+import { changedFields, planPush } from "./sync";
 
 assert.deepEqual(readAuthCode(" https://x.m.pipedream.net/?code=AB12&state=estoque&realmId=9341 "), { code: "AB12", realmId: "9341" });
 assert.deepEqual(readAuthCode("code=AB12&realmId=9341"), { code: "AB12", realmId: "9341" });
@@ -66,5 +66,30 @@ const real = parseQbInvoice({
   },
 });
 assert.deepEqual(real?.lines, [{ lineId: "1", sku: undefined, quantity: 1, itemId: "77", name: "Grill:38 - Grill GA01 4B (32'' NG) - Legend Line", unitPrice: 1580 }]);
+
+// App → QuickBooks: app names win, QuickBooks shows physical − reserved, new products get an item
+// with the accounts of their category, a stand-in SKU ("QB-7") isn't a difference.
+{
+  const base = { b2bPrice: 0, avgCost: 0, model: null, physicalQty: 0, reservedQty: 0 };
+  const acc = { IncomeAccountRef: { value: "1" }, ExpenseAccountRef: { value: "2" }, AssetAccountRef: { value: "3" } };
+  const items = [
+    { Id: "7", Name: "Door old name", Sku: "", Type: "Inventory", TrackQtyOnHand: true, QtyOnHand: 1, ...acc },
+    { Id: "8", Name: "12 - Grill", Sku: "G", Type: "Inventory", TrackQtyOnHand: true, QtyOnHand: 3, ...acc, AssetAccountRef: { value: "9" } },
+    { Id: "9", Name: "Loose", Sku: "L", Type: "Inventory", TrackQtyOnHand: true, QtyOnHand: 0, ...acc },
+  ];
+  const plan = planPush(
+    [
+      { ...base, id: "a", code: "11", name: "Door New", sku: "QB-7", secondarySku: "qb:7", category: "Door", physicalQty: 5, reservedQty: 2 },
+      { ...base, id: "b", code: "12", name: "Grill", sku: "G", secondarySku: "qb:8", category: "Grill", physicalQty: 3 },
+      { ...base, id: "c", code: "13", name: "Grill Two", sku: "G2", secondarySku: null, category: "Grill", physicalQty: 4 },
+      { ...base, id: "d", code: "14", name: "Loose", sku: "L", secondarySku: null, category: null, physicalQty: 2 },
+    ],
+    items,
+  );
+  assert.deepEqual(plan.update.map((u) => u.product.id), ["a", "d"]);
+  assert.deepEqual(plan.adjust, [{ itemId: "7", diff: 2 }, { itemId: "9", diff: 2 }]);
+  assert.deepEqual(plan.create.map((c) => [c.product.id, c.qty, c.template.AssetAccountRef?.value]), [["c", 4, "9"]]);
+  assert.deepEqual(plan.link.map((l) => [l.product.id, l.item.Id]), [["d", "9"]]);
+}
 
 console.log("invoice parse ok");
