@@ -560,6 +560,14 @@ function Thumb({ src, className }: { src: string | null; className?: string }) {
   );
 }
 
+/** Grid columns an open family covers, capped by the columns the grid has at each width. */
+const SPAN: Record<number, string> = {
+  1: "col-span-1 [--span:1]",
+  2: "col-span-2 [--span:2]",
+  3: "col-span-2 [--span:2] @2xl:col-span-3 @2xl:[--span:3]",
+  4: "col-span-2 [--span:2] @2xl:col-span-3 @2xl:[--span:3] @4xl:col-span-4 @4xl:[--span:4]",
+};
+
 function FamilyBlock({
   family,
   open,
@@ -580,7 +588,6 @@ function FamilyBlock({
   children: React.ReactNode;
 }) {
   const name = family.name || "No family";
-  const single = family.models.length === 1;
   if (!open) {
     return (
       <div className="relative rounded-[12px] bg-sunken">
@@ -592,6 +599,9 @@ function FamilyBlock({
       </div>
     );
   }
+  const n = family.models.length;
+  const cols = Math.max(1, Math.min(4, n <= 2 ? n : Math.ceil(n / 2)));
+  const rows = Math.max(1, Math.ceil(n / cols));
   const body = (
     <>
       <div className="flex shrink-0 items-center justify-between gap-2">
@@ -601,18 +611,21 @@ function FamilyBlock({
           <Button variant="ghost" size="icon-sm" aria-label="Close family" onClick={onClose}><X /></Button>
         </div>
       </div>
-      <div className={cn("flex min-h-0 flex-1 gap-2", single ? "[&>*]:flex-1" : "no-scrollbar overflow-x-auto [&>*]:shrink-0 [&>*]:basis-[calc(50%-4px)]")}>{children}</div>
+      <div className="grid min-h-0 flex-1 gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
+        {children}
+      </div>
     </>
   );
-  // Open, the block keeps a closed tile's height (p-2, 4/3 photo, one line), so rows stay aligned.
-  // One model takes one column; more take two, side by side, scrolling sideways past two.
-  // 100cqw is the block's width; a column is that less the grid gap, split by the span.
-  const span = single ? 1 : 2;
+  // Open, the block grows to show every model: 1 → 1×1, 2 → 2×1, 3–4 → 2×2, 5–6 → 3×2… (up to the
+  // grid's columns, then more rows). Each row keeps a closed tile's height (p-2, 4/3 photo, one
+  // line), so it lines up with its neighbours. 100cqw is the block's width; --span is how many grid
+  // columns it really covers at this width, so a column is that less the gaps, split by it.
+  const tile = "((100cqw - (var(--span) - 1) * 8px) / var(--span) - 16px) * 0.75 + 46px";
   return (
-    <section aria-label={name} className={cn("@container", single ? "col-span-1" : "col-span-2")}>
+    <section aria-label={name} className={cn("@container", SPAN[cols])} style={{ gridRow: `span ${rows}` }}>
       <div
         className="flex min-h-0 flex-col gap-3 overflow-hidden rounded-[12px] bg-sunken p-3"
-        style={{ height: `calc(((100cqw - ${(span - 1) * 8}px) / ${span} - 16px) * 0.75 + 46px)` }}
+        style={{ height: `calc(${rows} * (${tile}) + ${(rows - 1) * 8}px)` }}
       >
         {body}
       </div>
