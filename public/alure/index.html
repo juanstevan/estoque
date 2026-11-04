@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outdoor Kitchen Builder</title>
+<style>
+  :root {
+    --ink: #17181c; --muted: #6b6f78; --line: rgba(23, 24, 28, .1); --hover: #f1f2f5;
+    --accent: #2563eb; --accent-soft: #e8efff; --danger: #d93025; --danger-soft: #fdeceb;
+    --shadow: 0 8px 28px rgba(23, 24, 28, .1), 0 1px 3px rgba(23, 24, 28, .06);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: #e9e7e3; -webkit-user-select: none; user-select: none; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { opacity: .35; cursor: default; }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; outline: none; }
+  .card { background: rgba(255, 255, 255, .96); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+  .lbl { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+
+  #top { position: fixed; top: 16px; left: 16px; right: 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; pointer-events: none; }
+  #top > * { pointer-events: auto; }
+  #summary { padding: 12px 16px; }
+  #summary h1 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  #summary .big { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  #summary .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #materials { display: grid; grid-template-columns: auto auto; align-items: center; gap: 10px 16px; padding: 12px 14px; }
+  #materials .val { font-size: 12.5px; font-weight: 500; }
+  .swatches { display: flex; gap: 6px; }
+  .swatches button { position: relative; width: 28px; height: 28px; padding: 0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
+  .swatches button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
+
+  #dock { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 6px; }
+  #dock button { position: relative; display: flex; align-items: center; height: 64px; padding: 6px 8px; border: 0; border-radius: 8px; background: none; touch-action: none; }
+  #dock button:hover, #dock button:focus-visible { background: var(--hover); }
+  #dock button.on { background: var(--accent-soft); color: var(--accent); }
+  #dock svg { display: block; height: 50px; width: auto; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+  #dock svg * { vector-effect: non-scaling-stroke; }
+  #dock svg .fill { fill: currentColor; }
+  #dock .remove { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 8px; border: 1.5px dashed var(--danger); border-radius: inherit; background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+  #dock.removing .remove { display: flex; }
+  #dock.hot .remove { border-style: solid; background: var(--danger); color: #fff; }
+  #hint { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); padding: 6px 12px; border-radius: 999px; background: rgba(23, 24, 28, .78); color: #fff; font-size: 12px; white-space: nowrap; pointer-events: none; transition: opacity .15s; }
+
+  #viewbar { position: fixed; right: 16px; bottom: 16px; display: flex; gap: 2px; padding: 4px; }
+  .icon-btn { position: relative; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px; background: none; }
+  .icon-btn:hover:not(:disabled) { background: var(--hover); }
+  .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .icon-btn svg, .remove svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .sep { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--line); }
+
+  .float { padding-bottom: 12px; pointer-events: none; }
+  .ctx { display: flex; align-items: center; gap: 2px; padding: 4px; pointer-events: auto; }
+  .ctx .name { padding: 0 8px; font-weight: 600; line-height: 1.25; white-space: nowrap; }
+  .ctx .name small { display: block; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tag { padding: 3px 8px; border-radius: 6px; background: rgba(23, 24, 28, .85); color: #fff; font-size: 12px; white-space: nowrap; }
+  .dim { padding: 2px 7px; border-radius: 5px; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .18); font-size: 11.5px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dim.acc { background: var(--accent); color: #fff; }
+
+  @media (hover: hover) {
+    #dock:hover ~ #hint { opacity: 0; }
+    [data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); padding: 4px 8px; border-radius: 6px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none; z-index: 5; }
+    .swatches [data-tip]:hover::after { bottom: auto; top: calc(100% + 8px); }
+  }
+  @media (max-width: 640px) {
+    #top { top: 12px; left: 12px; right: 12px; gap: 8px; }
+    #summary { flex: 1 1 100%; }
+    #dock { bottom: 12px; }
+    #dock button { height: 54px; padding: 4px; }
+    #dock svg { height: 42px; }
+    #viewbar { right: 12px; bottom: 84px; }
+    #hint { left: 12px; bottom: 90px; transform: none; max-width: calc(100% - 160px); white-space: normal; border-radius: 12px; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="view"></div>
+
+<div id="top">
+  <section id="summary" class="card">
+    <h1>Outdoor Kitchen Builder</h1>
+    <div id="summary-body"></div>
+  </section>
+  <section id="materials" class="card">
+    <div><span class="lbl">Finish</span><span class="val" id="finish-name"></span></div>
+    <div class="swatches" id="finishes"></div>
+    <div><span class="lbl">Countertop</span><span class="val" id="counter-name"></span></div>
+    <div class="swatches" id="tops"></div>
+  </section>
+</div>
+
+<nav id="dock" class="card" aria-label="Add module">
+  <div class="remove"><span data-icon="del"></span>Drop to remove</div>
+</nav>
+<div id="hint"></div>
+
+<div id="viewbar" class="card">
+  <button class="icon-btn" id="undo" data-icon="undo" data-tip="Undo (Mod+Z)" aria-label="Undo"></button>
+  <button class="icon-btn" id="redo" data-icon="redo" data-tip="Redo (Shift+Mod+Z)" aria-label="Redo"></button>
+  <span class="sep"></span>
+  <button class="icon-btn" id="fit" data-icon="fit" data-tip="Fit view" aria-label="Fit view"></button>
+</div>
+
+<div id="ctx-wrap" class="float" style="display:none">
+  <div class="ctx card">
+    <button class="icon-btn" data-cmd="left" data-icon="left" data-tip="Move left (←)" aria-label="Move left"></button>
+    <div class="name"><span id="ctx-name"></span><small id="ctx-dims"></small></div>
+    <button class="icon-btn" data-cmd="right" data-icon="right" data-tip="Move right (→)" aria-label="Move right"></button>
+    <span class="sep"></span>
+    <button class="icon-btn" data-cmd="dup" data-icon="dup" data-tip="Duplicate (Mod+D)" aria-label="Duplicate"></button>
+    <button class="icon-btn danger" data-cmd="del" data-icon="del" data-tip="Remove (Del)" aria-label="Remove"></button>
+  </div>
+</div>
+<div id="tag-wrap" class="float" style="display:none"><div class="tag" id="tag"></div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// Sizes in inches, from the catalog. Every module shares the same depth and height.
+// FRONT is where door faces sit, just behind the countertop edge.
+const D = 20.87, H = 34.65, TOP = 1.2, KICK = 3.5, T = 0.7, FRONT = D / 2 - 0.3;
+const MODULES = {
+  trash450:  { name: '450 Trash Bin',      w: 17.72, lb: 59.5,  front: 'door' },
+  sink600:   { name: '600 Sink Cabinet',   w: 23.62, lb: 66.1,  front: 'doors', sink: true },
+  drawer600: { name: '600 Drawer Cabinet', w: 23.62, lb: 72.8,  front: 'drawers' },
+  drawer500: { name: '500 Drawer Cabinet', w: 19.69, lb: 75.0,  front: 'drawers' },
+  cab800:    { name: '800 Cabinet',        w: 31.50, lb: 105.8, front: 'doors' },
+  grill1000: { name: '1000 Grill Cabinet', w: 39.37, lb: 101.4, front: 'doors', grill: true },
+  fridge500: { name: '500 Fridge Cabinet', w: 19.69, lb: 57.3,  front: 'open' },
+  // Catalog prints 19.69" (copied from the 500), but model numbers are mm widths: 666 mm = 26.22".
+  fridge666: { name: '666 Fridge Cabinet', w: 26.22, lb: 57.3,  front: 'open' },
+};
+const FINISHES = { 'Titanium Grey': '#8e9092', 'Midnight Black': '#2a2b2f', 'Oak Sand': '#a8937c' };
+const TOPS = { Stone: '#e8e6e1', Graphite: '#3d3e41', Ivory: '#efe6d3' };
+const ACCENT = '#2563eb';
+const MOD = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘' : 'Ctrl+';
+const ICONS = {
+  left: '<path d="M15 18l-6-6 6-6"/>',
+  right: '<path d="M9 18l6-6-6-6"/>',
+  dup: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
+  del: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  undo: '<path d="M9 14l-5-5 5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+  fit: '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/>',
+};
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const $ = (id) => document.getElementById(id);
+const width = (list) => list.reduce((s, it) => s + MODULES[it.key].w, 0);
+const fmt = (n) => `${n.toFixed(2)}″ · ${(n / 12).toFixed(2)} ft`;
+
+// State lives in the URL hash, so a layout survives reloads and can be shared as a link.
+// run: modules left to right. drag: { mode: 'move' | 'place', key, item?, slot, x, armed? }
+const params = new URLSearchParams(location.hash.slice(1));
+let run = (params.get('run') ?? 'sink600,drawer600,grill1000,trash450,fridge500').split(',').filter(k => MODULES[k]).map(key => ({ key }));
+let finish = FINISHES[params.get('finish')] ? params.get('finish') : 'Titanium Grey';
+let counter = TOPS[params.get('counter')] ? params.get('counter') : 'Stone';
+let sel = null, hover = null, press = null, drag = null, ghost = null;
+const undo = [], redo = [], groups = new Map();
+
+// --- scene ---
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.9;
+const canvas = renderer.domElement;
+const labels = new CSS2DRenderer();
+Object.assign(labels.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none' });
+$('view').append(canvas, labels.domElement);
+canvas.addEventListener('pointerdown', onDown); // before OrbitControls, so grabbing a module can switch orbiting off first
+canvas.addEventListener('pointerleave', () => setHover(null));
+canvas.addEventListener('contextmenu', () => { if (drag?.mode === 'place') endDrag(); });
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#e9e7e3');
+scene.fog = new THREE.Fog('#e9e7e3', 600, 2000);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(35, 1, 2, 6000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI / 2 - 0.08;
+controls.minDistance = 50;
+controls.maxDistance = 2500;
+
+const sun = new THREE.DirectionalLight('#ffffff', 1.8);
+sun.position.set(90, 220, 160);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0004;
+sun.shadow.camera.far = 700;
+scene.add(sun, new THREE.HemisphereLight('#ffffff', '#b8b2a7', 0.35));
+
+function canvasTexture(size, draw) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+const floorTex = canvasTexture(128, (x, s) => { // 1 ft grid
+  x.fillStyle = '#e6e3de';
+  x.fillRect(0, 0, s, s);
+  x.strokeStyle = 'rgba(0, 0, 0, .08)';
+  x.lineWidth = 2;
+  x.strokeRect(0, 0, s, s);
+});
+floorTex.repeat.set(336, 336);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(4032, 4032), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const stones = {};
+function stoneTexture(name) { // speckled quartz, one 24" tile
+  if (stones[name]) return stones[name];
+  const light = new THREE.Color(TOPS[name]).getHSL({}).l > 0.5;
+  const t = canvasTexture(512, (x, s) => {
+    x.fillStyle = TOPS[name];
+    x.fillRect(0, 0, s, s);
+    for (let i = 0; i < 14000; i++) {
+      const v = Math.random() < (light ? 0.75 : 0.25) ? 0 : 255, r = Math.random() < 0.95 ? 1 + Math.random() * 1.5 : 2.5 + Math.random() * 2;
+      x.fillStyle = `rgba(${v}, ${v}, ${v}, ${0.03 + Math.random() * 0.12})`;
+      x.fillRect(Math.random() * s, Math.random() * s, r, r);
+    }
+  });
+  t.repeat.set(1 / 24, 1 / 24);
+  return stones[name] = t;
+}
+
+const mat = {
+  body: new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.15 }),
+  kick: new THREE.MeshStandardMaterial({ roughness: 0.7 }),
+  top: new THREE.MeshStandardMaterial({ roughness: 0.3 }),
+  dark: new THREE.MeshStandardMaterial({ color: '#141414', roughness: 0.8 }),
+  steel: new THREE.MeshStandardMaterial({ color: '#d7dade', metalness: 0.85, roughness: 0.3 }),
+  basin: new THREE.MeshStandardMaterial({ color: '#c3c7cb', metalness: 0.8, roughness: 0.35, side: THREE.BackSide }),
+  chrome: new THREE.MeshStandardMaterial({ color: '#f2f3f5', metalness: 1, roughness: 0.1 }),
+  dial: new THREE.MeshStandardMaterial({ color: '#f5f5f2', roughness: 0.5 }),
+};
+function applyMaterials() {
+  mat.body.color.set(FINISHES[finish]);
+  mat.kick.color.set(FINISHES[finish]).multiplyScalar(0.7);
+  mat.top.map = stoneTexture(counter);
+  mat.top.needsUpdate = true;
+}
+
+// --- module geometry (local origin: centered, floor level, front facing +z) ---
+function part(g, geo, m, x, y, z) {
+  const o = new THREE.Mesh(geo, m);
+  o.position.set(x, y, z);
+  o.castShadow = o.receiveShadow = true;
+  g.add(o);
+  return o;
+}
+const box = (g, m, w, h, d, x, y, z, r = 0.12) => part(g, new RoundedBoxGeometry(w, h, d, 2, r), m, x, y + h / 2, z); // y = bottom
+
+function roundRect(p, x, y, w, h, r) {
+  p.moveTo(x + r, y);
+  p.lineTo(x + w - r, y); p.quadraticCurveTo(x + w, y, x + w, y + r);
+  p.lineTo(x + w, y + h - r); p.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  p.lineTo(x + r, y + h); p.quadraticCurveTo(x, y + h, x, y + h - r);
+  p.lineTo(x, y + r); p.quadraticCurveTo(x, y, x + r, y);
+  return p;
+}
+// Plan-view shapes (shape y = world z), inset so the rounded edge lands on the module outline.
+const counterShape = (w) => roundRect(new THREE.Shape(), -w / 2 + 0.14, -D / 2 + 0.12, w - 0.28, D - 0.24, 0.2);
+function notchedShape(w, nw, nz) { // countertop with a front cut-out nw wide reaching back to z = nz, for a drop-in grill
+  const s = new THREE.Shape(), x = w / 2 - 0.14, z0 = -D / 2 + 0.12, z1 = D / 2 - 0.12, n = nw / 2 + 0.12, zn = nz - 0.12;
+  s.moveTo(-x, z0); s.lineTo(x, z0); s.lineTo(x, z1); s.lineTo(n, z1); s.lineTo(n, zn); s.lineTo(-n, zn); s.lineTo(-n, z1); s.lineTo(-x, z1); s.closePath();
+  return s;
+}
+function slab(g, shape, m, y, thick) { // horizontal slab with rounded edges, bottom at y
+  const b = Math.min(0.12, thick / 4);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: thick - 2 * b, bevelEnabled: true, bevelThickness: b, bevelSize: b, bevelSegments: 2, curveSegments: 8 });
+  geo.rotateX(Math.PI / 2);
+  return part(g, geo, m, 0, y + thick - b, 0);
+}
+
+function buildModule(key) {
+  const { w, front, sink, grill } = MODULES[key];
+  const g = new THREE.Group(), back = -D / 2, bodyH = H - TOP - KICK;
+  const sideEnd = front === 'open' ? FRONT : FRONT - 1, sideD = sideEnd - back; // closed carcasses stop behind the fronts
+  for (const s of [-1, 1]) {
+    const x = s * (w / 2 - T / 2);
+    box(g, mat.body, T, bodyH, sideD, x, KICK, back + sideD / 2);
+    box(g, mat.body, T, KICK, sideD - 1.5, x, 0, back + (sideD - 1.5) / 2); // toe-kick notch
+  }
+  box(g, mat.body, w - 2 * T, bodyH, T, 0, KICK, back + T / 2);
+  box(g, mat.kick, w - 2 * T, KICK - 0.1, 0.6, 0, 0, sideEnd - 1.8);
+  let top = counterShape(w);
+
+  if (front === 'open') { // shell only, a fridge slides in
+    const d = sideD - T;
+    box(g, mat.body, w - 2 * T, T, d, 0, KICK, back + T + d / 2);
+    box(g, mat.body, w - 2 * T, T, d, 0, H - TOP - T, back + T + d / 2);
+    for (let i = 0; i < 5; i++) box(g, mat.dark, w * 0.5, 0.45, 0.1, 0, H - TOP - 6 + i, back + T + 0.05, 0.1); // vent slots
+  } else {
+    const fz = FRONT - 0.375, fw = w - 0.3, y0 = KICK + 0.25, y1 = grill ? H - 10.4 : H - TOP - 1.6;
+    const panel = (x, y, pw, ph) => box(g, mat.body, pw, ph, 0.75, x, y, fz, 0.18);
+    box(g, mat.dark, w - 0.04, bodyH, 0.15, 0, KICK, FRONT - 0.875, 0.02); // shows through the gaps and handleless channels
+    if (front === 'door') panel(0, y0, fw, y1 - y0);
+    if (front === 'doors') { const pw = (fw - 0.25) / 2; for (const s of [-1, 1]) panel(s * (pw + 0.25) / 2, y0, pw, y1 - y0); }
+    if (front === 'drawers') { const gap = 1.3, ph = (y1 - y0 - 2 * gap) / 3; for (let i = 0; i < 3; i++) panel(0, y0 + i * (ph + gap), fw, ph); }
+    if (grill) panel(0, y1 + 0.6, fw, H - TOP - 0.9 - y1); // fascia around the grill controls
+  }
+
+  if (sink) { // catalog sink 19.69 x 15.75 x 8.66, drop-in
+    const hw = 18.5, hd = 14, hz = -6.1, hole = () => roundRect(new THREE.Path(), -hw / 2, hz, hw, hd, 1.1);
+    top.holes.push(hole());
+    const rim = roundRect(new THREE.Shape(), -hw / 2 - 0.5, hz - 0.5, hw + 1, hd + 1, 1.6);
+    rim.holes.push(hole());
+    slab(g, rim, mat.steel, H, 0.12);
+    part(g, new THREE.BoxGeometry(hw - 0.1, 8.66, hd - 0.1), mat.basin, 0, H - 4.33, hz + hd / 2); // inside faces only = open basin
+    part(g, new THREE.CylinderGeometry(1.4, 1.4, 0.05, 24), mat.dark, 0, H - 8.6, hz + hd / 2 + 2);
+    const fz = back + 2.1; // pull-down faucet
+    part(g, new THREE.CylinderGeometry(1.1, 1.2, 0.4, 24), mat.chrome, 0, H + 0.2, fz);
+    part(g, new THREE.CylinderGeometry(0.6, 0.7, 7, 20), mat.chrome, 0, H + 3.9, fz);
+    part(g, new THREE.TubeGeometry(new THREE.CatmullRomCurve3([V(0, 7, 0), V(0, 11, 0), V(0, 13.6, 0.9), V(0, 14.3, 2.8), V(0, 13.5, 4.6), V(0, 11.8, 5.4)]), 48, 0.42, 12), mat.chrome, 0, H, fz);
+    part(g, new THREE.CylinderGeometry(0.62, 0.55, 3, 20), mat.chrome, 0, H + 10.3, fz + 5.4);
+    part(g, new THREE.CylinderGeometry(0.22, 0.22, 3, 10), mat.chrome, 1.2, H + 6.2, fz).rotation.z = -1;
+  }
+
+  if (grill) { // 32" drop-in grill: firebox below the counter, hood above
+    const gw = 32, gd = 19, pf = FRONT + 0.15, zc = pf - gd / 2, hd = gd - 0.4, hh = 11, r = 7;
+    top = notchedShape(w, gw + 0.2, pf - gd);
+    box(g, mat.steel, gw, 9.5, gd, 0, H - 9.5, zc, 0.2); // its front is the control panel
+    for (let i = 0; i < 4; i++) {
+      const x = -10.5 + i * 7;
+      part(g, new THREE.CylinderGeometry(1.15, 1.3, 1.2, 28), mat.chrome, x, H - 4.8, pf + 0.6).rotation.x = Math.PI / 2;
+      part(g, new THREE.TorusGeometry(1.55, 0.16, 8, 28), mat.dark, x, H - 4.8, pf + 0.05);
+    }
+    const p = new THREE.Shape(); // hood side profile, rounded at the front
+    p.moveTo(0, 0); p.lineTo(0, hh); p.lineTo(hd - r, hh); p.quadraticCurveTo(hd, hh, hd, hh - r); p.lineTo(hd, 0); p.closePath();
+    const hood = new THREE.ExtrudeGeometry(p, { depth: gw - 0.6, bevelEnabled: true, bevelThickness: 0.3, bevelSize: 0.3, bevelSegments: 3, curveSegments: 16 });
+    hood.translate(-hd / 2, 0, -(gw - 0.6) / 2).rotateY(-Math.PI / 2);
+    part(g, hood, mat.steel, 0, H + 0.3, zc);
+    const hf = zc + hd / 2 + 0.3; // hood front
+    part(g, new THREE.CylinderGeometry(0.45, 0.45, 25, 16), mat.chrome, 0, H + 8, hf + 1.4).rotation.z = Math.PI / 2;
+    for (const x of [-11, 11]) part(g, new THREE.CylinderGeometry(0.3, 0.3, 2.2, 12), mat.chrome, x, H + 8, hf + 0.3).rotation.x = Math.PI / 2;
+    for (const [rad, m] of [[1.5, mat.chrome], [1.2, mat.dial]]) // thermometer
+      part(g, new THREE.CylinderGeometry(rad, rad, 0.3 + (1.5 - rad) / 7, 32), m, 0, H + 9.9, hf - 1.75).rotation.x = Math.PI / 4;
+  }
+
+  slab(g, top, mat.top, H - TOP, TOP);
+  g.userData.top = new THREE.Box3().setFromObject(g).max.y;
+  return g;
+}
+const dispose = (g) => g.traverse(o => o.geometry?.dispose());
+
+// Front-elevation icon, drawn to scale (inches) so wider modules get wider icons.
+function moduleIcon({ w, front, sink, grill }) {
+  const c = w / 2, bot = H - 1.5, y0 = grill ? 11 : 4, fx = 1.6, fw = w - 3.2, fh = bot - 1.6 - y0;
+  const rect = (x, y, rw, rh, rx = 0.8, cls) => `<rect x="${x}" y="${y}" width="${rw}" height="${rh}" rx="${rx}"${cls ? ` class="${cls}"` : ''}/>`;
+  let s = rect(-0.6, 0, w + 1.2, 1.8, 0.6, 'fill') + rect(0, 1.8, w, bot - 1.8);
+  if (front === 'door') s += rect(fx, y0, fw, fh) + `<path d="M${c - 3.5} 14h7l-.8 9h-5.4zM${c - 4.5} 12.5h9M${c - 1.5} 12.5v-1.3h3v1.3"/>`;
+  if (front === 'doors') { const pw = (fw - 1.2) / 2; s += rect(fx, y0, pw, fh) + rect(fx + pw + 1.2, y0, pw, fh); }
+  if (front === 'drawers') { const ph = (fh - 2.4) / 3; for (let i = 0; i < 3; i++) s += rect(fx, y0 + i * (ph + 1.2), fw, ph); }
+  if (front === 'open') { const b = bot - 1.6; s += rect(fx, 3.4, fw, b - 3.4) + rect(fx + 3, 6.4, fw - 6, b - 9.4, 0.4) + `<path d="M${fx} 3.4l3 3M${fx + fw} 3.4l-3 3M${fx} ${b}l3-3M${fx + fw} ${b}l-3-3"/>`; }
+  if (sink) s += `<path d="M${c + 3.5} 0V-7.5a3.5 3.5 0 0 0-7 0V-5"/>`;
+  if (grill) s += rect(c - 14, -10.5, 28, 10.5, 3) + `<path d="M${c - 10} -7.5h20"/>` + rect(c - 14, 3.2, 28, 6, 0.6) + [-9, -3, 3, 9].map(k => `<circle cx="${c + k}" cy="6.2" r="1"/>`).join('');
+  return `<svg viewBox="-1.5 -12 ${w + 3} ${H + 13}" style="aspect-ratio: ${w + 3} / ${H + 13}" aria-hidden="true">${s}</svg>`;
+}
+
+// --- in-scene overlays: dimension lines, footprint rings, floating labels ---
+function makeDim(accent) {
+  const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(18), 3));
+  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: accent ? ACCENT : '#3a3d44' }));
+  const el = document.createElement('div'), label = new CSS2DObject(el);
+  el.className = accent ? 'dim acc' : 'dim';
+  line.frustumCulled = false;
+  scene.add(line, label);
+  return {
+    set(a, b, text) {
+      const n = a.y === b.y ? V(0, 1.5, 0) : V(1.5, 0, 0); // end ticks
+      [a, b, a.clone().add(n), a.clone().sub(n), b.clone().add(n), b.clone().sub(n)].forEach((p, i) => geo.attributes.position.setXYZ(i, p.x, p.y, p.z));
+      geo.attributes.position.needsUpdate = true;
+      label.position.lerpVectors(a, b, 0.5);
+      if (el.textContent !== text) el.textContent = text;
+      line.visible = label.visible = true;
+    },
+    hide() { line.visible = label.visible = false; },
+  };
+}
+const dims = { w: makeDim(), d: makeDim(), h: makeDim(), focus: makeDim(true) };
+
+const ringGeos = {};
+function ringGeo(w) {
+  if (!ringGeos[w]) {
+    const s = roundRect(new THREE.Shape(), -w / 2 - 1.6, -D / 2 - 1.6, w + 3.2, D + 3.2, 2);
+    s.holes.push(roundRect(new THREE.Path(), -w / 2 - 0.9, -D / 2 - 0.9, w + 1.8, D + 1.8, 1.4));
+    ringGeos[w] = new THREE.ShapeGeometry(s, 6).rotateX(-Math.PI / 2);
+  }
+  return ringGeos[w];
+}
+function makeRing(color, opacity) {
+  const m = new THREE.Mesh(ringGeo(20), new THREE.MeshBasicMaterial({ color, opacity, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 }));
+  m.position.y = 0.15;
+  scene.add(m);
+  return m;
+}
+const focusRing = makeRing(ACCENT, 0.9), hoverRing = makeRing('#5b6275', 0.4);
+function showRing(ring, f) {
+  ring.visible = !!f;
+  if (f) { ring.geometry = ringGeo(f.w); ring.position.x = f.x; }
+}
+
+function floatLabel(id) { // HTML pinned above a module
+  const l = new CSS2DObject($(id));
+  l.center.set(0.5, 1);
+  scene.add(l);
+  return l;
+}
+const ctxLabel = floatLabel('ctx-wrap'), tagLabel = floatLabel('tag-wrap');
+function float(label, item) {
+  label.visible = !!item;
+  if (item) { const g = groups.get(item); label.position.set(g.position.x, g.position.y + g.userData.top + 1, 0); }
+}
+
+// --- layout ---
+// Target x of every module; while dragging, a gap opens at drag.slot for the module in hand.
+function targets() {
+  const list = run.filter(it => it !== drag?.item);
+  const gap = drag?.slot != null ? MODULES[drag.key].w : 0, W = width(list) + gap, xs = new Map();
+  let x = -W / 2;
+  list.forEach((it, i) => {
+    if (i === drag?.slot) x += gap;
+    xs.set(it, x + MODULES[it.key].w / 2);
+    x += MODULES[it.key].w;
+  });
+  return { xs, W, list: gap ? [...list, { key: drag.key }] : list };
+}
+function findSlot(px) { // insertion index whose gap center is nearest to world x
+  const list = run.filter(it => it !== drag.item), gw = MODULES[drag.key].w;
+  let x = -(width(list) + gw) / 2, slot = 0, cx = x + gw / 2;
+  for (let i = 1; i <= list.length; i++) {
+    x += MODULES[list[i - 1].key].w;
+    if (Math.abs(px - x - gw / 2) < Math.abs(px - cx)) { slot = i; cx = x + gw / 2; }
+  }
+  return [slot, cx];
+}
+function sync() { // scene groups follow `run`
+  for (const [it, g] of groups) if (!run.includes(it)) { scene.remove(g); dispose(g); groups.delete(it); if (hover === it) hover = null; }
+  const { xs } = targets();
+  for (const it of run) if (!groups.has(it)) {
+    const g = buildModule(it.key);
+    g.userData.item = it;
+    g.position.set(xs.get(it) ?? 0, 6, 0); // new modules drop into place
+    groups.set(it, g);
+    scene.add(g);
+  }
+}
+
+// --- editing (every change goes through commit() for undo) ---
+const snapshot = () => ({ run: run.slice(), finish, counter });
+function commit() { undo.push(snapshot()); redo.length = 0; }
+function restore(from, to) {
+  if (drag || !from.length) return;
+  to.push(snapshot());
+  ({ run, finish, counter } = from.pop());
+  run = run.slice();
+  if (!run.includes(sel)) sel = null;
+  applyMaterials();
+  changed();
+}
+function changed() {
+  sync();
+  history.replaceState(null, '', '#' + new URLSearchParams({ run: run.map(it => it.key).join(','), finish, counter }));
+  ui();
+}
+function insert(key, index) {
+  commit();
+  const it = { key };
+  run.splice(index, 0, it);
+  sel = it;
+  changed();
+  return it;
+}
+function remove(item) {
+  commit();
+  run.splice(run.indexOf(item), 1);
+  if (sel === item) sel = null;
+  changed();
+}
+function moveTo(item, slot) {
+  const list = run.filter(it => it !== item);
+  list.splice(slot, 0, item);
+  if (list.every((it, i) => it === run[i])) return;
+  commit();
+  run = list;
+  changed();
+}
+function nudge(dir) {
+  const i = run.indexOf(sel), j = i + dir;
+  if (!sel || j < 0 || j >= run.length) return;
+  commit();
+  [run[i], run[j]] = [run[j], run[i]];
+  changed();
+}
+function duplicate() {
+  if (!sel) return;
+  const from = groups.get(sel).position.clone();
+  groups.get(insert(sel.key, run.indexOf(sel) + 1)).position.copy(from); // slides out of the original
+}
+function select(item) { sel = item; ui(); }
+function setMaterial(kind, name) {
+  if (!name || name === (kind === 'finish' ? finish : counter)) return;
+  commit();
+  if (kind === 'finish') finish = name; else counter = name;
+  applyMaterials();
+  changed();
+}
+
+// --- pointer input: click selects, drag a module to reorder, drag from the dock to add ---
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), midPlane = new THREE.Plane(V(0, 1, 0), -H / 2);
+function aim(e) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+}
+function pick() {
+  let o = ray.intersectObjects([...groups.values()], true)[0]?.object;
+  while (o && !o.userData.item) o = o.parent;
+  return o?.userData.item ?? null;
+}
+const under = (e) => document.elementFromPoint(e.clientX, e.clientY);
+const moved = (a, e) => Math.hypot(e.clientX - a.x, e.clientY - a.y) > 5;
+function setHover(item) {
+  if (item === hover) return;
+  hover = item;
+  if (item) $('tag').textContent = `${MODULES[item.key].name} · ${MODULES[item.key].w.toFixed(2)}″`;
+}
+function aimSlot(e) { // where would the module in hand land?
+  const el = under(e);
+  $('dock').classList.toggle('hot', drag.mode === 'move' && !!el?.closest('#dock'));
+  drag.slot = null;
+  const p = el === canvas && ray.ray.intersectPlane(midPlane, new THREE.Vector3());
+  if (p) [drag.slot, drag.x] = findSlot(p.x);
+}
+
+function onDown(e) {
+  if (e.button !== 0) return;
+  aim(e);
+  press = { x: e.clientX, y: e.clientY, item: drag ? null : pick() };
+  controls.enabled = !press.item; // grabbing a module drags it instead of orbiting
+  if (press.item) canvas.setPointerCapture(e.pointerId);
+}
+function onMove(e) {
+  aim(e);
+  if (press?.item && !drag && moved(press, e)) {
+    drag = { mode: 'move', item: press.item, key: press.item.key, slot: null, x: groups.get(press.item).position.x };
+    sel = press.item;
+    $('dock').classList.add('removing');
+    ui();
+  }
+  if (drag) aimSlot(e);
+  else setHover(!e.buttons && under(e) === canvas ? pick() : null);
+  canvas.style.cursor = drag?.mode === 'move' ? 'grabbing' : drag ? 'copy' : hover ? 'grab' : '';
+}
+function onUp(e) {
+  const p = press;
+  press = null;
+  controls.enabled = true;
+  if (!drag) { if (p && !moved(p, e)) select(p.item); return; }
+  aim(e);
+  aimSlot(e);
+  if (drag.mode === 'move') {
+    if ($('dock').classList.contains('hot')) remove(drag.item);
+    else if (drag.slot != null) moveTo(drag.item, drag.slot);
+    endDrag();
+  } else if (!drag.armed) { // releasing the press that started on the dock
+    if (drag.slot != null) { place(); endDrag(); }
+    else if (moved(drag.start, e)) endDrag();
+    else { drag.armed = true; ui(); } // plain click on an icon: keep the tool armed, click in the scene to place
+  } else if (p && !moved(p, e) && drag.slot != null) place();
+}
+function place() {
+  const it = insert(drag.key, drag.slot);
+  groups.get(it).position.copy(ghost.position); // drops from where the preview hovered
+  drag.slot = null;
+  ghost.visible = false;
+}
+function endDrag() {
+  if (ghost) { scene.remove(ghost); dispose(ghost); ghost = null; }
+  drag = null;
+  $('dock').classList.remove('removing', 'hot');
+  ui();
+}
+addEventListener('pointermove', onMove);
+addEventListener('pointerup', onUp);
+addEventListener('pointercancel', () => { press = null; controls.enabled = true; if (drag) endDrag(); });
+
+$('dock').addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('[data-add]');
+  if (!b || e.button !== 0) return;
+  e.preventDefault();
+  const again = drag?.mode === 'place' && drag.key === b.dataset.add;
+  if (drag) endDrag();
+  if (again) return; // clicking the active tool turns it off
+  b.setPointerCapture(e.pointerId);
+  ghost = buildModule(b.dataset.add);
+  ghost.visible = false;
+  scene.add(ghost);
+  drag = { mode: 'place', key: b.dataset.add, slot: null, x: 0, start: { x: e.clientX, y: e.clientY } };
+  sel = null;
+  ui();
+});
+$('dock').addEventListener('click', (e) => { // keyboard: Enter/Space adds after the selection
+  const b = e.target.closest('[data-add]');
+  if (b && e.detail === 0) insert(b.dataset.add, sel ? run.indexOf(sel) + 1 : run.length);
+});
+$('ctx-wrap').addEventListener('click', (e) => {
+  const cmd = e.target.closest('[data-cmd]')?.dataset.cmd;
+  ({ left: () => nudge(-1), right: () => nudge(1), dup: duplicate, del: () => remove(sel) })[cmd]?.();
+});
+$('finishes').addEventListener('click', (e) => setMaterial('finish', e.target.closest('[data-name]')?.dataset.name));
+$('tops').addEventListener('click', (e) => setMaterial('counter', e.target.closest('[data-name]')?.dataset.name));
+$('undo').onclick = () => restore(undo, redo);
+$('redo').onclick = () => restore(redo, undo);
+$('fit').onclick = fit;
+addEventListener('keydown', (e) => {
+  const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+  if (k === 'escape') return drag ? endDrag() : select(null);
+  if (mod && (k === 'z' || k === 'y')) { e.preventDefault(); return k === 'y' || e.shiftKey ? restore(redo, undo) : restore(undo, redo); }
+  if (drag || !sel) return;
+  if (k === 'delete' || k === 'backspace') { e.preventDefault(); remove(sel); }
+  else if (k === 'arrowleft' || k === 'arrowright') { e.preventDefault(); nudge(k === 'arrowleft' ? -1 : 1); }
+  else if (mod && k === 'd') { e.preventDefault(); duplicate(); }
+});
+
+// --- panels ---
+$('dock').insertAdjacentHTML('afterbegin', Object.entries(MODULES).map(([k, m]) =>
+  `<button data-add="${k}" aria-label="${m.name}" data-tip="${m.name} · ${m.w.toFixed(2)}″ W">${moduleIcon(m)}</button>`).join(''));
+for (const [id, options] of [['finishes', FINISHES], ['tops', TOPS]])
+  $(id).innerHTML = Object.entries(options).map(([name, c]) => `<button data-name="${name}" data-tip="${name}" aria-label="${name}" style="background:${c}"></button>`).join('');
+document.querySelectorAll('[data-icon]').forEach(el => el.insertAdjacentHTML('afterbegin', `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[el.dataset.icon]}</svg>`));
+document.querySelectorAll('[data-tip]').forEach(el => el.dataset.tip = el.dataset.tip.replace('Mod+', MOD));
+
+function ui() {
+  for (const b of $('finishes').children) b.setAttribute('aria-pressed', b.dataset.name === finish);
+  for (const b of $('tops').children) b.setAttribute('aria-pressed', b.dataset.name === counter);
+  $('finish-name').textContent = finish;
+  $('counter-name').textContent = counter;
+  for (const b of $('dock').querySelectorAll('[data-add]')) b.classList.toggle('on', drag?.mode === 'place' && drag.key === b.dataset.add);
+  $('undo').disabled = !undo.length;
+  $('redo').disabled = !redo.length;
+  if (sel) {
+    const m = MODULES[sel.key], i = run.indexOf(sel);
+    $('ctx-name').textContent = m.name;
+    $('ctx-dims').textContent = `${m.w.toFixed(2)}″ W × ${D}″ D · ${m.lb} lb`;
+    $('ctx-wrap').querySelector('[data-cmd=left]').disabled = i === 0;
+    $('ctx-wrap').querySelector('[data-cmd=right]').disabled = i === run.length - 1;
+  }
+  $('hint').textContent =
+    drag?.mode === 'move' ? 'Release to drop · drop on the dock to remove' :
+    drag?.armed ? 'Click in the scene to place · Esc to stop' :
+    drag ? 'Drop it into the layout' :
+    run.length ? 'Drag modules to reorder · click one for options' : 'Drag a module from the dock to start';
+}
+let summaryHTML = '';
+function summary(list, W) {
+  const n = list.length, lb = list.reduce((s, it) => s + MODULES[it.key].lb, 0);
+  const html = n
+    ? `<div class="big">${W.toFixed(2)}″ W × ${D}″ D × ${H}″ H</div><div class="meta">${(W / 12).toFixed(2)} × ${(D / 12).toFixed(2)} × ${(H / 12).toFixed(2)} ft · ${n} module${n > 1 ? 's' : ''} · ${lb.toFixed(1)} lb</div>`
+    : '<div class="meta">No modules yet</div>';
+  if (html !== summaryHTML) $('summary-body').innerHTML = summaryHTML = html;
+}
+
+// --- view ---
+function fit() {
+  const W = Math.max(width(run), 60);
+  const dist = (W / 2 + 24 + 16 / camera.aspect) / (Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(camera.aspect, 1.8));
+  controls.target.set(0, H / 2, 0);
+  camera.position.copy(controls.target).addScaledVector(V(0.45, 0.55, 1).normalize(), dist);
+  controls.update();
+}
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  labels.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', () => { resize(); fit(); });
+
+const clock = new THREE.Clock();
+const ease = (g, x, y, a) => { g.position.x += (x - g.position.x) * a; g.position.y += (y - g.position.y) * a; };
+let shadowW = -1;
+function frame() {
+  const a = 1 - Math.exp(-clock.getDelta() * 14);
+  const { xs, W, list } = targets();
+  for (const [it, g] of groups) {
+    const held = it === drag?.item;
+    g.visible = !held || drag.slot != null;
+    ease(g, held ? drag.x : xs.get(it), held ? 3 : 0, a);
+  }
+  if (ghost) {
+    if (!ghost.visible && drag.slot != null) ghost.position.set(drag.x, 4, 0);
+    ghost.visible = drag.slot != null;
+    ease(ghost, drag.x, 4, a);
+  }
+  // Focus = landing slot while dragging, otherwise the selected module.
+  const focus = drag ? drag.slot != null && { x: drag.x, w: MODULES[drag.key].w } : sel && { x: groups.get(sel).position.x, w: MODULES[sel.key].w };
+  showRing(focusRing, focus);
+  showRing(hoverRing, !drag && hover && hover !== sel && { x: groups.get(hover).position.x, w: MODULES[hover.key].w });
+  if (W) {
+    dims.w.set(V(-W / 2, 0.3, D / 2 + 14), V(W / 2, 0.3, D / 2 + 14), 'W ' + fmt(W));
+    dims.d.set(V(W / 2 + 10, 0.3, -D / 2), V(W / 2 + 10, 0.3, D / 2), 'D ' + fmt(D));
+    dims.h.set(V(-W / 2 - 10, 0, D / 2), V(-W / 2 - 10, H, D / 2), 'H ' + fmt(H));
+  } else [dims.w, dims.d, dims.h].forEach(d => d.hide());
+  if (focus) dims.focus.set(V(focus.x - focus.w / 2, 0.3, D / 2 + 6), V(focus.x + focus.w / 2, 0.3, D / 2 + 6), `${focus.w.toFixed(2)}″`);
+  else dims.focus.hide();
+  float(ctxLabel, !drag && sel);
+  float(tagLabel, !drag && hover !== sel && hover);
+  summary(list, W);
+  if (W !== shadowW) { // keep the shadow map tight around the run
+    shadowW = W;
+    const s = W / 2 + 90;
+    Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s });
+    sun.shadow.camera.updateProjectionMatrix();
+  }
+  const dist = camera.position.distanceTo(controls.target);
+  scene.fog.near = dist * 1.5;
+  scene.fog.far = dist * 4 + 400;
+  controls.update();
+  renderer.render(scene, camera);
+  labels.render(scene, camera);
+}
+
+applyMaterials();
+resize();
+sync();
+ui();
+fit();
+renderer.setAnimationLoop(frame);
+</script>
+</body>
+</html>
