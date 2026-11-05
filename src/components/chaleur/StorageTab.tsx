@@ -26,6 +26,7 @@ import {
   uniqueProductTypes,
   type ProductRow,
 } from "@/components/chaleur/ProductDialog";
+import { ImportReview, type PreviewRow } from "@/components/chaleur/ImportReview";
 import { formatMoney, formatQty } from "@/lib/format";
 import { splitName } from "@/lib/photos/name";
 import { cn } from "@/lib/utils";
@@ -278,6 +279,8 @@ export function StorageTab({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [cifFor, setCifFor] = useState<ProductRow | null>(null);
+  /** A read spreadsheet waiting for the person to check its changes. */
+  const [review, setReview] = useState<PreviewRow[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
@@ -530,21 +533,13 @@ export function StorageTab({
             void (async () => {
               const form = new FormData();
               form.append("file", file);
-              const parsed = await fetch("/api/import-export", {
-                method: "POST",
-                body: form,
-              });
-              const data = await parsed.json();
-              if (!parsed.ok || !data.preview) return;
-              await fetch("/api/import-export", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  preview: data.preview,
-                  confirm: true,
-                }),
-              });
-              onReload();
+              const parsed = await fetch("/api/import-export", { method: "POST", body: form });
+              const data = await parsed.json().catch(() => ({}));
+              if (!parsed.ok || !data.preview) {
+                flashShare({ ok: false, text: data.error ?? "Couldn't read the spreadsheet" });
+                return;
+              }
+              setReview(data.preview as PreviewRow[]);
             })();
           }}
         />
@@ -584,6 +579,17 @@ export function StorageTab({
         onSaved={onReload}
       />
 
+      {review && (
+        <ImportReview
+          rows={review}
+          onClose={() => setReview(null)}
+          onDone={() => {
+            setReview(null);
+            flashShare({ ok: true, text: "Spreadsheet imported" });
+            onReload();
+          }}
+        />
+      )}
       {cifFor && <CostDialog kind="cif" product={cifFor} onClose={() => setCifFor(null)} onSaved={onReload} />}
 
       <ProductDialog

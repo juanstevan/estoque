@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/db";
-import { createProduct, updateProduct } from "@/lib/inventory/service";
+import { correctCif, createProduct, updateProduct } from "@/lib/inventory/service";
 
 export type SpreadsheetRow = {
   sku: string;
@@ -14,6 +14,7 @@ export type SpreadsheetRow = {
   imageUrl?: string;
   b2bPrice?: number;
   b2cPrice?: number;
+  cifCost?: number;
   weight?: number;
   length?: number;
   width?: number;
@@ -28,14 +29,69 @@ export type SpreadsheetRow = {
   notes?: string;
 };
 
+export type ImportChange = { field: string; label: string; before: string | number | null; after: string | number };
+
 export type ImportPreviewRow = {
   rowNumber: number;
   sku: string;
-  status: "new" | "existing" | "invalid";
+  /** "existing": something differs; "unchanged": the sheet matches the product. */
+  status: "new" | "existing" | "unchanged" | "invalid";
   errors: string[];
   data: SpreadsheetRow;
   existingId?: string;
+  code?: string;
+  name?: string;
+  changes: ImportChange[];
 };
+
+/** Columns an import may change on an existing product, in the order the review shows them. */
+const FIELDS: Array<{ field: keyof SpreadsheetRow & string; label: string; number?: boolean; digits?: number }> = [
+  { field: "code", label: "ID" },
+  { field: "name", label: "Name" },
+  { field: "type", label: "Type" },
+  { field: "cifCost", label: "CIF", number: true, digits: 2 },
+  { field: "b2bPrice", label: "B2B", number: true, digits: 2 },
+  { field: "b2cPrice", label: "B2C", number: true, digits: 2 },
+  { field: "hsCode", label: "HS code" },
+  { field: "secondarySku", label: "Secondary SKU" },
+  { field: "ean", label: "EAN" },
+  { field: "weight", label: "Weight", number: true },
+  { field: "length", label: "Length", number: true },
+  { field: "width", label: "Width", number: true },
+  { field: "height", label: "Height", number: true },
+  { field: "packageLength", label: "Package length", number: true },
+  { field: "packageWidth", label: "Package width", number: true },
+  { field: "packageHeight", label: "Package height", number: true },
+  { field: "packageWeight", label: "Package weight", number: true },
+  { field: "cutoutLength", label: "Cut-out length", number: true },
+  { field: "cutoutWidth", label: "Cut-out width", number: true },
+  { field: "cutoutHeight", label: "Cut-out height", number: true },
+  { field: "amazonUrl", label: "Amazon URL" },
+  { field: "imageUrl", label: "Image URL" },
+  { field: "notes", label: "Notes" },
+];
+
+const round = (n: number, digits = 4) => Math.round(n * 10 ** digits) / 10 ** digits;
+
+/** What the sheet would change on the product. Empty cells change nothing. */
+export function diffProduct(product: Record<string, unknown>, row: SpreadsheetRow): ImportChange[] {
+  const changes: ImportChange[] = [];
+  for (const { field, label, number, digits } of FIELDS) {
+    const raw = row[field];
+    if (raw === undefined) continue;
+    const current = product[field];
+    if (number) {
+      const after = round(Number(raw), digits);
+      const before = typeof current === "number" ? round(current, digits) : null;
+      if (before !== after) changes.push({ field, label, before, after });
+    } else {
+      const after = field === "code" ? String(raw).trim().toUpperCase().slice(0, 3) : String(raw).trim();
+      const before = current == null ? null : String(current);
+      if ((before ?? "") !== after) changes.push({ field, label, before, after });
+    }
+  }
+  return changes;
+}
 
 function suppliersCell(raw: string | null) {
   if (!raw) return "";
@@ -87,6 +143,7 @@ export function parseSpreadsheet(buffer: ArrayBuffer): SpreadsheetRow[] {
       imageUrl: str("imageurl", "image"),
       b2bPrice: num("b2b", "b2bprice", "precob2b"),
       b2cPrice: num("b2c", "b2cprice", "precob2c"),
+      cifCost: num("cifcost", "cif", "custocif"),
       weight: num("weight", "peso"),
       length: num("length"),
       width: num("width"),
@@ -106,64 +163,40 @@ export function parseSpreadsheet(buffer: ArrayBuffer): SpreadsheetRow[] {
 export async function previewImport(
   rows: SpreadsheetRow[],
 ): Promise<ImportPreviewRow[]> {
-  const result: ImportPreviewRow[] = [];
-  for (let i = 0; i < rows.length; i++) {
-    const data = rows[i];
+  const products = await prisma.product.findMany({ where: { sku: { in: rows.map((r) => r.sku).filter(Boolean) } } });
+  const bySku = new Map(products.map((p) => [p.sku, p]));
+  return rows.map((data, i) => {
     const errors: string[] = [];
     if (!data.sku) errors.push("SKU is required");
-
-    const existing = data.sku
-      ? await prisma.product.findUnique({ where: { sku: data.sku } })
-      : null;
-
-    if (!existing && !data.name) {
-      errors.push("Name is required for a new product");
-    }
-
-    result.push({
+    const existing = data.sku ? bySku.get(data.sku) : undefined;
+    if (!existing && !data.name) errors.push("Name is required for a new product");
+    if (data.cifCost !== undefined && data.cifCost < 0) errors.push("CIF can't be negative");
+    const changes = existing && !errors.length ? diffProduct(existing, data) : [];
+    return {
       rowNumber: i + 2,
       sku: data.sku || `(row ${i + 2})`,
-      status: errors.length ? "invalid" : existing ? "existing" : "new",
+      status: errors.length ? "invalid" : !existing ? "new" : changes.length ? "existing" : "unchanged",
       errors,
       data,
       existingId: existing?.id,
-    });
+      code: existing?.code ?? data.code,
+      name: existing?.name ?? data.name,
+      changes,
+    };
+  });
+}
+
+/**
+ * Applies the rows the person confirmed. Each existing product is compared with the database again,
+ * so only what still differs changes. CIF goes through the logged CIF correction (main user only).
+ */
+export async function applyImport(preview: ImportPreviewRow[], actor: { id: string; main: boolean }) {
+  const rows = await previewImport(preview.map((row) => row.data));
+  if (!actor.main && rows.some((row) => row.changes.some((c) => c.field === "cifCost"))) {
+    throw new Error("Only the main user can change CIF costs. Leave the CIF_Cost column as it is, or ask the main user.");
   }
-  return result;
-}
-
-function editableFields(row: SpreadsheetRow) {
-  const data: Record<string, unknown> = {};
-  if (row.name !== undefined) data.name = row.name;
-  if (row.code !== undefined) data.code = row.code;
-  if (row.type !== undefined) data.type = row.type;
-  if (row.hsCode !== undefined) data.hsCode = row.hsCode;
-  if (row.secondarySku !== undefined) data.secondarySku = row.secondarySku;
-  if (row.ean !== undefined) data.ean = row.ean;
-  if (row.amazonUrl !== undefined) data.amazonUrl = row.amazonUrl;
-  if (row.imageUrl !== undefined) data.imageUrl = row.imageUrl;
-  if (row.b2bPrice !== undefined) data.b2bPrice = row.b2bPrice;
-  if (row.b2cPrice !== undefined) data.b2cPrice = row.b2cPrice;
-  if (row.weight !== undefined) data.weight = row.weight;
-  if (row.length !== undefined) data.length = row.length;
-  if (row.width !== undefined) data.width = row.width;
-  if (row.height !== undefined) data.height = row.height;
-  if (row.packageLength !== undefined) data.packageLength = row.packageLength;
-  if (row.packageWidth !== undefined) data.packageWidth = row.packageWidth;
-  if (row.packageHeight !== undefined) data.packageHeight = row.packageHeight;
-  if (row.packageWeight !== undefined) data.packageWeight = row.packageWeight;
-  if (row.cutoutLength !== undefined) data.cutoutLength = row.cutoutLength;
-  if (row.cutoutWidth !== undefined) data.cutoutWidth = row.cutoutWidth;
-  if (row.cutoutHeight !== undefined) data.cutoutHeight = row.cutoutHeight;
-  if (row.notes !== undefined) data.notes = row.notes;
-  return data;
-}
-
-export async function applyImport(preview: ImportPreviewRow[]) {
   const applied = [];
-  for (const row of preview) {
-    if (row.status === "invalid") continue;
-    const fields = editableFields(row.data);
+  for (const row of rows) {
     if (row.status === "new") {
       const created = await createProduct({
         name: row.data.name!,
@@ -189,16 +222,20 @@ export async function applyImport(preview: ImportPreviewRow[]) {
         cutoutWidth: row.data.cutoutWidth,
         cutoutHeight: row.data.cutoutHeight,
         notes: row.data.notes,
+        userId: actor.id,
       });
-      applied.push({ action: "created", product: created });
-    } else if (row.existingId) {
-      await updateProduct(row.existingId, fields as never);
-      applied.push({
-        action: "updated",
-        product: await prisma.product.findUniqueOrThrow({
-          where: { id: row.existingId },
-        }),
-      });
+      if (row.data.cifCost !== undefined && actor.main) {
+        await correctCif({ productId: created.id, cifCost: row.data.cifCost, reason: "Spreadsheet import", userId: actor.id });
+      }
+      applied.push({ action: "created", sku: row.sku });
+    } else if (row.status === "existing" && row.existingId) {
+      const fields = Object.fromEntries(
+        row.changes.filter((c) => c.field !== "cifCost").map((c) => [c.field, c.after]),
+      );
+      if (Object.keys(fields).length) await updateProduct(row.existingId, fields as never);
+      const cif = row.changes.find((c) => c.field === "cifCost");
+      if (cif) await correctCif({ productId: row.existingId, cifCost: Number(cif.after), reason: "Spreadsheet import", userId: actor.id });
+      applied.push({ action: "updated", sku: row.sku });
     }
   }
   return applied;

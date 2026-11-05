@@ -5,7 +5,7 @@ import {
   previewImport,
 } from "@/lib/import-export/spreadsheet";
 import { jsonError, jsonOk, readJson } from "@/lib/api";
-import { deny } from "@/lib/guard";
+import { deny, guard } from "@/lib/guard";
 
 function xlsxFile(buffer: Buffer) {
   return new Response(new Uint8Array(buffer), {
@@ -24,8 +24,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const denied = await deny("storage", "edit");
-  if (denied) return denied;
+  const me = await guard("storage", "edit");
+  if (me instanceof Response) return me;
   try {
     const contentType = req.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
         return xlsxFile(await exportInventoryWorkbook(body.ids));
       }
       if (body.confirm) {
-        const applied = await applyImport(body.preview!);
+        const applied = await applyImport(body.preview ?? [], me);
         return jsonOk({ applied });
       }
       return jsonOk({ preview: body.preview });
