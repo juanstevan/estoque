@@ -89,7 +89,7 @@ export async function POST(req: Request) {
           body.id,
           {
             costs: { transferFee: body.transferFee, freight: body.freight, delivery: body.delivery, duties: body.duties, customs: body.customs, otherCosts: body.otherCosts },
-            lines: (body.lines ?? []).flatMap((line) => (line.id ? [{ id: line.id, purchaseUnitCost: line.purchaseUnitCost, taxRate: line.taxRate }] : [])),
+            lines: body.lines?.map((line) => ({ id: line.id, productId: line.productId, quantity: line.quantity, purchaseUnitCost: line.purchaseUnitCost, taxRate: line.taxRate })),
             reason: body.reason ?? "",
           },
           me,

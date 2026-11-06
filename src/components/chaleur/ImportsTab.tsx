@@ -1589,11 +1589,39 @@ function ImportDialog({
     setViewingId(productId);
   }
 
+  /** On a received normal import: the units each product gains or loses with this correction. */
+  function stockChanges() {
+    if (!received || initial?.historical) return [];
+    const total = (rows: Array<{ productId: string | null; quantity: number }>) => {
+      const map = new Map<string, number>();
+      for (const row of rows) if (row.productId) map.set(row.productId, (map.get(row.productId) ?? 0) + row.quantity);
+      return map;
+    };
+    const before = total(initial?.lines ?? []);
+    const after = total(form.lines.map((l) => ({ productId: l.productId, quantity: numOrZero(l.quantity) })));
+    return [...new Set([...before.keys(), ...after.keys()])].flatMap((id) => {
+      const delta = roundMoney((after.get(id) ?? 0) - (before.get(id) ?? 0));
+      const p = catalog.find((x) => x.id === id);
+      const name = p?.name ?? form.lines.find((l) => l.productId === id)?.name ?? initial?.lines.find((l) => l.productId === id)?.product?.name ?? "Product";
+      return delta ? [`${p?.code ? `${p.code} ` : ""}${name}: ${delta > 0 ? "+" : ""}${delta}`] : [];
+    });
+  }
+
   async function save() {
     if (busy.current) return;
     if (!form.reference.trim()) {
       setError("Give the import its code first");
       return;
+    }
+    // Correcting a received import that moves stock: say what moves and ask why, for its history.
+    let reason: string | undefined;
+    const moves = stockChanges();
+    if (moves.length) {
+      const answer = window.prompt(
+        `This correction changes stock:\n${moves.map((m) => `• ${m}`).join("\n")}\n\nWhy? (kept in the import's history)`,
+      );
+      if (answer === null) return;
+      reason = answer.trim() || undefined;
     }
     busy.current = true;
     setError(null);
@@ -1602,7 +1630,7 @@ function ImportDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...(received ? { action: "revise" } : {}),
+          ...(received ? { action: "revise", reason } : {}),
           id: initial?.id,
           kind,
           reference: form.reference,
@@ -1761,7 +1789,7 @@ function ImportDialog({
                   ) : (
                     <div className="flex min-w-0 items-center gap-1.5 px-3">
                       <span className="min-w-0 truncate">{l.name}</span>
-                      {!received && <button
+                      {!costsLocked && <button
                         type="button"
                         aria-label={`Change ${l.name || code}`}
                         className="flex size-6 shrink-0 items-center justify-center text-gray-400 opacity-0 group-hover/line:opacity-100 hover:text-gray-700"
@@ -1785,7 +1813,7 @@ function ImportDialog({
                   <LineNum
                     value={l.quantity}
                     format={(n) => String(n)}
-                    readOnly={received}
+                    readOnly={costsLocked}
                     active={editCell?.i === i && editCell.field === "quantity"}
                     ariaLabel={`${l.name || code} quantity`}
                     onActivate={() => setEditCell({ i, field: "quantity" })}
@@ -1817,7 +1845,7 @@ function ImportDialog({
                       numOrZero(l.quantity) * numOrZero(l.purchaseUnitCost),
                     )}
                   </div>
-                  {received ? <div /> : <button
+                  {costsLocked ? <div /> : <button
                     type="button"
                     aria-label={`Remove ${l.name || code}`}
                     className="flex size-9 items-center justify-center text-gray-400 hover:text-danger-text"
@@ -1831,7 +1859,7 @@ function ImportDialog({
                 </div>
               );
             })}
-            {received ? null : adding ? (
+            {costsLocked ? null : adding ? (
               <div className={cn("relative grid items-center border-b border-border py-1.5 pr-2.5", LINE_GRID)}>
                 <div />
                 <ProductPicker
@@ -1942,7 +1970,7 @@ function ImportDialog({
           <div className="flex items-center gap-2">
             {costsLocked && <span className="text-xs text-gray-500">Received. Only the main user can correct its costs.</span>}
             {received && !costsLocked && (
-              <span className="max-w-80 text-xs text-gray-500">Received: costs, tax and fees can be corrected here. Products and quantities change by moving it back to the workflow.</span>
+              <span className="max-w-80 text-xs text-gray-500">Received: everything can be corrected here. Stock follows the change, and the import keeps a history of it.</span>
             )}
             <Button variant="secondary" onClick={onClose}>
               {costsLocked ? "Close" : "Cancel"}

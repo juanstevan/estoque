@@ -140,11 +140,17 @@ async function deliverAll(orderId: string) {
   // Removing the CIF correction puts back what it found, only while nothing changed it since.
   await rejects(() => removeLogEntry({ id: fix!.id }, { id: ME, name: "Main", main: true }), /changed after this correction/);
 
-  // A later average-cost correction blocks reopening; the error names it. Removing it undoes it.
+  // Removing an average-cost correction undoes it.
   const avg = await adjustCost({ productId: p.id, avgCost: 81, reason: "Typo", userId: ME });
-  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /later entry, the cost correction of/);
   await removeLogEntry({ id: avg.id }, { id: ME, name: "Main", main: true });
   assert.equal((await product(p.id)).avgCost, 80);
+  // A correction kept doesn't block reopening either: the units leave and the average goes back
+  // to the basis without this import (here: what it was before, 50). Received again: 80.
+  await adjustCost({ productId: p.id, avgCost: 81, reason: "Typo", userId: ME });
+  await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [10, 50]);
+  await receive(id, "2026-10-12", []);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [20, 80]);
   const cif2 = await correctCif({ productId: p.id, cifCost: 60, userId: ME });
   const cifBefore = JSON.parse(cif2!.metadata!).before.cifCost;
   await removeLogEntry({ id: cif2!.id }, { id: ME, name: "Main", main: true });
@@ -152,7 +158,7 @@ async function deliverAll(orderId: string) {
 
   // Once units moved, reopening refuses instead of guessing.
   await changeQuantity({ productId: p.id, mode: "remove", quantity: 1, reason: "Correction", userId: ME });
-  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /later entry/);
+  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /moved since/);
   await rejects(() => importation([{ productId: p.id, quantity: -3, purchaseUnitCost: 1 }]), /quantity above 0/);
   await invariants();
 }
@@ -354,7 +360,8 @@ async function deliverAll(orderId: string) {
   // 7, 11. A received importation's costs change (main user): no units move, the change is
   // logged with before and after, CIF follows, and sending it again changes nothing.
   const line = stored[0]!;
-  const revised = () => reviseImportation(ti, { costs: { freight: 100.5 }, lines: [{ id: line.id, purchaseUnitCost: 110.25 }], reason: "Freight invoice arrived" }, actor);
+  const revised = () =>
+    reviseImportation(ti, { costs: { freight: 100.5 }, lines: stored.map((l) => (l.id === line.id ? { id: l.id, purchaseUnitCost: 110.25 } : { id: l.id })), reason: "Freight invoice arrived" }, actor);
   await revised();
   await revised();
   assert.deepEqual([(await product(t.id)).physicalQty, (await product(u.id)).physicalQty], [10, 10]);
@@ -368,6 +375,36 @@ async function deliverAll(orderId: string) {
   assert.equal(await avg(t.id), tLine.landedUnitCost, "only lot of the product: its CIF is the average");
   await rejects(() => reviseImportation(ti, { costs: { freight: -1 }, reason: "x" }, actor), /0 or more/);
   await rejects(() => reviseImportation(a + "x", { reason: "x" }, actor), /./);
+
+  // Imports stay correctable after stock moved (main user): quantities and products change in
+  // place, stock follows the difference, the history keeps it, and reopening still refuses.
+  {
+    const k = await createProduct({ name: "Knob K", sku: "K" });
+    const j = await createProduct({ name: "Jar J", sku: "J" });
+    const ki = await importation([{ productId: k.id, quantity: 10, purchaseUnitCost: 4 }]);
+    await receive(ki, "2026-10-21");
+    await changeQuantity({ productId: k.id, mode: "remove", quantity: 2, reason: "Sold at the counter", userId: ME });
+    await correctCif({ productId: k.id, cifCost: 3.5, userId: ME });
+    await rejects(() => setImportStatus(ki, ImportStatus.PENDING, ME), /moved since: the sold at the counter/);
+    const [kl] = await db.importationLine.findMany({ where: { importationId: ki } });
+    // 10 → 8 received: 8 − 2 sold = 6 on hand; the entry says 8; a second product joins with 5.
+    await reviseImportation(ki, { lines: [{ id: kl!.id, quantity: 8 }, { productId: j.id, quantity: 5, purchaseUnitCost: 6 }], reason: "Packing list" }, actor);
+    assert.deepEqual([(await product(k.id)).physicalQty, (await product(j.id)).physicalQty], [6, 5]);
+    const kEntries = await db.inventoryTransaction.findMany({ where: { productId: k.id, type: TransactionType.IMPORTATION } });
+    assert.deepEqual(kEntries.map((e) => e.quantity), [8], "the receipt itself is corrected, no extra entry");
+    assert.deepEqual([(await avg(k.id)), (await avg(j.id))], [4, 6]);
+    // Taking away more than is free refuses and changes nothing.
+    await rejects(() => reviseImportation(ki, { lines: [{ id: kl!.id, quantity: 1 }], reason: "x" }, actor), /free/);
+    assert.equal((await product(k.id)).physicalQty, 6);
+    // Swapping the product of a line: J leaves (its entry goes), K takes its 5.
+    const jl = (await db.importationLine.findFirstOrThrow({ where: { importationId: ki, productId: j.id } })).id;
+    await reviseImportation(ki, { lines: [{ id: kl!.id }, { id: jl, productId: k.id }], reason: "Wrong product picked" }, actor);
+    assert.deepEqual([(await product(k.id)).physicalQty, (await product(j.id)).physicalQty], [11, 0]);
+    assert.equal(await count(j.id, TransactionType.IMPORTATION), 0);
+    const kEvents = await db.importationEvent.findMany({ where: { importationId: ki }, orderBy: { createdAt: "asc" } });
+    assert.deepEqual(kEvents.map((e) => JSON.parse(e.meta!).reason), ["Packing list", "Wrong product picked"]);
+    await invariants();
+  }
 
   // 5, 6, 10, 11. CIF correction: only CIF, cents kept, logged before → after; again is nothing.
   const before = await product(t.id);

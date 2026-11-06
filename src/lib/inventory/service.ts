@@ -1116,6 +1116,8 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
   // Newest first, so each product steps back through its receipts in order.
   const open = receipts.filter((r) => r.quantity > 0 && !reversed.has(r.id)).reverse();
   const own = receipts.map((r) => r.id);
+  // Products whose average changed since: the basis is recomputed, falling back to the one the receipt found.
+  const rebase = new Map<string, number | undefined>();
 
   for (const receipt of open) {
     const later = await tx.inventoryTransaction.findMany({
@@ -1127,25 +1129,30 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
       },
       orderBy: { createdAt: "asc" },
     });
-    // A CIF correction changes neither units nor average cost, so it doesn't stand in the way.
-    const blocking = later.find((t) => !cifOnly(t));
+    // Only units that moved since stand in the way: they can't be taken back here. Corrections
+    // (CIF or average cost) don't; they stay, and the cost basis is recomputed without this import.
+    const blocking = later.find((t) => t.quantity !== 0);
     if (blocking) {
       const what = `${movementReason(blocking).toLowerCase()} of ${blocking.occurredAt.toISOString().slice(0, 10)}${blocking.reference ? ` (${blocking.reference})` : ""}`;
       throw new Error(
-        `${receipt.product.name} has a later entry, the ${what}, so this import can't be reopened. Remove that entry first if it was a mistake, or correct the import's costs without reopening it.`,
+        `${receipt.product.name} has moved since: the ${what}. Units that left can't be taken back by reopening. Correct the import's products, quantities or costs directly in it instead.`,
       );
     }
     const cifCorrected = later.some(cifOnly);
+    const costCorrected = later.some((t) => t.type === TransactionType.COST_ADJUSTMENT && !cifOnly(t));
     await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${receipt.productId} FOR UPDATE`;
     const product = await tx.product.findUniqueOrThrow({ where: { id: receipt.productId } });
     const physicalQty = roundMoney(product.physicalQty - receipt.quantity);
-    if (physicalQty < product.reservedQty) {
-      throw new Error(`${product.name}: its units are reserved for invoices, so this import can't be reopened.`);
+    if (physicalQty < product.reservedQty + product.unavailableQty) {
+      throw new Error(`${product.name}: its units are reserved for invoices or set aside, so this import can't be reopened.`);
     }
-    // Nothing moved since, so the product goes back to exactly what the receipt found.
+    // Nothing moved since, so the product goes back to exactly what the receipt found. After a
+    // cost correction, the units leave at the current average and the basis is recomputed below.
     const before = readMeta(receipt.metadata).before as Snapshot | undefined;
-    const inventoryValue = before ? before.inventoryValue : Math.max(0, roundMoney(product.inventoryValue - receipt.quantity * receipt.unitCost));
-    const avgCost = before ? before.avgCost : physicalQty > 0 ? roundMoney(inventoryValue / physicalQty) : 0;
+    const exact = before && !costCorrected;
+    const avgCost = exact ? before.avgCost : product.avgCost;
+    const inventoryValue = exact ? before.inventoryValue : roundMoney(physicalQty * avgCost);
+    if (costCorrected) rebase.set(product.id, before?.avgCost);
     await tx.product.update({
       where: { id: product.id },
       data: {
@@ -1162,21 +1169,32 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
   // reversal, which add up to nothing) go too.
   await tx.costHistory.deleteMany({ where: { transactionId: { in: own } } });
   await tx.inventoryTransaction.deleteMany({ where: { id: { in: own } } });
+  if (rebase.size) {
+    // Not completed any more, so the basis leaves it out.
+    await tx.importation.update({ where: { id: importation.id }, data: { status: ImportStatus.PENDING } });
+    for (const [productId, fallback] of rebase) {
+      await applyCostBasis(tx, productId, { userId, notes: `Reopened import ${importation.reference}`, importationId: importation.id, fallback });
+    }
+  }
 }
 
 type CostFields = { transferFee: number; freight: number; delivery: number; duties: number; customs: number; otherCosts: number };
 const COST_KEYS = ["transferFee", "freight", "delivery", "duties", "customs", "otherCosts"] as const;
 
+type ReviseLine = { id?: string; productId?: string | null; quantity?: number; purchaseUnitCost?: number; taxRate?: number };
+
 /**
- * Corrects the costs of a received importation (main user only, checked by the route): its fees
- * and each line's cost and tax. Quantities and products can't change here, so no units move. The
- * lines get their new landed (CIF) cost, every product's average cost is recomputed from all its
- * received importations (the cost basis rule), and the change is logged with the values before
- * and after. Sending the same values again changes nothing.
+ * Corrects a received importation in place (main user only, checked by the route): its fees and
+ * its lines (product, quantity, cost, tax; lines can be added or removed). Imports are history, so
+ * they stay correctable whatever happened since. A normal import's receipt entries take the new
+ * quantity and landed cost, and each product's stock moves by the difference; the units of a
+ * product taken off the import leave with its entry. Every product's average cost is recomputed
+ * from all its received importations (the cost basis rule), and the import's history keeps who,
+ * when, why and the values before and after. Sending the same values again changes nothing.
  */
 export async function reviseImportation(
   id: string,
-  input: { costs?: Partial<CostFields>; lines?: Array<{ id: string; purchaseUnitCost?: number; taxRate?: number }>; reason?: string },
+  input: { costs?: Partial<CostFields>; lines?: ReviseLine[]; reason?: string },
   actor: { id: string; name: string },
 ) {
   const reason = input.reason?.trim() || undefined;
@@ -1185,75 +1203,120 @@ export async function reviseImportation(
     if (imp.status !== ImportStatus.COMPLETED) throw new Error("It isn't received yet; edit it normally.");
     const costs = Object.fromEntries(COST_KEYS.map((key) => [key, input.costs?.[key] ?? imp[key]])) as CostFields;
     if (Object.values(costs).some((v) => !Number.isFinite(v) || v < 0)) throw new Error("Costs must be 0 or more");
-    for (const change of input.lines ?? []) {
-      if (!imp.lines.some((line) => line.id === change.id)) throw new Error("That line isn't on this importation.");
-    }
-    const lines = imp.lines.map((line) => {
-      const change = input.lines?.find((c) => c.id === line.id);
-      return { ...line, purchaseUnitCost: change?.purchaseUnitCost ?? line.purchaseUnitCost, taxRate: change?.taxRate ?? line.taxRate };
+    // Without `lines` the lines stay; with it, it's the whole new list (an id keeps a line).
+    const lines = (input.lines ?? imp.lines).map((change) => {
+      const was = change.id ? imp.lines.find((line) => line.id === change.id) : undefined;
+      if (change.id && !was) throw new Error("That line isn't on this importation.");
+      return {
+        id: was?.id,
+        productId: change.productId ?? was?.productId ?? null,
+        quantity: change.quantity ?? was?.quantity ?? 0,
+        purchaseUnitCost: change.purchaseUnitCost ?? was?.purchaseUnitCost ?? 0,
+        taxRate: change.taxRate ?? was?.taxRate ?? 0,
+        notes: was?.notes ?? null,
+      };
     });
+    if (!lines.length) throw new Error("An importation keeps at least one product. To undo it, move it back to the workflow.");
+    if (lines.some((line) => !line.productId)) throw new Error("Pick a product for every line.");
     checkImportLines(lines, imp.historical);
 
     const totalAdditional = additionalImportCosts(costs);
     const allocated = allocateAdditionalCosts(
-      lines.map((l) => ({ id: l.id, quantity: l.quantity, purchaseUnitCost: l.purchaseUnitCost, taxRate: l.taxRate })),
+      lines.map((l, i) => ({ id: String(i), quantity: l.quantity, purchaseUnitCost: l.purchaseUnitCost, taxRate: l.taxRate })),
       totalAdditional,
     );
-    const changedCosts = COST_KEYS.filter((key) => costs[key] !== imp[key]);
-    const changedLines = lines.filter((line, i) => {
-      const was = imp.lines[i]!;
-      return line.purchaseUnitCost !== was.purchaseUnitCost || line.taxRate !== was.taxRate || allocated[i]!.landedUnitCost !== was.landedUnitCost;
+    const pick = (row: { productId: string | null; quantity: number; purchaseUnitCost: number; taxRate: number; landedUnitCost: number }) => ({
+      productId: row.productId,
+      quantity: row.quantity,
+      cost: row.purchaseUnitCost,
+      taxRate: row.taxRate,
+      cif: row.landedUnitCost,
     });
-    if (!changedCosts.length && !changedLines.length) return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+    const after = lines.map((line, i) => ({ ...line, landedUnitCost: allocated[i]!.landedUnitCost }));
+    const kept = new Set(after.flatMap((line) => (line.id ? [line.id] : [])));
+    const removed = imp.lines.filter((line) => !kept.has(line.id));
+    const added = after.filter((line) => !line.id);
+    const changedLines = after.filter((line) => {
+      const was = imp.lines.find((l) => l.id === line.id);
+      return was && JSON.stringify(pick(was)) !== JSON.stringify(pick(line));
+    });
+    const changedCosts = COST_KEYS.filter((key) => costs[key] !== imp[key]);
+    if (!changedCosts.length && !changedLines.length && !removed.length && !added.length) {
+      return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+    }
 
-    for (let i = 0; i < lines.length; i++) {
-      await tx.importationLine.update({
-        where: { id: lines[i]!.id },
-        data: {
-          purchaseUnitCost: lines[i]!.purchaseUnitCost,
-          taxRate: lines[i]!.taxRate,
-          allocatedAdditionalCost: allocated[i]!.allocatedAdditionalCost,
-          landedUnitCost: allocated[i]!.landedUnitCost,
-        },
-      });
+    // Units per product before and after, and the landed cost each product now comes in at.
+    const unitsOf = (rows: Array<{ productId: string | null; quantity: number }>) => {
+      const map = new Map<string, number>();
+      for (const row of rows) if (row.productId) map.set(row.productId, roundMoney((map.get(row.productId) ?? 0) + row.quantity));
+      return map;
+    };
+    const unitsBefore = unitsOf(imp.lines);
+    const unitsAfter = unitsOf(after);
+    const products = [...new Set([...unitsBefore.keys(), ...unitsAfter.keys()])];
+
+    await tx.importationLine.deleteMany({ where: { id: { in: removed.map((line) => line.id) } } });
+    for (let i = 0; i < after.length; i++) {
+      const line = after[i]!;
+      const data = {
+        productId: line.productId,
+        quantity: line.quantity,
+        purchaseUnitCost: line.purchaseUnitCost,
+        taxRate: line.taxRate,
+        allocatedAdditionalCost: allocated[i]!.allocatedAdditionalCost,
+        landedUnitCost: line.landedUnitCost,
+      };
+      if (line.id) await tx.importationLine.update({ where: { id: line.id }, data });
+      else await tx.importationLine.create({ data: { ...data, importationId: id } });
     }
     await tx.importation.update({
       where: { id },
       data: {
         ...costs,
         totalAdditionalCosts: totalAdditional,
-        productSubtotal: roundMoney(lines.reduce((sum, l) => sum + l.quantity * l.purchaseUnitCost, 0)),
+        productSubtotal: roundMoney(after.reduce((sum, l) => sum + l.quantity * l.purchaseUnitCost, 0)),
         coefficient: importCoefficient(allocated),
       },
     });
-    const pick = (row: { purchaseUnitCost: number; taxRate: number; landedUnitCost: number }) => ({
-      cost: row.purchaseUnitCost,
-      taxRate: row.taxRate,
-      cif: row.landedUnitCost,
+
+    if (!imp.historical) {
+      for (const productId of products) {
+        const rows = after.filter((line) => line.productId === productId);
+        const units = unitsAfter.get(productId) ?? 0;
+        const landed = units ? roundMoney(rows.reduce((sum, l) => sum + l.quantity * l.landedUnitCost, 0) / units) : 0;
+        await setReceipt(tx, imp, productId, units, landed, actor.id);
+      }
+    }
+
+    const label = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const what = [
+      ...changedCosts,
+      ...(changedLines.length ? [label(changedLines.length, "line")] : []),
+      ...(added.length ? [`${label(added.length, "line")} added`] : []),
+      ...(removed.length ? [`${label(removed.length, "line")} removed`] : []),
+    ];
+    const moved = products.flatMap((productId) => {
+      const delta = roundMoney((unitsAfter.get(productId) ?? 0) - (unitsBefore.get(productId) ?? 0));
+      return delta ? [{ productId, delta }] : [];
     });
     await tx.importationEvent.create({
       data: {
         importationId: id,
         actor: actor.name || actor.id,
-        message: `Costs corrected: ${[...changedCosts, ...(changedLines.length ? [`${changedLines.length} line${changedLines.length === 1 ? "" : "s"}`] : [])].join(", ")}${reason ? ` · ${reason}` : ""}`,
+        message: `Corrected: ${what.join(", ")}${moved.length && !imp.historical ? ` · stock ${moved.length === 1 ? "moved" : "moved for"} ${label(moved.length, "product")}` : ""}${reason ? ` · ${reason}` : ""}`,
         meta: JSON.stringify({
           reason,
-          before: {
-            costs: Object.fromEntries(changedCosts.map((key) => [key, imp[key]])),
-            lines: Object.fromEntries(imp.lines.map((line) => [line.id, pick(line)])),
-          },
-          after: {
-            costs: Object.fromEntries(changedCosts.map((key) => [key, costs[key]])),
-            lines: Object.fromEntries(lines.map((line, i) => [line.id, pick({ ...line, landedUnitCost: allocated[i]!.landedUnitCost })])),
-          },
+          before: { costs: Object.fromEntries(changedCosts.map((key) => [key, imp[key]])), lines: Object.fromEntries(imp.lines.map((line) => [line.id, pick(line)])) },
+          after: { costs: Object.fromEntries(changedCosts.map((key) => [key, costs[key]])), lines: Object.fromEntries(after.map((line, i) => [line.id ?? `new-${i}`, pick(line)])) },
+          units: moved,
         }),
       },
     });
 
-    for (const productId of new Set(lines.flatMap((line) => (line.productId ? [line.productId] : [])))) {
+    for (const productId of products) {
       await applyCostBasis(tx, productId, {
         userId: actor.id,
-        notes: `Costs of import ${imp.reference} corrected${reason ? ` · ${reason}` : ""}`,
+        notes: `Import ${imp.reference} corrected${reason ? ` · ${reason}` : ""}`,
         importationId: id,
       });
       // FOB and CIF are the latest received normal importation's; they follow when that's this one.
@@ -1266,6 +1329,70 @@ export async function reviseImportation(
       }
     }
     return tx.importation.findUniqueOrThrow({ where: { id }, include: importInclude });
+  });
+}
+
+/**
+ * Makes a received import's entry for a product say `units` at `landed`, moving the product's
+ * stock by the difference. 0 units: the entry goes (the product left the import). The value
+ * follows at the current average; the cost basis is recomputed afterwards.
+ */
+async function setReceipt(tx: Tx, imp: LockedImportation, productId: string, units: number, landed: number, userId: string) {
+  await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+  const product = await tx.product.findUniqueOrThrow({ where: { id: productId } });
+  const entries = await tx.inventoryTransaction.findMany({
+    where: { productId, type: TransactionType.IMPORTATION, metadata: { contains: `"importationId":"${imp.id}"` } },
+    orderBy: { createdAt: "asc" },
+  });
+  const current = roundMoney(entries.reduce((sum, e) => sum + e.quantity, 0));
+  const delta = roundMoney(units - current);
+  const physicalQty = roundMoney(product.physicalQty + delta);
+  const held = roundMoney(product.reservedQty + product.unavailableQty);
+  if (physicalQty < held || physicalQty < 0) {
+    throw new Error(
+      `${product.name}: ${Math.max(0, roundMoney(product.physicalQty - held))} of its units are free (the rest are reserved for invoices or set aside), so the import can't take ${-delta} away.`,
+    );
+  }
+  const [first, ...rest] = entries;
+  const drop = units ? rest : entries;
+  await tx.costHistory.deleteMany({ where: { transactionId: { in: drop.map((e) => e.id) } } });
+  await tx.inventoryTransaction.deleteMany({ where: { id: { in: drop.map((e) => e.id) } } });
+  if (units && first) {
+    const meta = readMeta(first.metadata);
+    await tx.inventoryTransaction.update({
+      where: { id: first.id },
+      data: {
+        quantity: units,
+        unitCost: landed,
+        totalValue: roundMoney(units * landed),
+        metadata: JSON.stringify({ ...meta, cifCost: landed, corrected: new Date() }),
+      },
+    });
+    await tx.costHistory.updateMany({ where: { transactionId: first.id }, data: { quantityDelta: units, unitCost: landed } });
+  } else if (units) {
+    await tx.inventoryTransaction.create({
+      data: {
+        productId,
+        type: TransactionType.IMPORTATION,
+        quantity: units,
+        unitCost: landed,
+        totalValue: roundMoney(units * landed),
+        reference: imp.reference,
+        notes: `Import ${imp.reference}`,
+        userId,
+        occurredAt: imp.receivedAt ?? new Date(),
+        metadata: JSON.stringify({ importationId: imp.id, cifCost: landed, before: snapshot(product), corrected: new Date() }),
+      },
+    });
+  }
+  if (!delta) return;
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      physicalQty,
+      inventoryValue: roundMoney(physicalQty * product.avgCost),
+      availableQty: recomputeAvailable({ ...product, physicalQty }),
+    },
   });
 }
 
