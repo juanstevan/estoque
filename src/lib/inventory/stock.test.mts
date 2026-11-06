@@ -131,9 +131,28 @@ async function deliverAll(orderId: string) {
   const [proof] = await db.importationProof.findMany({ where: { importationId: id } });
   await rejects(() => removeImportationProof(proof!.id), /at least one/);
 
+  // A CIF correction after receiving doesn't block reopening, and the corrected CIF stays.
+  const fix = await correctCif({ productId: p.id, cifCost: 77, reason: "Spreadsheet import", userId: ME });
+  await setImportStatus(id, ImportStatus.IN_TRANSIT, ME);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost, (await product(p.id)).cifCost], [10, 50, 77]);
+  await receive(id, "2026-10-12", []);
+  assert.deepEqual([(await product(p.id)).physicalQty, (await product(p.id)).avgCost], [20, 80]);
+  // Removing the CIF correction puts back what it found, only while nothing changed it since.
+  await rejects(() => removeLogEntry({ id: fix!.id }, { id: ME, name: "Main", main: true }), /changed after this correction/);
+
+  // A later average-cost correction blocks reopening; the error names it. Removing it undoes it.
+  const avg = await adjustCost({ productId: p.id, avgCost: 81, reason: "Typo", userId: ME });
+  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /later entry, the cost correction of/);
+  await removeLogEntry({ id: avg.id }, { id: ME, name: "Main", main: true });
+  assert.equal((await product(p.id)).avgCost, 80);
+  const cif2 = await correctCif({ productId: p.id, cifCost: 60, userId: ME });
+  const cifBefore = JSON.parse(cif2!.metadata!).before.cifCost;
+  await removeLogEntry({ id: cif2!.id }, { id: ME, name: "Main", main: true });
+  assert.equal((await product(p.id)).cifCost, cifBefore);
+
   // Once units moved, reopening refuses instead of guessing.
   await changeQuantity({ productId: p.id, mode: "remove", quantity: 1, reason: "Correction", userId: ME });
-  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /has moved since/);
+  await rejects(() => setImportStatus(id, ImportStatus.PENDING, ME), /later entry/);
   await rejects(() => importation([{ productId: p.id, quantity: -3, purchaseUnitCost: 1 }]), /quantity above 0/);
   await invariants();
 }

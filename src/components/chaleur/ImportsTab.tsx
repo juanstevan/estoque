@@ -1941,6 +1941,9 @@ function ImportDialog({
           )}
           <div className="flex items-center gap-2">
             {costsLocked && <span className="text-xs text-gray-500">Received. Only the main user can correct its costs.</span>}
+            {received && !costsLocked && (
+              <span className="max-w-80 text-xs text-gray-500">Received: costs, tax and fees can be corrected here. Products and quantities change by moving it back to the workflow.</span>
+            )}
             <Button variant="secondary" onClick={onClose}>
               {costsLocked ? "Close" : "Cancel"}
             </Button>

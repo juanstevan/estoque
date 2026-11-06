@@ -112,12 +112,12 @@ export function movementReason(t: {
   try {
     const meta = t.metadata ? JSON.parse(t.metadata) : null;
     if (t.type === "IMPORTATION") return meta?.reversalOf ? "Import reopened" : "Import";
+    if (meta?.reversalOf) return "Entry removed";
     if (meta?.action === "cost-basis") return "Cost basis";
     if (meta?.field === "fobCost") return "FOB correction";
     if (meta?.field === "cifCost") return "CIF correction";
     if (meta?.mode === "cost") return "Cost correction";
     if (meta?.editOf) return "Entry edited";
-    if (meta?.reversalOf) return "Entry removed";
     if (meta && typeof meta === "object" && "reason" in meta && meta.reason) {
       return String(meta.reason);
     }

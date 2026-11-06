@@ -1358,7 +1358,7 @@ export function ProductDialog({
                         plain: true,
                         width: "44px",
                         render: (t) =>
-                          detail.mainViewer && manualLogEntry(t) ? (
+                          detail.mainViewer && (manualLogEntry(t) || costCorrectionEntry(t)) ? (
                             <RemoveEntryButton
                               entry={t}
                               onRemoved={() => {
@@ -1681,6 +1681,12 @@ function manualLogEntry(entry: LogEntry) {
   return kind && !meta.orderId && !meta.importationId && !meta.setAside && !meta.removed && !meta.editOf && !meta.reversalOf;
 }
 
+/** A manual average-cost or CIF correction still in effect: the main user may remove it. */
+function costCorrectionEntry(entry: LogEntry) {
+  const meta = entryMeta(entry);
+  return entry.type === "COST_ADJUSTMENT" && (meta.mode === "cost" || meta.mode === "cif") && !meta.removed && !meta.reversalOf;
+}
+
 /** Opens the invoice or importation an entry came from, in its own tab. */
 export const OPEN_SOURCE = "chaleur:open-source";
 export type SourceTarget = { kind: "invoice" | "importation"; id: string };
@@ -1861,7 +1867,13 @@ function LogEntryDialog({
           </div>
         )}
         {!source && !manual && !removed && entry.type === "COST_ADJUSTMENT" && (
-          <p className="text-xs text-gray-600">Cost changes are corrected with Avg. cost or CIF on the Info tab.</p>
+          <p className="text-xs text-gray-600">
+            {costCorrectionEntry(entry)
+              ? main
+                ? "To undo this correction, remove it with the trash icon in the log."
+                : "Only the main user can remove a cost correction."
+              : "Cost changes are corrected with Avg. cost or CIF on the Info tab."}
+          </p>
         )}
         {manual && !main && <p className="text-xs text-gray-600">Only the main user can change the units or date.</p>}
         <div className="grid gap-1">

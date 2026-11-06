@@ -12,6 +12,7 @@ import { deleteFiles, deleteProductFiles, syncPhotos } from "@/lib/photos/servic
 import { removeLocalProofs } from "@/lib/inventory/proof-file";
 import { mediaForProduct } from "@/lib/media/library";
 import { roundMeasure } from "@/lib/measure";
+import { movementReason } from "@/lib/format";
 import {
   additionalImportCosts,
   allocateAdditionalCosts,
@@ -329,6 +330,17 @@ function manualEntry(txn: { type: TransactionType; metadata: string | null; refe
   );
 }
 
+/** A manual cost correction (average cost or CIF) that is still in effect. */
+function costCorrection(txn: { type: TransactionType; metadata: string | null }) {
+  const meta = readMeta(txn.metadata);
+  return txn.type === TransactionType.COST_ADJUSTMENT && (meta.mode === "cost" || meta.mode === "cif") && !meta.removed && !meta.reversalOf;
+}
+
+/** A CIF correction: it changes the CIF shown on the card only, not the units or the average cost. */
+function cifOnly(txn: { type: TransactionType; metadata: string | null }) {
+  return txn.type === TransactionType.COST_ADJUSTMENT && readMeta(txn.metadata).field === "cifCost";
+}
+
 /** Entries that only record something (a reservation), moving no units or value. */
 function logOnly(txn: { type: TransactionType; quantity: number }) {
   return txn.type === TransactionType.RESERVED && txn.quantity === 0;
@@ -424,7 +436,39 @@ export async function removeLogEntry(input: { id: string; reason?: string }, act
     const txn = await tx.inventoryTransaction.findUniqueOrThrow({ where: { id: input.id } });
     const meta = readMeta(txn.metadata);
     if (meta.removed) return txn;
-    if (!manualEntry(txn)) throw new Error("This entry comes from an invoice, importation or cost change. Correct it there.");
+    if (costCorrection(txn)) {
+      // The value goes back to what the correction found, while nothing has changed it since.
+      const product = await tx.product.findUniqueOrThrow({ where: { id: txn.productId } });
+      const before = (meta.before ?? {}) as Snapshot;
+      const after = (meta.after ?? {}) as Snapshot;
+      const field = meta.mode === "cif" ? "cifCost" : "avgCost";
+      if (before[field] === undefined || product[field] !== after[field]) {
+        throw new Error(`The ${meta.mode === "cif" ? "CIF" : "average cost"} changed after this correction, so it can't be undone. Correct it again instead.`);
+      }
+      const note = `Removed the ${txn.occurredAt.toISOString().slice(0, 10)} correction${reason ? ` · ${reason}` : ""}`;
+      if (field === "avgCost") {
+        await setAverageCost(tx, { productId: txn.productId, avgCost: before.avgCost, userId: actor.id, notes: note, metadata: { reversalOf: txn.id, reason } });
+      } else {
+        await tx.inventoryTransaction.create({
+          data: {
+            productId: txn.productId,
+            type: TransactionType.COST_ADJUSTMENT,
+            quantity: 0,
+            unitCost: before.cifCost!,
+            totalValue: 0,
+            notes: note,
+            userId: actor.id,
+            metadata: JSON.stringify({ field: "cifCost", reversalOf: txn.id, reason, before: { cifCost: product.cifCost }, after: { cifCost: before.cifCost } }),
+          },
+        });
+        await tx.product.update({ where: { id: txn.productId }, data: { cifCost: before.cifCost } });
+      }
+      return tx.inventoryTransaction.update({
+        where: { id: txn.id },
+        data: { metadata: JSON.stringify({ ...meta, removed: { at: new Date(), by: actor.name || actor.id, reason } }) },
+      });
+    }
+    if (!manualEntry(txn)) throw new Error("This entry comes from an invoice or importation. Correct it there.");
     const edits = await tx.inventoryTransaction.findMany({ where: { productId: txn.productId, metadata: { contains: `"editOf":"${txn.id}"` } } });
     const units = roundMoney(txn.quantity + edits.reduce((sum, e) => sum + e.quantity, 0));
     if (units) {
@@ -1074,19 +1118,24 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
   const own = receipts.map((r) => r.id);
 
   for (const receipt of open) {
-    const moved = await tx.inventoryTransaction.count({
+    const later = await tx.inventoryTransaction.findMany({
       where: {
         productId: receipt.productId,
         createdAt: { gt: receipt.createdAt },
         id: { notIn: own },
         OR: [{ quantity: { not: 0 } }, { type: TransactionType.COST_ADJUSTMENT }],
       },
+      orderBy: { createdAt: "asc" },
     });
-    if (moved) {
+    // A CIF correction changes neither units nor average cost, so it doesn't stand in the way.
+    const blocking = later.find((t) => !cifOnly(t));
+    if (blocking) {
+      const what = `${movementReason(blocking).toLowerCase()} of ${blocking.occurredAt.toISOString().slice(0, 10)}${blocking.reference ? ` (${blocking.reference})` : ""}`;
       throw new Error(
-        `${receipt.product.name} has moved since this import was received, so it can't be reopened. Correct the quantity or cost with an adjustment instead.`,
+        `${receipt.product.name} has a later entry, the ${what}, so this import can't be reopened. Remove that entry first if it was a mistake, or correct the import's costs without reopening it.`,
       );
     }
+    const cifCorrected = later.some(cifOnly);
     await tx.$queryRaw`SELECT 1 FROM "Product" WHERE id = ${receipt.productId} FOR UPDATE`;
     const product = await tx.product.findUniqueOrThrow({ where: { id: receipt.productId } });
     const physicalQty = roundMoney(product.physicalQty - receipt.quantity);
@@ -1105,7 +1154,7 @@ async function reopenLocked(tx: Tx, importation: LockedImportation, userId: stri
         avgCost,
         availableQty: recomputeAvailable({ ...product, physicalQty }),
         ...(before?.fobCost !== undefined ? { fobCost: before.fobCost } : {}),
-        ...(before?.cifCost !== undefined ? { cifCost: before.cifCost } : {}),
+        ...(before?.cifCost !== undefined && !cifCorrected ? { cifCost: before.cifCost } : {}),
       },
     });
   }
