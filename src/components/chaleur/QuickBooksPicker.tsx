@@ -73,7 +73,8 @@ export function QuickBooksPicker({
   children: React.ReactNode;
   itemId: string | null;
   takenBy: Map<string, string>;
-  onPick: (itemId: string | null) => Promise<void>;
+  /** The item is passed too, so a product being created can take its details. */
+  onPick: (itemId: string | null, item?: QbItem) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<QbItem[] | null>(null);
@@ -93,11 +94,11 @@ export function QuickBooksPicker({
     .filter((item) => item.id !== itemId && (!q || `${item.name} ${item.sku}`.toLowerCase().includes(q)))
     .slice(0, 40);
 
-  async function pick(id: string | null) {
+  async function pick(id: string | null, item?: QbItem) {
     setBusy(true);
     setError("");
     try {
-      await onPick(id);
+      await onPick(id, item);
       setText("");
       setOpen(false);
     } catch (e) {
@@ -138,7 +139,7 @@ export function QuickBooksPicker({
                 type="button"
                 disabled={busy || Boolean(taken)}
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                onClick={() => void pick(item.id)}
+                onClick={() => void pick(item.id, item)}
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm">{item.name}</span>

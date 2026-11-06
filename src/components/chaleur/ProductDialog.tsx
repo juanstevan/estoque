@@ -492,6 +492,7 @@ export function ProductDialog({
       amazonUrl: detail.amazonUrl,
       ...(isCreate
         ? {
+            secondarySku: linkedItemId(detail.secondarySku) ? detail.secondarySku : null,
             photos: detail.photos.map((p) => ({
               url: p.url,
               thumbUrl: p.thumbUrl,
@@ -716,11 +717,19 @@ export function ProductDialog({
                           onDone={closeField}
                           onChange={(type) => patch({ type })}
                         />
-                        {!isCreate && (
                           <QuickBooksPicker
                             itemId={linkedItemId(detail.secondarySku)}
                             takenBy={takenBy}
-                            onPick={async (itemId) => {
+                            onPick={async (itemId, item) => {
+                              if (isCreate) {
+                                // Linked on create: the app won't make a new item. Empty fields take the item's.
+                                patch({
+                                  secondarySku: itemId ? `qb:${itemId}` : null,
+                                  ...(item && !detail.sku.trim() && item.sku ? { sku: item.sku.slice(0, 12) } : {}),
+                                  ...(item && !detail.b2bPrice && item.price ? { b2bPrice: item.price } : {}),
+                                });
+                                return;
+                              }
                               patch({ secondarySku: await linkQuickBooks(detail.id, itemId) });
                               onSaved();
                             }}
@@ -750,7 +759,6 @@ export function ProductDialog({
                               </TooltipContent>
                             </Tooltip>
                           </QuickBooksPicker>
-                        )}
                       </div>
                     </div>
 
