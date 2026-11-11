@@ -36,20 +36,20 @@ export async function setCatalogField(
   await prisma.product.update({ where: { id: owner.productId }, data: { catalogFields } });
 }
 
-const SHARED_KEYS = ["b2bPrice", "width", "length", "height", "cutoutWidth", "cutoutLength", "cutoutHeight", "weight"] as const;
+const SHARED_KEYS = ["b2bPrice", "b2cPrice", "width", "length", "height", "cutoutWidth", "cutoutLength", "cutoutHeight", "weight"] as const;
 type SharedKey = (typeof SHARED_KEYS)[number];
 
 /**
  * A model's shared value goes to every variant through the normal product save, so a B2B price
- * still reaches QuickBooks. Each variant is saved even if QuickBooks refuses one.
+ * still reaches QuickBooks (the customer price, B2C, stays here). Each variant is saved even if QuickBooks refuses one.
  */
 export async function setShared(productIds: string[], raw: Record<string, unknown>) {
-  const data: { b2bPrice?: number } & Partial<Record<Exclude<SharedKey, "b2bPrice">, number | null>> = {};
+  const data: { b2bPrice?: number; b2cPrice?: number } & Partial<Record<Exclude<SharedKey, "b2bPrice" | "b2cPrice">, number | null>> = {};
   for (const key of SHARED_KEYS) {
     if (!(key in raw)) continue;
     const value = raw[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) data[key] = value;
-    else if (value === null && key !== "b2bPrice") data[key] = null;
+    else if (value === null && key !== "b2bPrice" && key !== "b2cPrice") data[key] = null;
     else throw new Error("Enter a number");
   }
   if (!Object.keys(data).length) throw new Error("Nothing to save");

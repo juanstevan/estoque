@@ -373,18 +373,34 @@ function Editor({
                 <p className="font-mono text-xs text-gray-500">ID {variants.map((p) => p.code).join(" · ")}</p>
               </Item>
             </div>
-            <Item value={field("price")} dimmed={dim(field("price"))} onToggle={() => toggleField("price")} label="B2B price">
-              <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
-                <span className="text-gray-400">$</span>
-                <NumberField
-                  values={variants.map((p) => (p.b2bPrice > 0 ? p.b2bPrice : null))}
-                  label="B2B price for every variant"
-                  money
-                  className="w-40 text-2xl font-semibold"
-                  onSave={(value) => value != null && saveShared({ b2bPrice: value })}
-                />
+            <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
+              <Item value={field("price")} dimmed={dim(field("price"))} onToggle={() => toggleField("price")} label="B2B price">
+                <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
+                  <span className="text-gray-400">$</span>
+                  <NumberField
+                    values={variants.map((p) => (p.b2bPrice > 0 ? p.b2bPrice : null))}
+                    label="B2B price for every variant"
+                    money
+                    className="w-40 text-2xl font-semibold"
+                    onSave={(value) => value != null && saveShared({ b2bPrice: value })}
+                  />
+                </div>
+              </Item>
+              {/* The price end customers see on /catalog; no eye: that catalog always shows it, the builder pages never do. */}
+              <div className={cn("min-w-0 transition-opacity", audience === "partners" && "opacity-40")}>
+                <p className="text-2xs font-medium tracking-caps text-gray-500 uppercase">Customer price</p>
+                <div className="flex items-baseline gap-1 text-2xl font-semibold text-gray-900">
+                  <span className="text-gray-400">$</span>
+                  <NumberField
+                    values={variants.map((p) => (p.b2cPrice > 0 ? p.b2cPrice : null))}
+                    label="Customer price for every variant"
+                    money
+                    className="w-40 text-2xl font-semibold"
+                    onSave={(value) => value != null && saveShared({ b2cPrice: value })}
+                  />
+                </div>
               </div>
-            </Item>
+            </div>
             {/* The product card's Specs rows; a value the variants don't share shows "—" and Varies. */}
             <div className="grid gap-3 border-t border-gray-150 pt-[13px]">
               <Eyebrow>Specs</Eyebrow>
