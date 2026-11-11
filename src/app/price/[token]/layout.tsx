@@ -1,2 +1,6 @@
-// A brand's price table by its name, /price/<brand>: the same pages as a /c/<token> link.
-export { default } from "../../c/[token]/layout";
+import { CatalogLayout, type LayoutProps } from "../../c/[token]/catalog-layout";
+
+/** /price/<brand>: the brand's builder price table. */
+export default function Layout(props: LayoutProps) {
+  return <CatalogLayout {...props} kind="price" />;
+}

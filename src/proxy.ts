@@ -9,7 +9,10 @@ export function proxy(req: NextRequest) {
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/share/") ||
     pathname.startsWith("/c/") ||
+    pathname === "/price" ||
     pathname.startsWith("/price/") ||
+    pathname === "/catalog" ||
+    pathname.startsWith("/catalog/") ||
     pathname === "/alure" ||
     pathname.startsWith("/alure/") ||
     pathname.startsWith("/track/");

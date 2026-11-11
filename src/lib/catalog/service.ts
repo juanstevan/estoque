@@ -114,6 +114,16 @@ export function brandSlug(brand: string) {
  * The price table of a brand by its name (/price/<brand>): the brand's active builder link.
  * Open to anyone with the address; revoking the brand's link takes it down.
  */
+/** Brands with an active builder link, as the /price and /catalog pages list them. */
+export async function publishedBrands() {
+  const links = await prisma.catalogLink.findMany({
+    where: { audience: "partners", revokedAt: null },
+    select: { token: true, brand: true },
+    orderBy: { createdAt: "asc" },
+  });
+  return [...new Map(links.map((l) => [brandSlug(l.brand), { brand: l.brand, slug: brandSlug(l.brand), token: l.token }])).values()];
+}
+
 export async function brandLinkToken(slug: string) {
   const links = await prisma.catalogLink.findMany({
     where: { audience: "partners", revokedAt: null },
@@ -169,17 +179,19 @@ function sharedText(values: string[]) {
  * Everything a catalog link may show, decided here on the server. Only fields and files cleared
  * for the link's audience leave; costs, quantities, notes and internal files never do.
  */
-export async function sharedCatalog(token: string): Promise<SharedCatalog | null> {
+export async function sharedCatalog(token: string, opts: { public?: boolean } = {}): Promise<SharedCatalog | null> {
   const link = await prisma.catalogLink.findUnique({ where: { token } });
   if (!link || link.revokedAt || !isVisibility(link.audience) || link.audience === "internal") return null;
-  const audience = link.audience;
+  // The customer catalog (/catalog/<brand>) reads a builder link as the public would.
+  const audience: Visibility = opts.public ? "public" : link.audience;
+  const retail = audience === "public";
   const allowed = (["partners", "public"] as const).filter((v) => visibleTo(audience, v));
 
   const products = await prisma.product.findMany({
     where: { type: link.brand },
     select: {
       id: true, code: true, name: true, type: true, category: true, model: true, tagId: true,
-      b2bPrice: true, availableQty: true, width: true, length: true, height: true,
+      b2bPrice: true, b2cPrice: true, availableQty: true, width: true, length: true, height: true,
       cutoutWidth: true, cutoutLength: true, cutoutHeight: true, weight: true, catalogFields: true,
       tag: { select: { name: true, catalogFields: true } },
     },
@@ -248,13 +260,14 @@ export async function sharedCatalog(token: string): Promise<SharedCatalog | null
                 const own = [...(m.tagId ? at.get(`tag|${m.tagId}`) ?? [] : []), ...variants.flatMap((p) => at.get(`product|${p.id}`) ?? [])];
                 const unique = [...new Map(own.map((x) => [x.id, x])).values()].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
                 const photos = unique.filter(isPhoto).map((x) => ({ src: x.thumbUrl || x.url, full: x.url }));
-                const prices = variants.map((p) => p.b2bPrice).filter((v) => v > 0);
+                // Builders see the B2B price (behind its eye); the public, the retail (B2C) price.
+                const prices = variants.map((p) => (retail ? p.b2cPrice : p.b2bPrice)).filter((v) => v > 0);
                 return {
                   key: m.key,
                   title: can(fields, "title") ? m.name : null,
                   ids: can(fields, "id") ? variants.map((p) => p.code).join(" · ") : null,
                   price:
-                    can(fields, "price") && prices.length
+                    (retail || can(fields, "price")) && prices.length
                       ? { amount: Math.min(...prices), from: new Set(prices).size > 1 || prices.length < variants.length }
                       : null,
                   dimensions: can(fields, "dimensions") ? sharedText(variants.map((p) => triple(p.width, p.length, p.height))) : null,

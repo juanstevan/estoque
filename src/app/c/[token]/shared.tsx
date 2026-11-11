@@ -1,18 +1,35 @@
 import { cache } from "react";
 import { ArrowDownToLine } from "lucide-react";
-import { brandLinkToken, sharedCatalog, type SharedFile, type SharedModel } from "@/lib/catalog/service";
+import { brandLinkToken, publishedBrands, sharedCatalog, type SharedFile, type SharedModel } from "@/lib/catalog/service";
 import { cn } from "@/lib/utils";
 
 /**
- * One read per request, shared by the layout, the page and their metadata. The key is a link's
- * code (/c/<token>) or a brand (/price/<brand>); `base` is the address the link's pages live under.
+ * Which address a catalog page lives under: a link's code (/c/<token>), a brand's builder price
+ * table (/price/<brand>) or a brand's catalog for end customers (/catalog/<brand>).
  */
-export const load = cache(async (key: string) => {
-  const byToken = await sharedCatalog(key);
-  if (byToken) return { ...byToken, base: `/c/${key}` };
+export type Kind = "link" | "price" | "catalog";
+
+/** The words that change between the builder pages and the customer catalog. */
+export function wording(kind: Kind) {
+  return kind === "catalog"
+    ? { name: "Catalog", price: "Price", note: "Prices are suggested retail, in US dollars, and may change without notice." }
+    : { name: "Builder catalog", price: "Builder price", note: "Prices are for builders, in US dollars, and may change without notice." };
+}
+
+/**
+ * One read per request, shared by the layout, the page and their metadata. `base` is the address
+ * the pages live under; `brands` (brand addresses only) are the brands to switch between.
+ */
+export const load = cache(async (key: string, kind: Kind = "link") => {
+  if (kind === "link") {
+    const data = await sharedCatalog(key);
+    return data ? { ...data, kind, base: `/c/${key}`, brands: [] as { brand: string; slug: string }[] } : null;
+  }
   const token = await brandLinkToken(key);
-  const byBrand = token ? await sharedCatalog(token) : null;
-  return byBrand ? { ...byBrand, base: `/price/${key.toLowerCase()}` } : null;
+  const data = token ? await sharedCatalog(token, { public: kind === "catalog" }) : null;
+  if (!data) return null;
+  const brands = (await publishedBrands()).map(({ brand, slug }) => ({ brand, slug }));
+  return { ...data, kind, base: `/${kind}/${key.toLowerCase()}`, brands };
 });
 
 export function slug(text: string) {
